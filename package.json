@@ -1,0 +1,66 @@
+{
+  "name": "opencloudbox",
+  "version": "0.1.0",
+  "description": "Public command-line interface for OpenCloudBox",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yamedoff/ocbox-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yamedoff/ocbox-cli/issues"
+  },
+  "homepage": "https://github.com/yamedoff/ocbox-cli#readme",
+  "bin": {
+    "ocbox": "./dist/index.js",
+    "opencloudbox": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": "24.20.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.20.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.24.0",
+      "onFail": "error"
+    }
+  },
+  "packageManager": "pnpm@11.24.0",
+  "oclif": {
+    "bin": "ocbox",
+    "dirname": "opencloudbox",
+    "commands": "./dist/commands"
+  },
+  "scripts": {
+    "build": "tsup",
+    "cli:smoke": "node dist/index.js --version && node dist/index.js --help",
+    "dependencies:check": "pnpm audit --audit-level=high",
+    "format": "biome format . --write",
+    "format:check": "biome format .",
+    "licenses:check": "node scripts/check-licenses.mjs",
+    "lint": "biome lint .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oclif/core": "4.14.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11",
+    "@types/node": "24.13.3",
+    "corepack": "0.36.0",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
