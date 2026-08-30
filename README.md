@@ -20,6 +20,10 @@ corepack prepare pnpm@11.24.0 --activate
 pnpm install --frozen-lockfile
 ```
 
+GitHub Codespaces uses the committed `.devcontainer` configuration to install
+and verify this exact toolchain, enable `gh codespace ssh`, and run the frozen
+install automatically whenever a codespace is created or rebuilt.
+
 The package is named `opencloudbox` at version `0.1.0`, but publication is
 disabled with `private: true` until a later registry and release review. Both
 `ocbox` and `opencloudbox` resolve to the same built entrypoint.

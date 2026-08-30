@@ -1,0 +1,11 @@
+{
+  "name": "OpenCloudBox CLI",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1.1.0": {}
+  },
+  "remoteUser": "node",
+  "postCreateCommand": "node scripts/verify-toolchain.mjs && pnpm install --frozen-lockfile"
+}
