@@ -27,3 +27,8 @@ Automated license metadata checks reject unknown and strong-copyleft groups,
 but they are not legal advice. New licenses require explicit maintainer review.
 TypeScript `5.9.3` is the newest inspected release in tsup's declaration
 plugin's declared `^4.5 || ^5.0` compatibility range.
+
+The portable audit and all-dependency license review always run. GitHub-native
+dependency review requires dependency-graph data on the default branch, which
+the README-only seed does not yet provide; it can be added after the foundation
+lands without weakening the current portable gate.

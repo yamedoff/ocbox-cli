@@ -33,7 +33,9 @@ jobs:
           node-version: 24.20.0
           check-latest: false
       - name: Install exact Corepack
-        run: npm install --global corepack@0.36.0
+        # Windows runners include package-manager shims; the ephemeral toolcache
+        # must replace them so the verified Corepack version is deterministic.
+        run: npm install --global corepack@0.36.0 --force
       - name: Activate exact pnpm
         run: |
           corepack enable
