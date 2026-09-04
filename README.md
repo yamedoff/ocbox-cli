@@ -1,8 +1,18 @@
 # OpenCloudBox CLI
 
-`ocbox` is the public command-line interface for OpenCloudBox. This repository
-currently contains only the v0.1 foundation: an empty oclif shell, build tooling,
-tests, and repository policy. Product commands are intentionally out of scope.
+`ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
+surface contains the empty oclif shell plus provider-neutral domain and adapter
+contracts. Product commands and provider integrations remain out of scope.
+
+Library consumers import the side-effect-free contract entrypoint without
+starting the CLI:
+
+```ts
+import { SandboxSpecSchema, type SandboxProvider } from 'opencloudbox/contracts'
+```
+
+See [docs/contracts.md](docs/contracts.md) for lifecycle, specification,
+idempotency, execution, file, preview, and error invariants.
 
 ## Toolchain
 

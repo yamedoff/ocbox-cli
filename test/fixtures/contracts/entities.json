@@ -1,0 +1,126 @@
+{
+  "project": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "name": "Example project",
+    "sessionIds": ["22222222-2222-4222-8222-222222222222"],
+    "createdAt": "2026-08-31T00:00:00.000Z",
+    "updatedAt": "2026-08-31T00:00:01.000Z"
+  },
+  "session": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "state": "active",
+    "bindings": [
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "sandboxId": "33333333-3333-4333-8333-333333333333",
+        "role": "primary",
+        "ordinal": 0,
+        "boundAt": "2026-08-31T00:00:00.000Z",
+        "releasedAt": null
+      }
+    ],
+    "currentOperationId": null,
+    "providerVerifiedAt": "2026-08-31T00:00:01.000Z",
+    "sandboxDeletionVerifiedAt": null,
+    "createdAt": "2026-08-31T00:00:00.000Z",
+    "updatedAt": "2026-08-31T00:00:01.000Z"
+  },
+  "sandbox": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "providerSandboxId": "provider-sandbox-01",
+    "provider": "fake",
+    "lifecycle": {
+      "normalizedState": "running",
+      "rawState": "RUNNING",
+      "desiredState": "running",
+      "reason": null,
+      "observedAt": "2026-08-31T00:00:01.000Z",
+      "lifecycleTimestamps": {
+        "creationStartedAt": "2026-08-31T00:00:00.000Z",
+        "runningAt": "2026-08-31T00:00:01.000Z",
+        "pauseStartedAt": null,
+        "pausedAt": null,
+        "stopStartedAt": null,
+        "stoppedAt": null,
+        "deletionStartedAt": null,
+        "deletedAt": null,
+        "errorAt": null,
+        "lastTransitionAt": "2026-08-31T00:00:01.000Z"
+      }
+    },
+    "specification": {
+      "requested": {
+        "cpu": { "millicores": 1000 },
+        "memory": { "bytes": 1073741824 },
+        "disk": { "bytes": 10737418240 },
+        "operatingSystem": "linux",
+        "architecture": "x86_64",
+        "image": { "kind": "template", "reference": "node:24-bookworm" },
+        "region": "us-east-1",
+        "network": {
+          "egress": "open",
+          "allowedHosts": [],
+          "directInbound": "blocked",
+          "previews": "authenticated_only"
+        },
+        "lifecycle": {
+          "idleTimeoutMilliseconds": 300000,
+          "maximumRuntimeMilliseconds": 3600000,
+          "autoStopAfterMilliseconds": 600000,
+          "autoDestroyAfterMilliseconds": 7200000
+        },
+        "environment": {
+          "name": "development",
+          "variableNames": ["NODE_ENV"],
+          "secretReferenceIds": ["provider-secret-ref-01"]
+        },
+        "source": {
+          "kind": "git",
+          "repositoryUrl": "https://github.com/example/project.git",
+          "revision": "main",
+          "subdirectory": null
+        },
+        "providerClass": "container"
+      },
+      "effective": {
+        "cpu": { "millicores": 2000 },
+        "memory": { "bytes": 2147483648 },
+        "disk": { "bytes": 10737418240 },
+        "operatingSystem": "linux",
+        "architecture": "x86_64",
+        "image": { "kind": "template", "reference": "node:24-bookworm" },
+        "region": "us-east-1",
+        "network": {
+          "egress": "open",
+          "allowedHosts": [],
+          "directInbound": "blocked",
+          "previews": "authenticated_only"
+        },
+        "lifecycle": {
+          "idleTimeoutMilliseconds": 300000,
+          "maximumRuntimeMilliseconds": 3600000,
+          "autoStopAfterMilliseconds": 600000,
+          "autoDestroyAfterMilliseconds": 7200000
+        },
+        "environment": {
+          "name": "development",
+          "variableNames": ["NODE_ENV"],
+          "secretReferenceIds": ["provider-secret-ref-01"]
+        },
+        "source": {
+          "kind": "git",
+          "repositoryUrl": "https://github.com/example/project.git",
+          "revision": "main",
+          "subdirectory": null
+        },
+        "providerClass": "container"
+      },
+      "effectiveObservedAt": "2026-08-31T00:00:01.000Z"
+    },
+    "createdAt": "2026-08-31T00:00:00.000Z",
+    "updatedAt": "2026-08-31T00:00:01.000Z"
+  }
+}

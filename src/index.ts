@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { execute } from '@oclif/core'
 
 // oclif owns argument parsing and the built-in help/version surface. Product
