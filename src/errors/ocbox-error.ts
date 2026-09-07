@@ -41,7 +41,8 @@ const FORBIDDEN_DETAIL_KEY_FRAGMENTS = [
   'stack',
   'cause',
 ] as const
-const LOCAL_PATH = /(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\|\/(?:Users|home|root|private\/var)\/)/
+const FORBIDDEN_DETAIL_KEYS = new Set(['error', 'errors', 'rawerror'])
+const LOCAL_PATH = /(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\|(?:^|[\s"'`(=])\/(?!\/)(?:\S|$))/
 const SECRET_CANARY =
   /(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{8,}|\bAKIA[A-Z0-9]{12,}|\bBearer\s+[A-Za-z0-9._~+/-]+=*|(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+)/i
 
@@ -70,7 +71,10 @@ function inspectSafeValue(
   if (value !== null && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
       const normalizedKey = key.replaceAll(/[^A-Za-z0-9]/g, '').toLowerCase()
-      if (FORBIDDEN_DETAIL_KEY_FRAGMENTS.some((fragment) => normalizedKey.includes(fragment))) {
+      if (
+        FORBIDDEN_DETAIL_KEYS.has(normalizedKey) ||
+        FORBIDDEN_DETAIL_KEY_FRAGMENTS.some((fragment) => normalizedKey.includes(fragment))
+      ) {
         report([...path, key], `Unsafe error-detail key: ${key}`)
       }
       inspectSafeValue(item, report, [...path, key])

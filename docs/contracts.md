@@ -37,19 +37,22 @@ lifecycle timestamps. An unknown raw state normalizes to `unknown`; it is never 
 | `destroy` | terminated | discarded | discarded |
 
 Lifecycle success requires a fresh, structurally valid provider observation whose normalized state
-matches the target Session state. The same guard applies to a transitional rollback and to
-`error`-state reconciliation: callers cannot select a stable recovery state that the provider did
-not observe. Cleanup may enter `destroying`, but `destroyed` requires an observation of provider
-deletion. Unsupported behavior must be rejected through the capability preflight before a provider
-mutation is invoked.
+matches the target Session state. `SessionTransitionEvidence.transitionStartedAt` is the trusted
+start of the persisted Operation or reconciliation attempt; an observation older than that fence is
+rejected. The same guard applies to a transitional rollback and to `error`-state reconciliation:
+callers cannot select a stable recovery state that the provider did not freshly observe. Cleanup may
+enter `destroying`, but `destroyed` requires both a post-fence `deleted` observation and its provider
+deletion timestamp. Unsupported behavior must be rejected through the capability preflight before
+a provider mutation is invoked.
 
 ## Requested and effective specifications
 
 `RequestedEffectiveSpec` never manufactures provider truth. `effective` and
 `effectiveObservedAt` are both `null` until observation, then appear together. CPU is expressed in
 millicores; RAM and disk are bytes; every lifecycle timeout is milliseconds. Environment fields
-contain names and provider references only—never a secret value, encrypted value, suffix, or
-preview.
+contain names and constrained non-secret locators only—`ocbox:<opaque-id>` or
+`provider:<provider-name>:<opaque-id>`. Credential-shaped values remain invalid even after a valid
+namespace prefix; encrypted values, suffixes, previews, and raw secret values are never accepted.
 
 ## Mutation and idempotency contract
 
@@ -66,6 +69,11 @@ A successful Operation records whether it created a resource, replayed a prior r
 existing provider resource. This package defines the contract only; adapters and persistence arrive
 in later tasks.
 
+Before create, `CreateSandboxInvocationSchema` binds adoption metadata to the `OperationContext`.
+After create, `CreateSandboxInvocationResultSchema` validates the combined context, request, and
+result, requiring the returned Operation ID, request ID, idempotency key, action, and Session ID to
+match the persisted invocation identity.
+
 Structured command execution uses `{ mode: 'argv', argv: readonly string[] }`. Shell evaluation is a
 separate explicit `{ mode: 'shell', shell: string }` variant. A remote nonzero exit is a completed
 `ExecResult`, not an `OcboxError`. File payloads remain `Uint8Array` end to end.
@@ -79,5 +87,6 @@ must return only normalized contract objects rather than SDK objects.
 
 `OcboxError` exposes only the stable 32-code catalogue, a human-safe message, the registry-owned
 retry classification, request ID, optional safe provider code, and recursively checked redacted
-details. The schema rejects credential-like material, command output, raw provider errors, local
-paths, secret suffix/preview material, stack/cause data, and recoverable secret representations.
+details. The schema recursively rejects credential-like material, command output, raw `error` and
+provider-error fields, Windows/UNC and POSIX filesystem paths, secret suffix/preview material,
+stack/cause data, and recoverable secret representations while retaining explicitly safe metadata.

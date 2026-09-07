@@ -33,6 +33,12 @@ function observationFor(target: SessionState): ProviderLifecycleObservation | un
     ...sandbox.lifecycle,
     normalizedState,
     rawState: normalizedState.toUpperCase(),
+    lifecycleTimestamps: {
+      ...sandbox.lifecycle.lifecycleTimestamps,
+      ...(stableTarget === 'destroyed'
+        ? { deletionStartedAt: timestamps.created, deletedAt: timestamps.observed }
+        : {}),
+    },
   }
 }
 
@@ -62,7 +68,9 @@ describe('Session lifecycle', () => {
         const invoke = (): void =>
           assertSessionTransition(from, to, {
             operationId: ids.operation,
-            ...(providerObservation === undefined ? {} : { providerObservation }),
+            ...(providerObservation === undefined
+              ? {}
+              : { transitionStartedAt: timestamps.created, providerObservation }),
           })
         if (expected) expect(invoke, `${from} -> ${to}`).not.toThrow()
         else expect(invoke, `${from} -> ${to}`).toThrow(/Illegal Session transition/)
@@ -78,6 +86,7 @@ describe('Session lifecycle', () => {
     expect(() =>
       assertSessionTransition('pausing', 'paused', {
         operationId: ids.operation,
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('paused'),
       }),
     ).not.toThrow()
@@ -104,27 +113,32 @@ describe('Session lifecycle', () => {
     expect(() =>
       assertSessionTransition('pausing', 'active', {
         operationId: ids.operation,
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('paused'),
       }),
     ).toThrow(/requires provider state running/)
     expect(() =>
       assertSessionTransition('pausing', 'active', {
         operationId: ids.operation,
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('active'),
       }),
     ).not.toThrow()
     expect(() =>
       assertSessionTransition('error', 'stopped', {
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('stopped'),
       }),
     ).not.toThrow()
     expect(() =>
       assertSessionTransition('error', 'destroyed', {
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('active'),
       }),
     ).toThrow(/requires provider state deleted/)
     expect(() =>
       assertSessionTransition('error', 'destroyed', {
+        transitionStartedAt: timestamps.created,
         providerObservation: observationFor('destroyed'),
       }),
     ).not.toThrow()
@@ -133,12 +147,40 @@ describe('Session lifecycle', () => {
   it('rejects structurally incomplete provider evidence at the transition boundary', () => {
     expect(() =>
       assertSessionTransition('error', 'active', {
+        transitionStartedAt: timestamps.created,
         providerObservation: {
           normalizedState: 'running',
           rawState: 'RUNNING',
         } as ProviderLifecycleObservation,
       }),
     ).toThrow()
+  })
+
+  it.each([
+    ['rollback', 'pausing', 'active'],
+    ['error recovery', 'error', 'stopped'],
+    ['deletion recovery', 'error', 'destroyed'],
+  ] as const)('rejects a stale %s observation', (_case, from, to) => {
+    expect(() =>
+      assertSessionTransition(from, to, {
+        ...(from === 'pausing' ? { operationId: ids.operation } : {}),
+        transitionStartedAt: timestamps.completed,
+        providerObservation: observationFor(to),
+      }),
+    ).toThrow(/older than the transition start/)
+  })
+
+  it('requires explicit deletion evidence for destroyed', () => {
+    const deleted = observationFor('destroyed')
+    expect(() =>
+      assertSessionTransition('error', 'destroyed', {
+        transitionStartedAt: timestamps.created,
+        providerObservation: {
+          ...deleted,
+          lifecycleTimestamps: { ...deleted.lifecycleTimestamps, deletedAt: null },
+        },
+      }),
+    ).toThrow(/verified provider deletion/)
   })
 
   it('locks the product retention semantics', () => {

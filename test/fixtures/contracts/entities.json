@@ -75,7 +75,7 @@
         "environment": {
           "name": "development",
           "variableNames": ["NODE_ENV"],
-          "secretReferenceIds": ["provider-secret-ref-01"]
+          "secretReferenceIds": ["provider:fake:secret-ref-01"]
         },
         "source": {
           "kind": "git",
@@ -108,7 +108,7 @@
         "environment": {
           "name": "development",
           "variableNames": ["NODE_ENV"],
-          "secretReferenceIds": ["provider-secret-ref-01"]
+          "secretReferenceIds": ["provider:fake:secret-ref-01"]
         },
         "source": {
           "kind": "git",

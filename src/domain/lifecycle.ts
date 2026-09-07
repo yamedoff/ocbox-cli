@@ -128,15 +128,43 @@ export const ProviderLifecycleObservationSchema = z
 
 export type ProviderLifecycleObservation = z.infer<typeof ProviderLifecycleObservationSchema>
 
-export interface SessionTransitionEvidence {
-  readonly operationId?: OperationId
-  readonly providerObservation?: ProviderLifecycleObservation
-}
+export type SessionTransitionEvidence =
+  | {
+      readonly operationId?: OperationId
+      readonly transitionStartedAt?: never
+      readonly providerObservation?: never
+    }
+  | {
+      readonly operationId?: OperationId
+      readonly transitionStartedAt: UtcTimestamp
+      readonly providerObservation: ProviderLifecycleObservation
+    }
 
-export const SessionTransitionEvidenceSchema = z.strictObject({
-  operationId: OperationIdSchema.optional(),
-  providerObservation: ProviderLifecycleObservationSchema.optional(),
-})
+export const SessionTransitionEvidenceSchema = z
+  .strictObject({
+    operationId: OperationIdSchema.optional(),
+    transitionStartedAt: UtcTimestampSchema.optional(),
+    providerObservation: ProviderLifecycleObservationSchema.optional(),
+  })
+  .superRefine((evidence, context) => {
+    if (evidence.providerObservation !== undefined && evidence.transitionStartedAt === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['transitionStartedAt'],
+        message: 'Provider evidence requires a trusted transition start',
+      })
+    } else if (
+      evidence.providerObservation !== undefined &&
+      evidence.transitionStartedAt !== undefined &&
+      evidence.providerObservation.observedAt < evidence.transitionStartedAt
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['providerObservation', 'observedAt'],
+        message: 'Provider observation cannot be older than the transition start',
+      })
+    }
+  })
 
 const TRANSITIONAL_SESSION_STATES = new Set<SessionState>([
   'creating',
@@ -149,9 +177,10 @@ const VERIFIED_SUCCESS_STATES = new Set<SessionState>(['active', 'paused', 'stop
 
 /**
  * Rollback and reconciliation edges are public contract, not an escape hatch.
- * Each edge requires a provider observation aligned to its stable target. An
- * Operation ID is additionally required when recovering from an in-flight
- * transition; `error` recovery is observation-driven reconciliation.
+ * Each edge requires a provider observation aligned to its stable target and
+ * observed no earlier than the trusted transition start boundary. An Operation
+ * ID is additionally required when recovering from an in-flight transition;
+ * `error` recovery is observation-driven reconciliation.
  */
 export const SESSION_RECOVERY_TRANSITIONS = {
   pausing: ['active'],
@@ -206,6 +235,15 @@ export function assertSessionTransition(
     if (observation === undefined) {
       throw new TypeError(`Session transition to ${to} requires a provider observation`)
     }
+    const transitionStartedAt = verifiedEvidence.transitionStartedAt
+    if (transitionStartedAt === undefined) {
+      throw new TypeError(`Session transition to ${to} requires a trusted transition start`)
+    }
+    if (observation.observedAt < transitionStartedAt) {
+      throw new TypeError(
+        `Session transition to ${to} rejects a provider observation older than the transition start`,
+      )
+    }
 
     const expectedProviderState =
       STABLE_SESSION_PROVIDER_STATE[to as keyof typeof STABLE_SESSION_PROVIDER_STATE]
@@ -213,6 +251,9 @@ export function assertSessionTransition(
       throw new TypeError(
         `Session state ${to} requires provider state ${expectedProviderState}, received ${observation.normalizedState}`,
       )
+    }
+    if (to === 'destroyed' && observation.lifecycleTimestamps.deletedAt === null) {
+      throw new TypeError('Session state destroyed requires verified provider deletion')
     }
   }
 }
