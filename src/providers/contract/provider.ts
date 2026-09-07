@@ -8,6 +8,7 @@ import {
 import type { ExecHandle, ExecRequest } from '../../domain/execution.js'
 import {
   CreateAdoptionPolicySchema,
+  OperationContextSchema,
   OperationSchema,
   type Operation,
   type OperationContext,
@@ -33,6 +34,21 @@ export const CreateSandboxRequestSchema = z
         code: 'custom',
         path: ['adoption', 'metadata', 'sessionId'],
         message: 'Create adoption metadata must identify the requested Session',
+      })
+    }
+  })
+
+export const CreateSandboxInvocationSchema = z
+  .strictObject({
+    context: OperationContextSchema,
+    request: CreateSandboxRequestSchema,
+  })
+  .superRefine((invocation, context) => {
+    if (invocation.request.adoption.metadata.operationId !== invocation.context.operationId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['request', 'adoption', 'metadata', 'operationId'],
+        message: 'Create adoption Operation ID must match the invocation context',
       })
     }
   })
@@ -100,11 +116,71 @@ export const SandboxMutationResultSchema = z
     }
   })
 
+/**
+ * Correlates the complete create boundary so an adapter cannot adopt under one
+ * identity and return an Operation persisted under another.
+ */
+export const CreateSandboxInvocationResultSchema = z
+  .strictObject({
+    context: OperationContextSchema,
+    request: CreateSandboxRequestSchema,
+    result: SandboxMutationResultSchema,
+  })
+  .superRefine((invocation, context) => {
+    const { operation } = invocation.result
+    const expectedSessionId = invocation.request.adoption.metadata.sessionId
+
+    if (invocation.request.adoption.metadata.operationId !== invocation.context.operationId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['request', 'adoption', 'metadata', 'operationId'],
+        message: 'Create adoption Operation ID must match the invocation context',
+      })
+    }
+    if (operation.id !== invocation.context.operationId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['result', 'operation', 'id'],
+        message: 'Returned create Operation ID must match the invocation context',
+      })
+    }
+    if (operation.requestId !== invocation.context.requestId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['result', 'operation', 'requestId'],
+        message: 'Returned create Request ID must match the invocation context',
+      })
+    }
+    if (operation.idempotencyKey !== invocation.context.idempotencyKey) {
+      context.addIssue({
+        code: 'custom',
+        path: ['result', 'operation', 'idempotencyKey'],
+        message: 'Returned create idempotency key must match the invocation context',
+      })
+    }
+    if (operation.sessionId !== expectedSessionId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['result', 'operation', 'sessionId'],
+        message: 'Returned create Session ID must match the adoption metadata',
+      })
+    }
+    if (operation.action !== 'create') {
+      context.addIssue({
+        code: 'custom',
+        path: ['result', 'operation', 'action'],
+        message: 'Create invocation must return a create Operation',
+      })
+    }
+  })
+
 export const CancelExecutionRequestSchema = z.strictObject({
   executionId: ExecutionIdSchema,
 })
 
 export type CreateSandboxRequest = z.infer<typeof CreateSandboxRequestSchema>
+export type CreateSandboxInvocation = z.infer<typeof CreateSandboxInvocationSchema>
+export type CreateSandboxInvocationResult = z.infer<typeof CreateSandboxInvocationResultSchema>
 export type GetSandboxRequest = z.infer<typeof GetSandboxRequestSchema>
 export type ListSandboxesRequest = z.infer<typeof ListSandboxesRequestSchema>
 export type LifecycleMutationRequest = z.infer<typeof LifecycleMutationRequestSchema>

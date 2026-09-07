@@ -1,6 +1,10 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { RequestedEffectiveSpecSchema, SandboxSpecSchema } from '../../src/contracts.js'
+import {
+  RequestedEffectiveSpecSchema,
+  SandboxSpecSchema,
+  SecretReferenceIdSchema,
+} from '../../src/contracts.js'
 import { effectiveSpec, requestedSpec, timestamps } from './test-data.js'
 
 describe('Sandbox specification', () => {
@@ -97,6 +101,25 @@ describe('Sandbox specification', () => {
         },
       }).success,
     ).toBe(false)
+  })
+
+  it('accepts only namespaced opaque secret references and rejects credential canaries', () => {
+    expect(SecretReferenceIdSchema.parse('ocbox:01K4A1REFEXAMPLE0000000000')).toBe(
+      'ocbox:01K4A1REFEXAMPLE0000000000',
+    )
+    expect(SecretReferenceIdSchema.parse('provider:fake:secret-ref-01')).toBe(
+      'provider:fake:secret-ref-01',
+    )
+
+    for (const reference of [
+      'provider-secret-ref-01',
+      'sk-1234567890abcdef',
+      'Bearer abcdefghijklmnopqrstuvwxyz',
+      'provider:fake:sk-1234567890abcdef',
+      'provider:fake:AKIA1234567890ABCDEF',
+    ]) {
+      expect(SecretReferenceIdSchema.safeParse(reference).success, reference).toBe(false)
+    }
   })
 
   it('does not fabricate an effective spec before provider observation', () => {

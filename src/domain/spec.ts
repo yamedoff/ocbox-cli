@@ -6,6 +6,10 @@ const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const REGION_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/
 const HOST_PATTERN =
   /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::\d{1,5})?$/
+const SECRET_REFERENCE_PATTERN =
+  /^(?:ocbox:[A-Za-z0-9][A-Za-z0-9._/@+-]{0,255}|provider:[a-z][a-z0-9-]{0,62}:[A-Za-z0-9][A-Za-z0-9._/@+-]{0,255})$/
+const SECRET_REFERENCE_CANARY =
+  /(?:\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{8,}|\bAKIA[A-Z0-9]{12,}|\bBearer\s+[A-Za-z0-9._~+/-]+=*|(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+)/i
 
 const AllowedHostSchema = z
   .string()
@@ -114,6 +118,22 @@ export const LifecycleSpecSchema = z
   })
 
 /**
+ * A non-secret locator in either the OpenCloudBox opaque namespace or a named
+ * provider namespace. Credential-shaped material is invalid even when it is
+ * prefixed with an otherwise valid namespace.
+ */
+export const SecretReferenceIdSchema = z
+  .string()
+  .min(1)
+  .max(384)
+  .regex(SECRET_REFERENCE_PATTERN)
+  .refine(
+    (reference) => !SECRET_REFERENCE_CANARY.test(reference),
+    'Secret references must be opaque locators, never credential material',
+  )
+  .brand<'SecretReferenceId'>()
+
+/**
  * References environment configuration without carrying a secret value (or a
  * reversible representation of one) through the sandbox specification.
  */
@@ -121,10 +141,7 @@ export const EnvironmentSpecSchema = z
   .strictObject({
     name: z.string().regex(REGION_PATTERN),
     variableNames: z.array(z.string().regex(ENVIRONMENT_NAME_PATTERN)).max(512).readonly(),
-    secretReferenceIds: z
-      .array(z.string().min(1).max(512).regex(SAFE_REFERENCE_PATTERN))
-      .max(512)
-      .readonly(),
+    secretReferenceIds: z.array(SecretReferenceIdSchema).max(512).readonly(),
   })
   .superRefine((environment, context) => {
     if (new Set(environment.variableNames).size !== environment.variableNames.length) {
@@ -221,6 +238,7 @@ export type EgressMode = z.infer<typeof EgressModeSchema>
 export type NetworkSpec = z.infer<typeof NetworkSpecSchema>
 export type LifecycleSpec = z.infer<typeof LifecycleSpecSchema>
 export type EnvironmentSpec = z.infer<typeof EnvironmentSpecSchema>
+export type SecretReferenceId = z.infer<typeof SecretReferenceIdSchema>
 export type SandboxSourceSpec = z.infer<typeof SandboxSourceSpecSchema>
 export type SandboxSpec = z.infer<typeof SandboxSpecSchema>
 export type RequestedEffectiveSpec = z.infer<typeof RequestedEffectiveSpecSchema>

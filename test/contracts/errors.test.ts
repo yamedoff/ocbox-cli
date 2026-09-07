@@ -105,6 +105,11 @@ describe('stable error contract', () => {
 
   it.each([
     { localPath: 'C:\\Users\\example\\project' },
+    { path: '/etc/passwd' },
+    { nested: { location: '/var/log/opencloudbox.log' } },
+    { nested: { location: '/workspace/.env' } },
+    { error: 'raw failure object' },
+    { nested: { providerError: 'raw provider failure' } },
     { rawProviderError: 'provider stack' },
     { commandOutput: 'remote stdout' },
     { secretSuffix: '1234' },
@@ -115,6 +120,22 @@ describe('stable error contract', () => {
     { note: 'Bearer abcdefghijklmnopqrstuvwxyz' },
   ])('rejects redaction canary details: %#', (details) => {
     expect(RedactedDetailsSchema.safeParse(details).success).toBe(false)
+  })
+
+  it('preserves explicitly safe operational metadata', () => {
+    expect(
+      RedactedDetailsSchema.parse({
+        providerCode: 'HTTP_429',
+        retryAfterMilliseconds: 2_000,
+        phase: 'capability_preflight',
+        resourceId: 'sandbox_01',
+      }),
+    ).toEqual({
+      providerCode: 'HTTP_429',
+      retryAfterMilliseconds: 2_000,
+      phase: 'capability_preflight',
+      resourceId: 'sandbox_01',
+    })
   })
 
   it('rejects unsafe message, raw cause and command-output fields', () => {

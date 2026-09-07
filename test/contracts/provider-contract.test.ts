@@ -3,6 +3,8 @@ import {
   ApplySourceResultSchema,
   type ApplySourceResult,
   type CreatePreviewRequest,
+  CreateSandboxInvocationResultSchema,
+  CreateSandboxInvocationSchema,
   type CreateSandboxRequest,
   CreateSandboxRequestSchema,
   type ExecEvent,
@@ -337,6 +339,81 @@ describe('SandboxProvider contract', () => {
       providerSandboxId: ids.providerSandbox,
       originalOperationId: ids.operation,
     })
+  })
+
+  it('binds create metadata and returned Operation identity to its invocation context', async () => {
+    const provider = new FakeProvider()
+    const request: CreateSandboxRequest = {
+      projectId: ids.project,
+      sessionId: ids.session,
+      specification: sandbox.specification.requested,
+      adoption: {
+        strategy: 'metadata_search_then_adopt',
+        metadata: { sessionId: ids.session, operationId: ids.operation },
+      },
+    }
+    const result = await provider.create(operationContext, request)
+    const valid = { context: operationContext, request, result }
+
+    expect(CreateSandboxInvocationSchema.parse({ context: operationContext, request })).toEqual({
+      context: operationContext,
+      request,
+    })
+    expect(CreateSandboxInvocationResultSchema.parse(valid)).toEqual(valid)
+
+    const otherOperationId = '88888888-8888-4888-8888-888888888888'
+    const otherSessionId = '99999999-9999-4999-8999-999999999999'
+    const otherRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const mismatchedOperationRequest = {
+      ...request,
+      adoption: {
+        ...request.adoption,
+        metadata: { ...request.adoption.metadata, operationId: otherOperationId },
+      },
+    }
+    expect(
+      CreateSandboxInvocationSchema.safeParse({
+        context: operationContext,
+        request: mismatchedOperationRequest,
+      }).success,
+    ).toBe(false)
+
+    const mismatches = [
+      {
+        ...valid,
+        request: mismatchedOperationRequest,
+      },
+      {
+        ...valid,
+        request: {
+          ...request,
+          sessionId: otherSessionId,
+          adoption: {
+            ...request.adoption,
+            metadata: { ...request.adoption.metadata, sessionId: otherSessionId },
+          },
+        },
+      },
+      {
+        ...valid,
+        result: { ...result, operation: { ...result.operation, id: otherOperationId } },
+      },
+      {
+        ...valid,
+        result: { ...result, operation: { ...result.operation, requestId: otherRequestId } },
+      },
+      {
+        ...valid,
+        result: {
+          ...result,
+          operation: { ...result.operation, idempotencyKey: 'different-create-key-0001' },
+        },
+      },
+    ]
+
+    for (const mismatch of mismatches) {
+      expect(CreateSandboxInvocationResultSchema.safeParse(mismatch).success).toBe(false)
+    }
   })
 
   it('rejects create adoption metadata for a different Session', () => {

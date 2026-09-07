@@ -9,6 +9,7 @@ import type {
   Sandbox,
   SandboxId,
   SandboxSpec,
+  SecretReferenceId,
   Session,
   SessionId,
   UtcTimestamp,
@@ -55,7 +56,7 @@ export const requestedSpec: SandboxSpec = {
   environment: {
     name: 'development',
     variableNames: ['NODE_ENV'],
-    secretReferenceIds: ['provider-secret-ref-01'],
+    secretReferenceIds: ['provider:fake:secret-ref-01' as SecretReferenceId],
   },
   source: {
     kind: 'git',
