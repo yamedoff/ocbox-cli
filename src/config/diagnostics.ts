@@ -33,7 +33,10 @@ function joinPath(path: readonly PropertyKey[]): string {
     .map((segment, index) =>
       typeof segment === 'number'
         ? `[${segment}]`
-        : `${index > 0 ? '.' : ''}${String(redactForOutput(String(segment))).replaceAll(/[\r\n\u001b]/g, '')}`,
+        : `${index > 0 ? '.' : ''}${String(redactForOutput(String(segment)))
+            .replaceAll('\r', '')
+            .replaceAll('\n', '')
+            .replaceAll('\u001b', '')}`,
     )
     .join('')
 }
