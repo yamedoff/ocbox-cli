@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OutputWriter } from '../../src/output/index.js'
-import { sanitizeTelemetryPayload } from '../../src/security/index.js'
+import { redactForOutput, sanitizeTelemetryPayload } from '../../src/security/index.js'
 
 class MemoryStream {
   readonly isTTY: boolean
@@ -18,6 +18,30 @@ class MemoryStream {
 const FIXED_NOW = () => new Date('2026-09-04T12:00:00.000Z')
 
 describe('OutputWriter', () => {
+  it('preserves public URLs while redacting standalone Windows and Unix paths', () => {
+    expect(redactForOutput('https://preview.example.test/workspace')).toBe(
+      'https://preview.example.test/workspace',
+    )
+    expect(redactForOutput('See https://docs.example.test/a and http://localhost:8080/a')).toBe(
+      'See https://docs.example.test/a and http://localhost:8080/a',
+    )
+    expect(redactForOutput('C:\\Users\\Ada\\file')).toBe('[LOCAL_PATH]')
+    expect(redactForOutput('/home/ada/file')).toBe('[LOCAL_PATH]')
+  })
+
+  it.each([
+    'Authorization: Basic dXNlcjpwYXNz',
+    'Proxy-Authorization: custom private-value',
+    'Cookie: session=private-value',
+    'Set-Cookie: session=private-value; Secure',
+    'https://user:private-value@example.test/',
+  ])('redacts credential-bearing diagnostic strings: %s', (message) => {
+    const stderr = new MemoryStream(false)
+    const writer = new OutputWriter({ mode: 'human', stdout: new MemoryStream(false), stderr })
+    writer.error(new Error(message))
+    expect(stderr.value.trim()).toBe('[REDACTED]')
+  })
+
   it('emits a stable pretty JSON envelope', () => {
     const stdout = new MemoryStream(false)
     const writer = new OutputWriter({
