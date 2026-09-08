@@ -1,3 +1,4 @@
-# Exact historical fingerprint of the synthetic AKIA1234567890ABCDEF rejection fixture.
+# Exact historical fingerprint of the synthetic credential rejection fixture.
 # This is a public test canary, not a credential. All other findings remain blocking.
 28f3fe9f384836c04fa2a870835e6a583f5f49b3:test/contracts/spec.test.ts:aws-access-token:119
+339584cf8a4eb87ba23ef7aabd883bb44e6a25df:.gitleaksignore:aws-access-token:1
