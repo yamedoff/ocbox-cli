@@ -17,11 +17,11 @@ const COMMAND_OUTPUT_KEY =
 const PROVIDER_BYOK_NAME =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|SECRET_KEY|TOKEN|PASSWORD|CREDENTIALS?)(?:$|_)/i
 const SECRET_VALUE =
-  /(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{8,}|\bAKIA[A-Z0-9]{12,}|\bBearer\s+[A-Za-z0-9._~+/-]+=*|(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+)/i
+  /(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{8,}|\bAKIA[A-Z0-9]{12,}|\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*|(?:(?:proxy-)?authorization|(?:set-)?cookie|password|token|secret|api[_-]?key)\s*[:=]\s*\S+|[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@)/i
 const LOCAL_PATH =
-  /(?:[A-Za-z]:[\\/](?:[^\s"']+)|\\\\[^\\\s]+\\[^\s"']+|(?:^|[\s"'(=])\/(?!\/)[^\s"']+)/i
+  /(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s"']+)|\\\\[^\\\s]+\\[^\s"']+|(?:^|[\s"'(=])\/(?!\/)[^\s"']+)/i
 const LOCAL_PATH_GLOBAL =
-  /(?:[A-Za-z]:[\\/](?:[^\s"']+)|\\\\[^\\\s]+\\[^\s"']+|(?:^|[\s"'(=])\/(?!\/)[^\s"']+)/gi
+  /(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s"']+)|\\\\[^\\\s]+\\[^\s"']+|(?:^|[\s"'(=])\/(?!\/)[^\s"']+)/gi
 
 export type SensitiveMaterialKind =
   | 'command-output'
