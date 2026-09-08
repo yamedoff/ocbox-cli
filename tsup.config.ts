@@ -6,6 +6,7 @@ export default defineConfig({
   entry: {
     contracts: 'src/contracts.ts',
     index: 'src/index.ts',
+    infrastructure: 'src/infrastructure.ts',
   },
   format: ['esm'],
   outDir: 'dist',
