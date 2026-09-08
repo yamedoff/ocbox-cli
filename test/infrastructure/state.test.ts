@@ -173,4 +173,17 @@ describe('LocalStateStore', () => {
     expect(await store.load(PROJECT_ID)).toEqual(stateFixture())
     expect((await readdir(directory)).some((name) => name.includes('.stale.'))).toBe(false)
   })
+
+  it('does not let a new owner overtake stale-lock recovery', async () => {
+    const directory = await temporaryDirectory()
+    const recoveryGuardPath = join(directory, `${PROJECT_ID}.lock.recovery`)
+    await writeFile(recoveryGuardPath, '', 'utf8')
+    const store = new LocalStateStore(directory, {
+      lockTimeoutMilliseconds: 15,
+      pollIntervalMilliseconds: 2,
+    })
+
+    await expect(store.save(stateFixture())).rejects.toBeInstanceOf(StateLockTimeoutError)
+    expect(await readdir(directory)).toEqual([`${PROJECT_ID}.lock.recovery`])
+  })
 })

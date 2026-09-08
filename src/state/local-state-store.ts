@@ -2,15 +2,20 @@ import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { ProjectIdSchema, type ProjectId } from '../domain/ids.js'
+import { type ProjectId, ProjectIdSchema } from '../domain/ids.js'
 import { findSensitiveMaterial } from '../security/redaction.js'
-import { ProjectStateSchema, type ProjectState } from './schema.js'
+import { type ProjectState, ProjectStateSchema } from './schema.js'
 
 interface LockMetadata {
   readonly pid: number
   readonly createdAtEpochMilliseconds: number
   readonly nonce: string
 }
+
+type LockAttemptResult =
+  | { readonly kind: 'acquired'; readonly nonce: string }
+  | { readonly kind: 'contended' }
+  | { readonly kind: 'retry' }
 
 export interface LocalStateStoreOptions {
   readonly lockTimeoutMilliseconds?: number
@@ -171,47 +176,28 @@ export class LocalStateStore {
 
     while (true) {
       if (signal?.aborted === true) throw new StateLockCancelledError()
-      const nonce = this.#createNonce()
-      const metadata: LockMetadata = {
-        pid: this.#processId,
-        createdAtEpochMilliseconds: this.#now(),
-        nonce,
+      const attempt = await this.#attemptAcquireUnderRecoveryGuard(path)
+      if (attempt.kind === 'acquired') return { path, nonce: attempt.nonce }
+      if (attempt.kind === 'retry') continue
+      if (this.#now() - startedAt >= this.#lockTimeoutMilliseconds) {
+        throw new StateLockTimeoutError()
       }
-      let handle: Awaited<ReturnType<typeof open>> | undefined
       try {
-        handle = await open(path, 'wx', 0o600)
-        await handle.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8')
-        await handle.sync()
-        await handle.close()
-        handle = undefined
-        return { path, nonce }
-      } catch (error) {
-        await handle?.close()
-        if (
-          errorCode(error) !== 'EEXIST' &&
-          !(process.platform === 'win32' && errorCode(error) === 'EPERM')
-        )
-          throw error
-        if (await this.#recoverStaleLock(path)) continue
-        if (this.#now() - startedAt >= this.#lockTimeoutMilliseconds) {
-          throw new StateLockTimeoutError()
-        }
-        try {
-          await delay(this.#pollIntervalMilliseconds, undefined, { signal })
-        } catch {
-          throw new StateLockCancelledError()
-        }
+        await delay(this.#pollIntervalMilliseconds, undefined, { signal })
+      } catch {
+        throw new StateLockCancelledError()
       }
     }
   }
 
-  async #recoverStaleLock(path: string): Promise<boolean> {
-    // Serialize inspection and removal, not just the rename. Otherwise a
-    // second reaper can remove a new owner's lock using its stale inspection.
+  async #attemptAcquireUnderRecoveryGuard(path: string): Promise<LockAttemptResult> {
+    // Serialize every acquisition with stale inspection/removal. Otherwise a
+    // new owner can create a lock after a reaper's inspection but before its
+    // rename, causing the reaper to remove the new owner's lock.
     // If a reaper itself crashes, leave its guard in place and fail closed;
     // an operator can remove that guard once all CLI processes are stopped.
     const guardPath = `${path}.recovery`
-    let guard: Awaited<ReturnType<typeof open>>
+    let guard: Awaited<ReturnType<typeof open>> | undefined
     try {
       guard = await open(guardPath, 'wx', 0o600)
     } catch (error) {
@@ -219,13 +205,39 @@ export class LocalStateStore {
         errorCode(error) === 'EEXIST' ||
         (process.platform === 'win32' && errorCode(error) === 'EPERM')
       )
-        return false
+        return { kind: 'contended' }
       throw error
     }
+
     try {
-      return await this.#recoverStaleLockExclusively(path)
+      const nonce = this.#createNonce()
+      const metadata: LockMetadata = {
+        pid: this.#processId,
+        createdAtEpochMilliseconds: this.#now(),
+        nonce,
+      }
+      let lock: Awaited<ReturnType<typeof open>> | undefined
+      try {
+        lock = await open(path, 'wx', 0o600)
+        await lock.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8')
+        await lock.sync()
+        await lock.close()
+        lock = undefined
+        return { kind: 'acquired', nonce }
+      } catch (error) {
+        await lock?.close()
+        if (
+          errorCode(error) !== 'EEXIST' &&
+          !(process.platform === 'win32' && errorCode(error) === 'EPERM')
+        ) {
+          throw error
+        }
+        return (await this.#recoverStaleLockExclusively(path))
+          ? { kind: 'retry' }
+          : { kind: 'contended' }
+      }
     } finally {
-      await guard.close()
+      await guard?.close()
       await unlink(guardPath)
     }
   }
