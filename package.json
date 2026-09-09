@@ -50,6 +50,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "bench:sync": "vitest bench bench/sync-manifest.bench.ts",
     "cli:smoke": "node dist/index.js --version && node dist/index.js --help",
     "dependencies:check": "pnpm audit --audit-level=high",
     "format": "biome format . --write",
