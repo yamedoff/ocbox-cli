@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 interface PackageMetadata {
   bin: {
     ocbox: string
+    'ocbox-execution-helper': string
     opencloudbox: string
   }
   name: string
@@ -30,5 +31,6 @@ describe('package identity', () => {
 
     expect(metadata.bin.ocbox).toBe('./dist/index.js')
     expect(metadata.bin.opencloudbox).toBe(metadata.bin.ocbox)
+    expect(metadata.bin['ocbox-execution-helper']).toBe('./dist/execution-helper.js')
   })
 })
