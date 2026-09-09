@@ -1,0 +1,5 @@
+# Exact historical fingerprints of the synthetic credential rejection fixture.
+# These are public test canaries, not credentials. All other findings remain blocking.
+54cba33d9e1cac2e2d503be265636f038c68211d:test/contracts/spec.test.ts:aws-access-token:119
+28f3fe9f384836c04fa2a870835e6a583f5f49b3:test/contracts/spec.test.ts:aws-access-token:119
+251fb1ecfbb7656dd4b9ee4d4b7f16901ce667c4:.gitleaksignore:aws-access-token:1

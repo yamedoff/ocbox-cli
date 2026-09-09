@@ -1,0 +1,59 @@
+name: Supply chain
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-review:
+    name: Dependency and license review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: true
+      COREPACK_ENABLE_STRICT: 1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          check-latest: false
+      - name: Install exact Corepack
+        run: npm install --global corepack@0.36.0
+      - name: Activate exact pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.24.0 --activate
+      - name: Verify toolchain
+        run: node scripts/verify-toolchain.mjs
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Audit dependencies
+        run: pnpm run dependencies:check
+      - name: Review dependency license metadata
+        run: pnpm run licenses:check
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan commits with Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
