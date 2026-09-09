@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencloudbox.dev/schemas/base-image-manifest-v1.json",
+  "title": "OpenCloudBox base image manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "image",
+    "base",
+    "runtime",
+    "toolchain",
+    "guaranteedTools",
+    "capabilities",
+    "release"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "platform"],
+      "properties": {
+        "name": { "const": "ghcr.io/yamedoff/ocbox-base" },
+        "digest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "platform": { "const": "linux/amd64" }
+      }
+    },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "indexDigest", "platformDigest", "sourceCommit", "debianSnapshot"],
+      "properties": {
+        "name": { "const": "docker.io/library/node:24-bookworm-slim" },
+        "indexDigest": { "pattern": "^sha256:[0-9a-f]{64}$" },
+        "platformDigest": { "pattern": "^sha256:[0-9a-f]{64}$" },
+        "sourceCommit": { "pattern": "^[0-9a-f]{40}$" },
+        "debianSnapshot": { "pattern": "^[0-9]{8}T[0-9]{6}Z$" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "uid", "gid", "home", "workspace", "shell", "init", "umask"],
+      "properties": {
+        "user": { "const": "ocbox" },
+        "uid": { "const": 10001 },
+        "gid": { "const": 10001 },
+        "home": { "const": "/home/ocbox" },
+        "workspace": { "const": "/workspace" },
+        "shell": { "const": "/bin/bash" },
+        "init": { "const": "/usr/bin/tini" },
+        "umask": { "const": "027" }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "corepack", "pnpm", "corepackIntegrity", "pnpmIntegrity"],
+      "properties": {
+        "node": { "const": "24.20.0" },
+        "corepack": { "const": "0.36.0" },
+        "pnpm": { "const": "11.24.0" },
+        "corepackIntegrity": { "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "pnpmIntegrity": { "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" }
+      }
+    },
+    "guaranteedTools": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "capabilities": { "type": "object" },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateDate",
+        "stable",
+        "providerPublicationVerified",
+        "fiveRunBenchmarksVerified",
+        "benchmarkRuns",
+        "gateReason"
+      ],
+      "properties": {
+        "candidateDate": { "format": "date" },
+        "stable": { "const": false },
+        "providerPublicationVerified": { "const": false },
+        "fiveRunBenchmarksVerified": { "const": false },
+        "benchmarkRuns": { "const": 0 },
+        "gateReason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "$schema": "./manifest.schema.json",
+  "schemaVersion": 1,
+  "image": {
+    "name": "ghcr.io/yamedoff/ocbox-base",
+    "digest": null,
+    "platform": "linux/amd64"
+  },
+  "base": {
+    "name": "docker.io/library/node:24-bookworm-slim",
+    "indexDigest": "sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e",
+    "platformDigest": "sha256:6642ef280aebc09c4541bee0b15c9f89f0f3f3c247ddee79ae1d37eddfdcbbaa",
+    "sourceCommit": "c4eb0858f5c522521768d5b6dc1d9f1631d4854d",
+    "debianSnapshot": "20260908T000000Z"
+  },
+  "runtime": {
+    "user": "ocbox",
+    "uid": 10001,
+    "gid": 10001,
+    "home": "/home/ocbox",
+    "workspace": "/workspace",
+    "shell": "/bin/bash",
+    "init": "/usr/bin/tini",
+    "umask": "027"
+  },
+  "toolchain": {
+    "node": "24.20.0",
+    "corepack": "0.36.0",
+    "pnpm": "11.24.0",
+    "corepackIntegrity": "sha512-SiiJsBhZqdBiPHTEl6OT3sASrRrKIcYTQMsVGXx6EE/gM8WFMwYjeIX8Tt8RiU4Iv2J6LbT8KpGfCOsBpRWB/w==",
+    "pnpmIntegrity": "sha512-vSfjRel23LC+C3oSKCF7BJqBfiGx81XJDb59xGZxiVqLwebQbCRVRQXqk+oLRfSJon7Bv7yN5qlln8oPFvoAAA=="
+  },
+  "guaranteedTools": [
+    "bash",
+    "build-essential",
+    "ca-certificates",
+    "curl",
+    "git",
+    "gzip",
+    "jq",
+    "openssh-client",
+    "patch",
+    "python3",
+    "ripgrep",
+    "tar",
+    "tini",
+    "xz-utils"
+  ],
+  "capabilities": {
+    "structuredArgv": true,
+    "bashShell": true,
+    "tty": false,
+    "preview": false,
+    "database": false,
+    "dockerSocket": false,
+    "sudo": false
+  },
+  "release": {
+    "candidateDate": "2026-09-09",
+    "stable": false,
+    "providerPublicationVerified": false,
+    "fiveRunBenchmarksVerified": false,
+    "benchmarkRuns": 0,
+    "gateReason": "T8 and T9 provider publication, performance and cost evidence is pending"
+  }
+}
