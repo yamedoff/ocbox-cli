@@ -19,6 +19,7 @@
   "EgressModeSchema",
   "EnvironmentSpecSchema",
   "ExecCommandSchema",
+  "ExecEnvironmentSchema",
   "ExecEventSchema",
   "ExecRequestSchema",
   "ExecResultSchema",

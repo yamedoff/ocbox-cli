@@ -15,6 +15,7 @@
   "homepage": "https://github.com/yamedoff/ocbox-cli#readme",
   "bin": {
     "ocbox": "./dist/index.js",
+    "ocbox-execution-helper": "./dist/execution-helper.js",
     "opencloudbox": "./dist/index.js"
   },
   "files": [
@@ -54,10 +55,11 @@
   },
   "scripts": {
     "build": "tsup",
-    "cli:smoke": "node dist/index.js --version && node dist/index.js --help",
+    "cli:smoke": "node dist/index.js --version && node dist/index.js --help && pnpm run helper:smoke",
     "dependencies:check": "pnpm audit --audit-level=high",
     "format": "biome format . --write",
     "format:check": "biome format .",
+    "helper:smoke": "node scripts/verify-execution-helper.mjs",
     "licenses:check": "node scripts/check-licenses.mjs",
     "lint": "biome lint .",
     "test": "vitest run",

@@ -5,6 +5,7 @@ export default defineConfig({
   dts: true,
   entry: {
     contracts: 'src/contracts.ts',
+    'execution-helper': 'src/execution/helper-main.ts',
     index: 'src/index.ts',
     infrastructure: 'src/infrastructure.ts',
   },

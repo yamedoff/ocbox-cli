@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   decodeHelperRequest,
+  decodeHelperEventFrames,
+  encodeHelperEventFrame,
   encodeHelperRequest,
   HelperProtocolError,
   HelperRequestSchema,
@@ -87,5 +89,57 @@ describe('execution helper protocol', () => {
       executable: '/bin/bash',
       args: ['-lc', 'echo "$HOME"'],
     })
+  })
+
+  it('round-trips binary event frames across arbitrary transport chunks', async () => {
+    const values = [
+      {
+        version: 1 as const,
+        type: 'stdout' as const,
+        executionId: request.executionId,
+        sequence: 1,
+        timestamp: '2026-09-08T12:00:00.000Z',
+        data: Buffer.from(Uint8Array.of(0, 255, 1, 2, 3)).toString('base64'),
+      },
+      {
+        version: 1 as const,
+        type: 'stderr' as const,
+        executionId: request.executionId,
+        sequence: 2,
+        timestamp: '2026-09-08T12:00:00.001Z',
+        data: Buffer.from('🙂').toString('base64'),
+      },
+    ]
+    const encoded = Buffer.concat(values.map((value) => encodeHelperEventFrame(value)))
+    for (let split = 0; split <= encoded.byteLength; split++) {
+      const decoded = []
+      for await (const value of decodeHelperEventFrames(
+        chunks(encoded.subarray(0, split), encoded.subarray(split)),
+      )) {
+        decoded.push(value)
+      }
+      expect(decoded).toEqual(values)
+    }
+  })
+
+  it('rejects truncated and oversized event frames', async () => {
+    const encoded = encodeHelperEventFrame({
+      version: 1,
+      type: 'started',
+      executionId: request.executionId,
+      sequence: 0,
+      timestamp: '2026-09-08T12:00:00.000Z',
+    })
+    async function collect(input: AsyncIterable<Uint8Array>) {
+      for await (const _value of decodeHelperEventFrames(input)) {
+        // Drain the decoder to surface terminal framing errors.
+      }
+    }
+    await expect(collect(chunks(encoded.subarray(0, -1)))).rejects.toBeInstanceOf(
+      HelperProtocolError,
+    )
+    const header = Buffer.alloc(4)
+    header.writeUInt32BE(MAX_HELPER_REQUEST_BYTES + 1)
+    await expect(collect(chunks(header))).rejects.toBeInstanceOf(HelperProtocolError)
   })
 })
