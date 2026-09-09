@@ -60,7 +60,9 @@
     "format:check": "biome format .",
     "licenses:check": "node scripts/check-licenses.mjs",
     "lint": "biome lint .",
-    "test": "vitest run",
+    "test": "pnpm run test:unit && pnpm run build && pnpm run test:cli",
+    "test:cli": "node scripts/test-cli-lifecycle.mjs",
+    "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
