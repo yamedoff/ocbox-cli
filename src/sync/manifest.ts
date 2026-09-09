@@ -173,8 +173,12 @@ export async function scanSourceManifest(
   const maxBytes = options.maxBytes ?? MAX_SYNC_BYTES
   const maxFileBytes = options.maxFileBytes ?? MAX_SYNC_FILE_BYTES
   const maxFiles = options.maxFiles ?? MAX_SYNC_FILES
-  for (const limit of [maxBytes, maxFileBytes, maxFiles]) {
-    if (!Number.isSafeInteger(limit) || limit < 0)
+  for (const [limit, ceiling] of [
+    [maxBytes, MAX_SYNC_BYTES],
+    [maxFileBytes, MAX_SYNC_FILE_BYTES],
+    [maxFiles, MAX_SYNC_FILES],
+  ] as const) {
+    if (!Number.isSafeInteger(limit) || limit < 0 || limit > ceiling)
       throw new RangeError('Manifest limits must be safe non-negative integers')
   }
 
