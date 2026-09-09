@@ -7,6 +7,7 @@ import {
   findPathCollisions,
   hasControlCharacter,
   type ManifestPath,
+  ManifestPathSchema,
   normalizeManifestPath,
   type PathCollision,
 } from './path-policy.js'
@@ -15,29 +16,53 @@ export const MAX_SYNC_BYTES = 1_073_741_824
 export const MAX_SYNC_FILES = 100_000
 export const MAX_SYNC_FILE_BYTES = 268_435_456
 
-export const ManifestEntrySchema = z.strictObject({
-  path: z.string().min(1).brand<'ManifestPath'>(),
-  type: z.enum(['directory', 'file']),
-  size: z.number().int().nonnegative().safe(),
-  sha256: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/)
-    .nullable(),
-  mtimeHintNanoseconds: z.string().regex(/^\d+$/),
-  mode: z.number().int().min(0).max(0o7777),
-  exclusionReason: z
-    .enum([
-      'build-cache',
-      'dependency-cache',
-      'git-metadata',
-      'key-material',
-      'os-or-browser-store',
-      'provider-credential-store',
-      'secret-environment',
-      'user-rule',
-    ])
-    .nullable(),
-})
+export const ManifestEntrySchema = z
+  .strictObject({
+    path: ManifestPathSchema,
+    type: z.enum(['directory', 'file']),
+    size: z.number().int().nonnegative().safe(),
+    sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    mtimeHintNanoseconds: z.string().regex(/^\d+$/),
+    mode: z.number().int().min(0).max(0o7777),
+    linkTarget: ManifestPathSchema.nullable(),
+    exclusionReason: z
+      .enum([
+        'build-cache',
+        'dependency-cache',
+        'git-metadata',
+        'key-material',
+        'os-or-browser-store',
+        'provider-credential-store',
+        'secret-environment',
+        'user-rule',
+      ])
+      .nullable(),
+  })
+  .superRefine((entry, context) => {
+    if (entry.linkTarget !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['linkTarget'],
+        message: 'Symlinks are unsupported',
+      })
+    }
+    if (entry.type === 'directory' && (entry.size !== 0 || entry.sha256 !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Directory entries require zero size and no checksum',
+      })
+    }
+    if (entry.type === 'file' && entry.exclusionReason === null && entry.sha256 === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sha256'],
+        message: 'Transferable files require a checksum',
+      })
+    }
+  })
 
 export type ManifestEntry = z.infer<typeof ManifestEntrySchema>
 
@@ -195,6 +220,7 @@ export async function scanSourceManifest(
         path,
         mtimeHintNanoseconds: BigInt(Math.trunc(metadata.mtimeMs * 1_000_000)).toString(),
         mode: metadata.mode & 0o7777,
+        linkTarget: null,
         exclusionReason,
       }
       if (metadata.isDirectory()) {
