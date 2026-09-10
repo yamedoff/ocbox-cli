@@ -139,6 +139,45 @@ describe('execution command runner', () => {
     })
   })
 
+  it('surfaces an actionable detail for an invalid exec argument', async () => {
+    const jsonOutput = io()
+    const jsonExit = await runExecutionCommand(
+      ['--json', '--frobnicate', '--', 'tool'],
+      () => target(),
+      jsonOutput,
+    )
+    expect(jsonExit).toBe(125)
+    expect(JSON.parse(jsonOutput.stdout.text())).toMatchObject({
+      outcome: 'infrastructure_error',
+      error: { code: 'EXECUTION_ARGUMENT_INVALID', message: expect.any(String) },
+    })
+
+    const humanOutput = io()
+    const humanExit = await runExecutionCommand(
+      ['--bogus', '--', 'tool'],
+      () => target(),
+      humanOutput,
+    )
+    expect(humanExit).toBe(125)
+    expect(humanOutput.stderr.text()).toContain('Unknown exec option')
+  })
+
+  it('keeps the generic unexplained envelope for an untyped resolution failure', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', 'tool'],
+      () => Promise.reject(new Error('raw provider failure with sensitive details')),
+      output,
+    )
+    expect(exitCode).toBe(125)
+    expect(JSON.parse(output.stdout.text())).toEqual({
+      schemaVersion: 1,
+      kind: 'result',
+      outcome: 'infrastructure_error',
+    })
+    expect(output.stderr.text()).toBe('')
+  })
+
   it('first interrupt requests cancellation and returns the typed cancelled outcome', async () => {
     const output = io()
     const interrupts = new TestInterrupts()
@@ -201,16 +240,17 @@ describe('execution command runner', () => {
     interrupts.fire()
     interrupts.fire()
     expect(await running).toBe(130)
-    expect(
-      output.stdout
-        .text()
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line)),
-    ).toContainEqual({
+    const lines = output.stdout
+      .text()
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    // The final result envelope terminates the stream; no event may follow it.
+    expect(lines.at(-1)).toEqual({
       schemaVersion: 1,
       kind: 'result',
       outcome: 'cancelled',
     })
+    expect(lines.filter((line) => line['kind'] === 'event')).toHaveLength(1)
   })
 })

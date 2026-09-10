@@ -44,7 +44,8 @@ export function executionTokens(argv: readonly string[]): string[] {
  * contract. Host flags are parsed only for config/state discovery.
  */
 export default class Exec extends OcboxCommand {
-  static override description = 'Execute a program in the selected Session Sandbox'
+  static override description =
+    'Execute a program in the selected Session Sandbox\n\nTokens after `--` are passed to the remote program verbatim as a structured argv array; they are never evaluated by any shell. Use `--shell COMMAND` for an explicit Bash command string.'
   static override strict = false
   static override flags = {
     ...runtimeFlags,

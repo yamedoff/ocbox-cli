@@ -33,6 +33,32 @@ describe('exec CLI grammar', () => {
     })
   })
 
+  it('accepts the oclif-compatible --flag=VALUE forms', () => {
+    const parsed = parseExecArguments([
+      '--session=22222222-2222-4222-8222-222222222222',
+      '--cwd=/workspace/app',
+      '--timeout=1500',
+      '--env=NODE_ENV=test',
+      '--jsonl=true',
+      '--',
+      'node',
+    ])
+    expect(parsed).toMatchObject({
+      sessionId: '22222222-2222-4222-8222-222222222222',
+      workingDirectory: '/workspace/app',
+      timeoutMilliseconds: 1500,
+      environment: { NODE_ENV: 'test' },
+      outputMode: 'jsonl',
+      command: { mode: 'argv', argv: ['node'] },
+    })
+  })
+
+  it('keeps a value-bearing token after -- out of the option grammar', () => {
+    const parsed = parseExecArguments(['--env=NODE_ENV=test', '--', '--env=MALICIOUS=1'])
+    expect(parsed.environment).toEqual({ NODE_ENV: 'test' })
+    expect(parsed.command).toEqual({ mode: 'argv', argv: ['--env=MALICIOUS=1'] })
+  })
+
   const invalidInputs: readonly (readonly string[])[] = [
     [],
     ['node', '-v'],

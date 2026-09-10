@@ -1,5 +1,7 @@
 import { OcboxError } from '../errors/index.js'
+import type { ExecEvent } from '../contracts.js'
 import {
+  ExecArgumentError,
   parseExecArguments,
   type ExecutionOutputMode,
   type ParsedExecArguments,
@@ -19,6 +21,7 @@ import {
   ExecutionService,
   type ExecutionCompletion,
   type ExecutionRun,
+  ExecutionContextError,
   type ExecutionServiceOptions,
   type ExecutionTarget,
 } from './service.js'
@@ -26,6 +29,29 @@ import {
 export interface ExecutionCommandIo {
   readonly stdout: ExecutionWritable
   readonly stderr: ExecutionWritable
+}
+
+/** Thrown when a closed execution stream still tries to emit an event. */
+export class ExecutionStreamEndedError extends Error {
+  constructor() {
+    super('Execution event stream was closed before a terminal result')
+    this.name = 'ExecutionStreamEndedError'
+  }
+}
+
+/**
+ * Wraps a terminal outcome sink so event emission stops deterministically once
+ * the streaming boundary is closed by the caller (for example, right after a
+ * repeated Ctrl-C has already produced the final envelope).
+ */
+function gatedSink(
+  sink: (event: ExecEvent) => Promise<void>,
+  acceptExtraEvent: () => boolean,
+): (event: ExecEvent) => Promise<void> {
+  return async (event) => {
+    acceptExtraEvent()
+    await sink(event)
+  }
 }
 
 export interface ExecutionInterruptSource {
@@ -76,9 +102,19 @@ function beforeStartFailure(error: unknown): ExecutionCompletion {
 /**
  * Extracts an actionable, already-redacted classification from a typed
  * `OcboxError` (or an ExecutionInfrastructureError wrapping one) without
- * exposing raw causes, provider text, local paths, or command output.
+ * exposing raw causes, provider text, local paths, or command output. The
+ * execution-owned typed argument/context errors are user-caused validation
+ * failures whose static messages are safe to surface verbatim; everything else
+ * keeps the generic unexplained envelope.
  */
 function safeOutcomeDetail(error: unknown): ExecutionOutcomeDetail | undefined {
+  const safe =
+    error instanceof ExecArgumentError
+      ? { code: 'EXECUTION_ARGUMENT_INVALID', message: error.message }
+      : error instanceof ExecutionContextError
+        ? { code: 'EXECUTION_CONTEXT_INVALID', message: error.message }
+        : undefined
+  if (safe !== undefined) return safe
   const candidate =
     error instanceof OcboxError
       ? error
@@ -101,6 +137,13 @@ export async function runExecutionCommand(
   let mode = requestedOutputMode(input)
   let arguments_: ParsedExecArguments
   let run: ExecutionRun
+  /**
+   * Once a terminal envelope has been handed to the caller, streaming is closed:
+   * later event emissions must stop. The gate is what keeps a stuck or
+   * unobservable run after a repeated interrupt from appending events after the
+   * final JSONL/JSON envelope and from keeping the underlying pump alive.
+   */
+  let terminalStreamAccepted = false
   try {
     arguments_ = parseExecArguments(input)
     mode = arguments_.outputMode
@@ -109,7 +152,12 @@ export async function runExecutionCommand(
     run = await service.start(
       target,
       arguments_,
-      createExecutionEventSink(mode, io.stdout, io.stderr),
+      gatedSink(createExecutionEventSink(mode, io.stdout, io.stderr), () => {
+        if (terminalStreamAccepted) {
+          throw new ExecutionInfrastructureError('event_stream', new ExecutionStreamEndedError())
+        }
+        return true
+      }),
     )
   } catch (error) {
     const completion = beforeStartFailure(error)
@@ -134,6 +182,7 @@ export async function runExecutionCommand(
   try {
     const completion = await Promise.race([run.completion, repeatedInterrupt])
     terminal = true
+    terminalStreamAccepted = true
     await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
     return exitCodeForExecution(completion.outcome)
   } finally {
