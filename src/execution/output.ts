@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import type { ExecEvent } from '../contracts.js'
 import type { ExecutionOutputMode } from './cli-arguments.js'
+import type { ExecutionOutcome } from './exit-policy.js'
 import type { ExecutionCompletion } from './service.js'
 
 export interface ExecutionWritable {
@@ -71,6 +72,18 @@ export function createExecutionEventSink(
   return (event) => write(stdout, `${JSON.stringify(eventEnvelope(event))}\n`)
 }
 
+/** Shared result envelope; typed pre-start detail keeps structured output actionable. */
+function resultEnvelope(outcome: ExecutionOutcome): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    kind: 'result',
+    outcome: outcome.kind,
+    ...(outcome.kind === 'infrastructure_error' && outcome.detail !== undefined
+      ? { error: outcome.detail }
+      : {}),
+  }
+}
+
 /** Emits the bounded final envelope for JSON, or a safe terminal diagnostic for human mode. */
 export async function writeExecutionCompletion(
   mode: ExecutionOutputMode,
@@ -80,14 +93,7 @@ export async function writeExecutionCompletion(
 ): Promise<void> {
   if (mode === 'jsonl') {
     if (completion.outcome.kind === 'infrastructure_error' || completion.output === null) {
-      await write(
-        stdout,
-        `${JSON.stringify({
-          schemaVersion: 1,
-          kind: 'result',
-          outcome: completion.outcome.kind,
-        })}\n`,
-      )
+      await write(stdout, `${JSON.stringify(resultEnvelope(completion.outcome))}\n`)
     }
     return
   }
@@ -95,13 +101,16 @@ export async function writeExecutionCompletion(
     if (completion.outcome.kind === 'timeout') await write(stderr, 'Execution timed out\n')
     if (completion.outcome.kind === 'cancelled') await write(stderr, 'Execution cancelled\n')
     if (completion.outcome.kind === 'infrastructure_error') {
-      await write(stderr, 'Execution infrastructure failed\n')
+      await write(
+        stderr,
+        `${completion.outcome.detail?.message ?? 'Execution infrastructure failed'}\n`,
+      )
     }
     return
   }
   const envelope =
     completion.output === null
-      ? { schemaVersion: 1, kind: 'result', outcome: completion.outcome.kind }
+      ? resultEnvelope(completion.outcome)
       : {
           schemaVersion: 1,
           kind: 'result',

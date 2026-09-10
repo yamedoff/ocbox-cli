@@ -42,12 +42,14 @@ import type {
 import {
   OperationSchema,
   ProviderSandboxIdSchema,
+  RequestIdSchema,
   SandboxIdSchema,
   SandboxMutationResultSchema,
   SandboxSchema,
 } from '../../contracts.js'
 import type { OcboxErrorCode } from '../../errors/index.js'
 import { OcboxError } from '../../errors/index.js'
+import { FakeProviderExecution } from '../../execution/fake-provider-execution.js'
 import { AtomicJsonStore } from '../../lifecycle/atomic-json-store.js'
 import {
   EMPTY_FAKE_PROVIDER_STATE,
@@ -63,7 +65,7 @@ const FAKE_CAPABILITIES: ProviderCapabilities = {
     supportsMemoryPause: true,
     supportsArchive: false,
   },
-  execution: { streaming: false, cancellation: false },
+  execution: { streaming: true, cancellation: true },
   files: {
     read: false,
     write: false,
@@ -133,6 +135,7 @@ export class FakeSandboxProvider implements SandboxProvider {
   readonly #faults: FakeProviderFaults
   readonly #signal: AbortSignal | undefined
   readonly #capabilities: ProviderCapabilities
+  readonly #execution: FakeProviderExecution
 
   constructor(stateDirectory: string, options: FakeProviderOptions = {}) {
     this.#store = new AtomicJsonStore(
@@ -144,13 +147,36 @@ export class FakeSandboxProvider implements SandboxProvider {
     this.#faults = options.faults ?? {}
     this.#signal = options.signal
     this.#capabilities = options.capabilities ?? FAKE_CAPABILITIES
+    // The execution port is backed by the host-local contract harness. It models
+    // process semantics only; it is not sandbox isolation and is never presented
+    // to users as a real provider.
+    this.#execution = new FakeProviderExecution({
+      now: this.#now,
+      createId: this.#createId,
+      sessionIdForSandbox: (sandboxId) => this.#sessionIdForSandbox(sandboxId),
+    })
   }
 
   readonly exec = {
-    execute: (context: OperationContext, _request: ExecRequest): Promise<ExecHandle> =>
-      this.#unsupported(context.requestId, 'exec'),
-    cancel: (context: OperationContext, _request: CancelExecutionRequest): Promise<Operation> =>
-      this.#unsupported(context.requestId, 'exec_cancel'),
+    execute: (context: OperationContext, request: ExecRequest): Promise<ExecHandle> =>
+      this.#execution.execute(context, request),
+    cancel: (context: OperationContext, request: CancelExecutionRequest): Promise<Operation> =>
+      this.#execution.cancel(context, request),
+  }
+
+  async #sessionIdForSandbox(sandboxId: Sandbox['id']) {
+    const state = (await this.#store.load()) ?? EMPTY_FAKE_PROVIDER_STATE
+    const entry = Object.values(state.resources).find(
+      (candidate) => candidate.sandbox.id === sandboxId,
+    )
+    if (entry === undefined) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'Fake provider sandbox was not found',
+        requestId: RequestIdSchema.parse(this.#createId()),
+      })
+    }
+    return entry.sessionId
   }
 
   readonly files: ProviderFiles = {

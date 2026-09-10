@@ -1,3 +1,4 @@
+import { OcboxError } from '../errors/index.js'
 import {
   parseExecArguments,
   type ExecutionOutputMode,
@@ -7,6 +8,7 @@ import {
   ExecutionInfrastructureError,
   exitCodeForExecution,
   type ExecutionOutcome,
+  type ExecutionOutcomeDetail,
 } from './exit-policy.js'
 import {
   createExecutionEventSink,
@@ -57,6 +59,7 @@ function requestedOutputMode(input: readonly string[]): ExecutionOutputMode {
 }
 
 function beforeStartFailure(error: unknown): ExecutionCompletion {
+  const detail = safeOutcomeDetail(error)
   return {
     outcome: {
       kind: 'infrastructure_error',
@@ -64,9 +67,25 @@ function beforeStartFailure(error: unknown): ExecutionCompletion {
         error instanceof ExecutionInfrastructureError
           ? error
           : new ExecutionInfrastructureError('before_start', error),
+      ...(detail === undefined ? {} : { detail }),
     },
     output: null,
   }
+}
+
+/**
+ * Extracts an actionable, already-redacted classification from a typed
+ * `OcboxError` (or an ExecutionInfrastructureError wrapping one) without
+ * exposing raw causes, provider text, local paths, or command output.
+ */
+function safeOutcomeDetail(error: unknown): ExecutionOutcomeDetail | undefined {
+  const candidate =
+    error instanceof OcboxError
+      ? error
+      : error instanceof Error && error.cause instanceof OcboxError
+        ? error.cause
+        : undefined
+  return candidate === undefined ? undefined : { code: candidate.code, message: candidate.message }
 }
 
 /**

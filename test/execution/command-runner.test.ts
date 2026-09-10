@@ -6,6 +6,7 @@ import type {
   ProviderCapabilities,
   SandboxProvider,
 } from '../../src/contracts.js'
+import { OcboxError } from '../../src/errors/index.js'
 import {
   runExecutionCommand,
   type ExecutionInterruptSource,
@@ -116,6 +117,26 @@ describe('execution command runner', () => {
     expect(output.stdout.text()).toBe(
       '{"schemaVersion":1,"kind":"result","outcome":"infrastructure_error"}\n',
     )
+  })
+
+  it('surfaces a typed, actionable error when target resolution fails before start', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', 'tool'],
+      () => {
+        throw new OcboxError({
+          code: 'INVALID_STATE',
+          message: 'Session is paused; run ocbox start',
+          requestId: ids.request,
+        })
+      },
+      output,
+    )
+    expect(exitCode).toBe(125)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'infrastructure_error',
+      error: { code: 'INVALID_STATE', message: 'Session is paused; run ocbox start' },
+    })
   })
 
   it('first interrupt requests cancellation and returns the typed cancelled outcome', async () => {
