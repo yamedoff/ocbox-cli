@@ -96,6 +96,15 @@ export async function verifyStaticCandidate() {
     readiness.includes('--protocol-version') && readiness.includes('registry.npmjs.org'),
     'readiness coverage',
   )
+  assert(
+    workflow.includes('docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5'),
+    'isolated Buildx builder pin',
+  )
+  assert(
+    workflow.includes('--provenance=false') &&
+      workflow.includes('--output type=oci,dest=artifacts/ocbox-base.oci.tar'),
+    'loadable runtime and attested OCI outputs are separated',
+  )
   const actionReferences = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s]+)/g)]
   assert(actionReferences.length >= 7, 'supply-chain action coverage')
   for (const match of actionReferences) {
