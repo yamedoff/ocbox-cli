@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { type UtcTimestamp, UtcTimestampSchema } from '../domain/timestamps.js'
-import { ManifestEntrySchema, type SourceManifest } from './manifest.js'
+import { MAX_SYNC_ENTRIES, ManifestEntrySchema, type SourceManifest } from './manifest.js'
 import { ManifestPathSchema } from './path-policy.js'
 
 const SHA256 = /^[0-9a-f]{64}$/
@@ -81,7 +81,7 @@ const VerifiedSyncBaselineCoreSchema = z.strictObject({
   verified: z.literal(true),
   verifiedAt: UtcTimestampSchema,
   snapshotSha256: z.string().regex(SHA256),
-  entries: z.array(SyncSnapshotEntrySchema).max(100_000).readonly(),
+  entries: z.array(SyncSnapshotEntrySchema).max(MAX_SYNC_ENTRIES).readonly(),
 })
 
 export const VerifiedSyncBaselineSchema = VerifiedSyncBaselineCoreSchema.superRefine(

@@ -15,6 +15,13 @@ import {
 export const MAX_SYNC_BYTES = 1_073_741_824
 export const MAX_SYNC_FILES = 100_000
 export const MAX_SYNC_FILE_BYTES = 268_435_456
+/**
+ * Provisional bound on directory entries. The file cap alone does not bound
+ * directory-only trees, so this keeps total snapshot memory finite.
+ */
+export const MAX_SYNC_DIRECTORIES = 100_000
+/** Total snapshot entries (files plus directories) accepted by archive/baseline. */
+export const MAX_SYNC_ENTRIES = MAX_SYNC_FILES + MAX_SYNC_DIRECTORIES
 
 export const ManifestEntrySchema = z
   .strictObject({
@@ -68,7 +75,13 @@ export type ManifestEntry = z.infer<typeof ManifestEntrySchema>
 
 export interface BlockedSourceEntry {
   readonly path: string
-  readonly reason: 'file-limit' | 'filesystem-race' | 'size-limit' | 'special-file' | 'symlink'
+  readonly reason:
+    | 'entry-limit'
+    | 'file-limit'
+    | 'filesystem-race'
+    | 'size-limit'
+    | 'special-file'
+    | 'symlink'
 }
 
 export interface SourceManifest {
@@ -85,6 +98,7 @@ export interface SourceManifest {
 export interface ScanManifestOptions {
   readonly ignoreRuleGroups?: readonly (readonly IgnoreRule[])[]
   readonly maxBytes?: number
+  readonly maxDirectories?: number
   readonly maxFileBytes?: number
   readonly maxFiles?: number
 }
@@ -171,10 +185,12 @@ export async function scanSourceManifest(
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new SourceRootError()
   const canonicalRoot = await realpath(sourceRoot)
   const maxBytes = options.maxBytes ?? MAX_SYNC_BYTES
+  const maxDirectories = options.maxDirectories ?? MAX_SYNC_DIRECTORIES
   const maxFileBytes = options.maxFileBytes ?? MAX_SYNC_FILE_BYTES
   const maxFiles = options.maxFiles ?? MAX_SYNC_FILES
   for (const [limit, ceiling] of [
     [maxBytes, MAX_SYNC_BYTES],
+    [maxDirectories, MAX_SYNC_DIRECTORIES],
     [maxFileBytes, MAX_SYNC_FILE_BYTES],
     [maxFiles, MAX_SYNC_FILES],
   ] as const) {
@@ -185,6 +201,7 @@ export async function scanSourceManifest(
   const entries: ManifestEntry[] = []
   const blocked: BlockedSourceEntry[] = []
   const rawPaths: string[] = []
+  let directories = 0
   let totalBytes = 0
   let transferableFiles = 0
 
@@ -228,6 +245,11 @@ export async function scanSourceManifest(
         exclusionReason,
       }
       if (metadata.isDirectory()) {
+        if (directories >= maxDirectories) {
+          blocked.push({ path, reason: 'entry-limit' })
+          continue
+        }
+        directories += 1
         entries.push(
           ManifestEntrySchema.parse({ ...common, type: 'directory', size: 0, sha256: null }),
         )

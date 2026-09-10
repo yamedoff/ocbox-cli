@@ -6,7 +6,13 @@ import {
   SyncSnapshotEntrySchema,
   snapshotSha256,
 } from './baseline.js'
-import { MAX_SYNC_BYTES, MAX_SYNC_FILE_BYTES, MAX_SYNC_FILES } from './manifest.js'
+import {
+  MAX_SYNC_BYTES,
+  MAX_SYNC_DIRECTORIES,
+  MAX_SYNC_ENTRIES,
+  MAX_SYNC_FILE_BYTES,
+  MAX_SYNC_FILES,
+} from './manifest.js'
 import type { ManifestPath } from './path-policy.js'
 
 const ARCHIVE_MAGIC = Buffer.from('OCBOXA1\n', 'ascii')
@@ -113,9 +119,14 @@ function validateArchiveEntries(
     throw new SyncArchiveError('ARCHIVE_FORMAT')
   }
   let bytes = 0
+  let directories = 0
   let files = 0
   for (const entry of entries) {
-    if (entry.type !== 'file') continue
+    if (entry.type === 'directory') {
+      directories += 1
+      if (directories > MAX_SYNC_DIRECTORIES) throw new SyncArchiveError('ARCHIVE_LIMIT')
+      continue
+    }
     files += 1
     bytes += entry.size
     if (entry.size > maxFileBytes || files > maxFiles || bytes > maxBytes) {
@@ -292,7 +303,7 @@ export async function* decodeSyncArchive(
         }
         previousPath = entry.path
         entries.push(entry)
-        if (entries.length > maxFiles * 2) throw new SyncArchiveError('ARCHIVE_LIMIT')
+        if (entries.length > MAX_SYNC_ENTRIES) throw new SyncArchiveError('ARCHIVE_LIMIT')
         yield { type: 'entry', entry }
         if (entry.type === 'directory') {
           state = 'length'

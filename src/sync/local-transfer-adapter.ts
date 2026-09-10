@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { decodeSyncArchive } from './archive.js'
 import type { SyncSnapshotEntry } from './baseline.js'
@@ -15,10 +15,17 @@ import {
 interface Journal {
   readonly schemaVersion: 1
   readonly operationId: string
-  readonly stage: 'staged' | 'target-moved' | 'committed'
+  readonly stage: 'staged' | 'target-moving' | 'target-moved' | 'committed'
+  /** Whether a target existed when the destructive move was about to begin. */
+  readonly hadTarget: boolean | null
   readonly stagingDirectory: string
   readonly backupDirectory: string
 }
+
+type JournalReadResult =
+  | { readonly state: 'none' }
+  | { readonly state: 'valid'; readonly journal: Journal }
+  | { readonly state: 'corrupt' }
 
 /**
  * A safe local/fake transfer endpoint. Its journal stores only names relative
@@ -27,22 +34,31 @@ interface Journal {
  */
 export class LocalTransferAdapter implements TransferAdapter {
   readonly name = 'local-fake'
+  private readonly targetRoot: string
   private readonly stateDirectory: string
   private readonly journalPath: string
 
   constructor(
-    private readonly targetRoot: string,
-    private readonly options: { readonly interruptAfterTargetMove?: boolean } = {},
+    targetRoot: string,
+    private readonly options: {
+      readonly interruptAfterTargetMove?: boolean
+      /** Test hook for the journal window immediately after the destructive move. */
+      readonly interruptBeforeTargetMoveJournal?: boolean
+    } = {},
   ) {
-    const parent = dirname(resolve(targetRoot))
-    this.stateDirectory = join(parent, `.${basename(targetRoot)}.ocbox-sync-state`)
+    // Freeze the absolute root so later filesystem calls never depend on cwd.
+    this.targetRoot = resolve(targetRoot)
+    const parent = dirname(this.targetRoot)
+    this.stateDirectory = join(parent, `.${basename(this.targetRoot)}.ocbox-sync-state`)
     this.journalPath = join(this.stateDirectory, 'journal.json')
   }
 
   async beginApply(intent: TransferApplyIntent): Promise<TransferTransaction> {
     if ((await this.recoveryStatus()).recoveryRequired) throw new TransferError('RECOVERY_REQUIRED')
+    // A linked target root is never dereferenced or replaced.
+    if (await isSymbolicLink(this.targetRoot)) throw new TransferError('UNSAFE_TARGET')
     if (!intent.allowReplace && (await exists(this.targetRoot))) {
-      const names = await (await import('node:fs/promises')).readdir(this.targetRoot)
+      const names = await readdir(this.targetRoot)
       if (names.length > 0) throw new TransferError('REPLACE_NOT_APPROVED')
     }
     await mkdir(this.stateDirectory, { recursive: true })
@@ -53,6 +69,7 @@ export class LocalTransferAdapter implements TransferAdapter {
       schemaVersion: 1,
       operationId: id,
       stage: 'staged',
+      hadTarget: null,
       stagingDirectory,
       backupDirectory,
     }
@@ -73,40 +90,79 @@ export class LocalTransferAdapter implements TransferAdapter {
   }
 
   async recoveryStatus(): Promise<TransferRecoveryStatus> {
-    const journal = await this.readJournal()
+    const result = await this.readJournal()
     return {
-      recoveryRequired: journal !== null,
-      operationId: journal?.operationId ?? null,
+      // A corrupt journal still requires recovery; the operation id is unknown.
+      recoveryRequired: result.state !== 'none',
+      operationId: result.state === 'valid' ? result.journal.operationId : null,
     }
   }
 
-  /** Explicitly restores the last preserved target; it never promotes partial staging. */
+  /**
+   * Recovery invariants: never promote staged content and never delete an
+   * ambiguous backup. A `target-moving` journal means intent was durable but the
+   * destructive move may or may not have happened, so the original target is
+   * restored (or its original absence preserved). A `target-moved` journal with
+   * both target and backup present is ambiguous and refuses automatic recovery.
+   */
   async recover(): Promise<void> {
-    const journal = await this.readJournal()
-    if (journal === null) return
+    const result = await this.readJournal()
+    if (result.state === 'none') return
+    if (result.state === 'corrupt') throw new TransferError('RECOVERY_REQUIRED')
+    const { journal } = result
     const backup = join(this.stateDirectory, journal.backupDirectory)
+    if (journal.stage === 'target-moving') {
+      const targetExists = await exists(this.targetRoot)
+      const backupExists = await exists(backup)
+      if (journal.hadTarget === true && !targetExists && backupExists) {
+        // Restore the preserved original target after an interrupted move.
+        await rename(backup, this.targetRoot)
+      } else if (
+        (journal.hadTarget === true && targetExists && !backupExists) ||
+        (journal.hadTarget === false && !targetExists && !backupExists)
+      ) {
+        // The intent was durable, but no destructive move was observed.
+        // Keeping the original target (or its original absence) is safe.
+      } else {
+        throw new TransferError('RECOVERY_REQUIRED')
+      }
+    }
     if (journal.stage === 'target-moved' && (await exists(backup))) {
       // A concurrent replacement is never safe to delete during recovery.
       if (await exists(this.targetRoot)) throw new TransferError('RECOVERY_REQUIRED')
       await rename(backup, this.targetRoot)
     }
     if (journal.stage === 'committed') {
-      // The new target was installed; only the preserved copy remains to clean up.
-      await rm(backup, { force: true, recursive: true })
+      // The verified target was installed. Only discard the preserved copy while
+      // the installed target still exists; otherwise restore the backup.
+      if (await exists(backup)) {
+        if (await exists(this.targetRoot)) {
+          await rm(backup, { force: true, recursive: true })
+        } else {
+          await rename(backup, this.targetRoot)
+        }
+      }
     }
     await rm(join(this.stateDirectory, journal.stagingDirectory), { force: true, recursive: true })
     await rm(this.journalPath, { force: true })
   }
 
-  private async readJournal(): Promise<Journal | null> {
+  private async readJournal(): Promise<JournalReadResult> {
+    let contents: string
     try {
-      const value: unknown = JSON.parse(await readFile(this.journalPath, 'utf8'))
-      if (!isJournal(value)) throw new TransferError('RECOVERY_REQUIRED')
-      return value
+      contents = await readFile(this.journalPath, 'utf8')
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'none' }
       throw error
     }
+    try {
+      const value: unknown = JSON.parse(contents)
+      if (isJournal(value)) return { state: 'valid', journal: value }
+    } catch {
+      // Fall through to the corrupt result below.
+    }
+    // A partially written journal must fail closed: recovery state is unknown.
+    return { state: 'corrupt' }
   }
 
   async updateJournal(journal: Journal): Promise<void> {
@@ -120,6 +176,9 @@ export class LocalTransferAdapter implements TransferAdapter {
   }
   shouldInterrupt(): boolean {
     return this.options.interruptAfterTargetMove === true
+  }
+  shouldInterruptBeforeTargetMoveJournal(): boolean {
+    return this.options.interruptBeforeTargetMoveJournal === true
   }
 }
 
@@ -150,7 +209,7 @@ class LocalTransferTransaction implements TransferTransaction {
       for await (const event of decodeSyncArchive(archive)) {
         if (event.type === 'entry') {
           const entry = expected.get(event.entry.path)
-          if (entry === undefined || JSON.stringify(entry) !== JSON.stringify(event.entry))
+          if (entry === undefined || !entriesMatch(entry, event.entry))
             throw new TransferError('INTEGRITY')
           declared.add(event.entry.path)
           const path = safeJoin(
@@ -172,7 +231,9 @@ class LocalTransferTransaction implements TransferTransaction {
           if (current === undefined) throw new TransferError('INTEGRITY')
           current.size += event.data.byteLength
           current.hash.update(event.data)
-          await current.handle.write(event.data)
+          // FileHandle.write may write fewer bytes than requested; loop so the
+          // staged bytes always match the verified checksum.
+          await writeAll(current.handle, event.data)
         }
       }
       for (const entry of entries) {
@@ -198,7 +259,15 @@ class LocalTransferTransaction implements TransferTransaction {
     if (!this.staged || this.done) throw new TransferError('RECOVERY_REQUIRED')
     const target = this.adapter.target()
     const backup = this.adapter.statePath(this.journal.backupDirectory)
-    if (await exists(target)) await rename(target, backup)
+    // Persist intent before moving the target. Otherwise a crash after rename
+    // but before the journal update leaves only an orphaned backup to recover.
+    const targetExists = await exists(target)
+    this.journal = { ...this.journal, stage: 'target-moving', hadTarget: targetExists }
+    await this.adapter.updateJournal(this.journal)
+    if (targetExists) await rename(target, backup)
+    if (this.adapter.shouldInterruptBeforeTargetMoveJournal()) {
+      throw new Error('simulated interruption before target-moved journal')
+    }
     this.journal = { ...this.journal, stage: 'target-moved' }
     await this.adapter.updateJournal(this.journal)
     if (this.adapter.shouldInterrupt()) throw new Error('simulated interruption')
@@ -212,7 +281,7 @@ class LocalTransferTransaction implements TransferTransaction {
 
   async rollback(): Promise<void> {
     if (this.done) return
-    if (this.journal.stage === 'target-moved') {
+    if (this.journal.stage === 'target-moving' || this.journal.stage === 'target-moved') {
       await this.adapter.recover()
       this.done = true
       return
@@ -226,6 +295,16 @@ class LocalTransferTransaction implements TransferTransaction {
   }
 }
 
+function entriesMatch(left: SyncSnapshotEntry, right: SyncSnapshotEntry): boolean {
+  return (
+    left.path === right.path &&
+    left.type === right.type &&
+    left.size === right.size &&
+    left.sha256 === right.sha256 &&
+    left.mode === right.mode &&
+    left.linkTarget === right.linkTarget
+  )
+}
 function safeJoin(root: string, path: string): string {
   const normalized = normalizeManifestPath(path)
   const candidate = resolve(root, ...normalized.split('/'))
@@ -241,8 +320,36 @@ async function exists(path: string): Promise<boolean> {
     return false
   }
 }
+async function isSymbolicLink(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+async function writeAll(handle: Awaited<ReturnType<typeof open>>, data: Uint8Array): Promise<void> {
+  let offset = 0
+  while (offset < data.byteLength) {
+    const { bytesWritten } = await handle.write(data, offset, data.byteLength - offset)
+    if (bytesWritten <= 0) throw new TransferError('INTEGRITY')
+    offset += bytesWritten
+  }
+}
+
+/**
+ * Replaces the journal atomically so a crash can never observe a half-written
+ * journal. The rename is atomic on a single filesystem, which the state
+ * directory always shares with the target.
+ */
 async function writeJournal(path: string, journal: Journal): Promise<void> {
-  await writeFile(path, JSON.stringify(journal), { encoding: 'utf8', flush: true })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(journal), { encoding: 'utf8', flush: true })
+    await rename(temporary, path)
+  } catch (error) {
+    await rm(temporary, { force: true })
+    throw error
+  }
 }
 function isJournal(value: unknown): value is Journal {
   if (value === null || typeof value !== 'object') return false
@@ -251,8 +358,12 @@ function isJournal(value: unknown): value is Journal {
     candidate.schemaVersion === 1 &&
     typeof candidate.operationId === 'string' &&
     (candidate.stage === 'staged' ||
+      candidate.stage === 'target-moving' ||
       candidate.stage === 'target-moved' ||
       candidate.stage === 'committed') &&
+    (candidate.stage === 'staged'
+      ? candidate.hadTarget === null
+      : typeof candidate.hadTarget === 'boolean') &&
     /^stage-[0-9a-f-]+$/.test(candidate.stagingDirectory ?? '') &&
     /^backup-[0-9a-f-]+$/.test(candidate.backupDirectory ?? '')
   )

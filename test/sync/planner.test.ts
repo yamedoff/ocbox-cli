@@ -155,6 +155,33 @@ describe('three-way sync planner', () => {
     expect(deletion.requiresDeletionApproval).toBe(true)
   })
 
+  it('does not collapse a content-changing move into a rename', () => {
+    const before = file('old.txt', 'same')
+    const plan = planSync({
+      mode: 'push',
+      local: [file('new.txt', 'changed')],
+      remote: [before],
+      baseline: verified([before]),
+    })
+    expect(plan.renames).toEqual([])
+    expect(plan.operations.map((operation) => operation.kind)).toEqual(['put-file', 'delete'])
+    expect(plan.requiresDeletionApproval).toBe(true)
+  })
+
+  it('reports a target-side rename during a non-mutating diff without operations', () => {
+    const before = file('old.txt', 'same')
+    const plan = planSync({
+      mode: 'diff',
+      local: [before],
+      remote: [file('new.txt', 'same')],
+      baseline: verified([before]),
+    })
+    expect(plan.renames).toEqual([
+      expect.objectContaining({ side: 'remote', fromPath: 'old.txt', toPath: 'new.txt' }),
+    ])
+    expect(plan.operations).toEqual([])
+  })
+
   it('fails closed on an unverified baseline', () => {
     const plan = planSync({
       mode: 'pull',

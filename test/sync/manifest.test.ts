@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   assertManifestTransferable,
+  MAX_SYNC_DIRECTORIES,
+  MAX_SYNC_ENTRIES,
+  MAX_SYNC_FILES,
   SourceManifestBlockedError,
   scanSourceManifest,
 } from '../../src/sync/manifest.js'
@@ -87,6 +90,21 @@ describe('source manifest', () => {
       { path: 'a.txt', reason: 'size-limit' },
       { path: 'b.txt', reason: 'size-limit' },
     ])
+  })
+
+  it('caps directory entries so a directory-only tree cannot exhaust memory', async () => {
+    const directory = await root()
+    await mkdir(join(directory, 'a'))
+    await mkdir(join(directory, 'b'))
+    const manifest = await scanSourceManifest(directory, { maxDirectories: 1 })
+    expect(manifest.blocked).toEqual([{ path: 'b', reason: 'entry-limit' }])
+    expect(manifest.entries.map((entry) => entry.path)).toEqual(['a'])
+    expect(() => assertManifestTransferable(manifest)).toThrow(SourceManifestBlockedError)
+  })
+
+  it('bounds total snapshot entries by files plus directories', () => {
+    expect(MAX_SYNC_ENTRIES).toBe(MAX_SYNC_FILES + MAX_SYNC_DIRECTORIES)
+    expect(MAX_SYNC_ENTRIES).toBeGreaterThan(MAX_SYNC_FILES)
   })
 
   it('rejects case-colliding portable paths', async () => {

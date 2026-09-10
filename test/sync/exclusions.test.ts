@@ -23,6 +23,22 @@ describe('sync exclusions', () => {
     expect(builtInExclusion(path(value))).toBe(reason)
   })
 
+  it.each([
+    ['.GIT/config', 'git-metadata'],
+    ['NODE_MODULES/tool/index.js', 'dependency-cache'],
+    ['packages/web/DIST/app.js', 'build-cache'],
+    ['.SSH/id_rsa', 'key-material'],
+    ['.ssh/config', 'key-material'],
+    ['.gnupg/private-keys-v1.d/key', 'key-material'],
+    ['vault/.password-store/site.gpg', 'key-material'],
+    ['secrets/server.keystore', 'key-material'],
+    ['.netrc', 'provider-credential-store'],
+    ['.git-credentials', 'provider-credential-store'],
+    ['.npmrc', 'provider-credential-store'],
+  ] as const)('resists case and store bypass for %s', (value, reason) => {
+    expect(builtInExclusion(path(value))).toBe(reason)
+  })
+
   it('uses deterministic rule-source precedence', () => {
     const git = parseIgnoreRules('*.log\n!important.log', 'gitignore')
     const ocbox = parseIgnoreRules('important.log', 'opencloudboxignore')
@@ -32,9 +48,10 @@ describe('sync exclusions', () => {
   })
 
   it('never lets an include rule weaken built-in secret exclusions', () => {
-    const include = parseIgnoreRules('!.env*\n!.aws/**', 'cli')
+    const include = parseIgnoreRules('!.env*\n!.aws/**\n!.GIT/**', 'cli')
     expect(exclusionForPath(path('.env.local'), [include])).toBe('secret-environment')
     expect(exclusionForPath(path('.aws/credentials'), [include])).toBe('provider-credential-store')
+    expect(exclusionForPath(path('.GIT/config'), [include])).toBe('git-metadata')
   })
 
   it.each(['../escape', '/absolute', 'dir\\file', '!'])('rejects unsafe rule %s', (rule) => {

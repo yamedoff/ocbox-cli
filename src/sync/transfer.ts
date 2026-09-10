@@ -30,8 +30,17 @@ export interface TransferRecoveryStatus {
   readonly operationId: string | null
 }
 
+/**
+ * `INTEGRITY` means staged/archive content failed verification.
+ * `RECOVERY_REQUIRED` means an incomplete transaction must be resolved first.
+ * `REPLACE_NOT_APPROVED` means the caller did not authorize replacing a
+ * non-empty target. `UNSAFE_TARGET` means the target root itself is a link and
+ * must not be dereferenced.
+ */
 export class TransferError extends Error {
-  constructor(readonly code: 'INTEGRITY' | 'RECOVERY_REQUIRED' | 'REPLACE_NOT_APPROVED') {
+  constructor(
+    readonly code: 'INTEGRITY' | 'RECOVERY_REQUIRED' | 'REPLACE_NOT_APPROVED' | 'UNSAFE_TARGET',
+  ) {
     super(`Sync transfer failed: ${code}`)
     this.name = 'TransferError'
   }

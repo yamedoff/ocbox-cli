@@ -11,6 +11,9 @@ export type ExclusionReason =
   | 'secret-environment'
   | 'user-rule'
 
+// Segment sets are stored lowercase and compared case-insensitively so a
+// rename such as `.GIT` or `NODE_MODULES` cannot bypass a built-in exclusion on
+// a case-insensitive filesystem.
 const DEPENDENCY_OR_CACHE_SEGMENTS = new Set([
   '.cache',
   '.next',
@@ -24,23 +27,41 @@ const DEPENDENCY_OR_CACHE_SEGMENTS = new Set([
   'vendor',
 ])
 const BUILD_SEGMENTS = new Set(['build', 'coverage', 'dist', 'out', 'target'])
-const KEY_FILE = /(?:^|\/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:key|pem|p12|pfx|kdbx))$/i
+const KEY_OR_CREDENTIAL_DIRECTORIES = new Set(['.gnupg', '.password-store', '.ssh'])
+const CREDENTIAL_FILE_NAMES = new Set([
+  '.git-credentials',
+  '.htpasswd',
+  '.my.cnf',
+  '.netrc',
+  '.npmrc',
+  '.pgpass',
+  '.pypirc',
+  '_netrc',
+])
+const KEY_FILE =
+  /(?:^|\/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:asc|gpg|jks|kdbx|key|keystore|p12|p8|pem|pfx|pgp|pkcs12|ppk))$/i
 const OS_OR_BROWSER = /(?:^|\/)(?:Cookies|Login Data|Keychains?|Local State|Web Data)(?:\/|$)/i
 const PROVIDER_STORE = /(?:^|\/)(?:\.aws|\.azure|\.config\/gcloud|\.docker|\.kube)(?:\/|$)/i
 
 /** Returns an unoverrideable exclusion before user-authored rules run. */
 export function builtInExclusion(path: ManifestPath): ExclusionReason | null {
   const segments = path.split('/')
-  if (segments.includes('.git')) return 'git-metadata'
-  if (segments.some((segment) => DEPENDENCY_OR_CACHE_SEGMENTS.has(segment))) {
+  const lowerSegments = segments.map((segment) => segment.toLowerCase())
+  if (lowerSegments.includes('.git')) return 'git-metadata'
+  if (lowerSegments.some((segment) => DEPENDENCY_OR_CACHE_SEGMENTS.has(segment))) {
     return 'dependency-cache'
   }
-  if (segments.some((segment) => BUILD_SEGMENTS.has(segment))) return 'build-cache'
+  if (lowerSegments.some((segment) => BUILD_SEGMENTS.has(segment))) return 'build-cache'
   const name = segments.at(-1) ?? ''
+  const lowerName = name.toLowerCase()
   if (/^\.env(?:\..*)?$/i.test(name)) return 'secret-environment'
   if (KEY_FILE.test(path)) return 'key-material'
+  if (lowerSegments.some((segment) => KEY_OR_CREDENTIAL_DIRECTORIES.has(segment))) {
+    return 'key-material'
+  }
+  if (CREDENTIAL_FILE_NAMES.has(lowerName)) return 'provider-credential-store'
   if (PROVIDER_STORE.test(path)) return 'provider-credential-store'
-  if (OS_OR_BROWSER.test(path) || name === '.DS_Store' || name === 'Thumbs.db') {
+  if (OS_OR_BROWSER.test(path) || lowerName === '.ds_store' || lowerName === 'thumbs.db') {
     return 'os-or-browser-store'
   }
   return null

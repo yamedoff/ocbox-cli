@@ -3,11 +3,16 @@ import { z } from 'zod'
 const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i
 const DRIVE_OR_UNC = /^(?:[A-Za-z]:|[/\\]{2})/
 
-/** Detects C0 and DEL characters without embedding them in a regular expression. */
+/** Detects C0, DEL and C1 control characters without embedding them in a regex. */
 export function hasControlCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0)
-    if (codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)) return true
+    if (
+      codePoint !== undefined &&
+      (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f))
+    ) {
+      return true
+    }
   }
   return false
 }

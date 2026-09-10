@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -100,5 +100,126 @@ describe('local transfer adapter', () => {
     await adapter.recover()
     await expect(readFile(join(target, 'preserve'), 'utf8')).resolves.toBe('preserve')
     expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('restores the preserved target if interrupted before recording the completed move', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    await mkdir(target)
+    await writeFile(join(target, 'preserve'), 'preserve')
+    const content = new TextEncoder().encode('new')
+    const next = entry('value.txt', content)
+    const adapter = new LocalTransferAdapter(target, { interruptBeforeTargetMoveJournal: true })
+    const transaction = await adapter.beginApply({ allowReplace: true })
+    await transaction.stage([next], await archive([next], new Map([[next.path, content]])))
+    await expect(transaction.commit()).rejects.toThrow(
+      'simulated interruption before target-moved journal',
+    )
+    expect((await adapter.recoveryStatus()).recoveryRequired).toBe(true)
+    await adapter.recover()
+    await expect(readFile(join(target, 'preserve'), 'utf8')).resolves.toBe('preserve')
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('recovers an originally absent target without promoting the staged copy', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const content = new TextEncoder().encode('new')
+    const next = entry('value.txt', content)
+    const adapter = new LocalTransferAdapter(target, { interruptBeforeTargetMoveJournal: true })
+    const transaction = await adapter.beginApply({ allowReplace: true })
+    await transaction.stage([next], await archive([next], new Map([[next.path, content]])))
+    await expect(transaction.commit()).rejects.toThrow(
+      'simulated interruption before target-moved journal',
+    )
+    await adapter.recover()
+    await expect(readFile(join(target, 'value.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('keeps the original target when the destructive move never started', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const state = join(parent, '.target.ocbox-sync-state')
+    const staging = 'stage-00000000-0000-0000-0000-000000000000'
+    await mkdir(target)
+    await writeFile(join(target, 'preserve'), 'preserve')
+    await mkdir(join(state, staging, 'nested'), { recursive: true })
+    await writeFile(join(state, staging, 'nested', 'value.txt'), 'staged')
+    await writeFile(
+      join(state, 'journal.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: '00000000-0000-0000-0000-000000000000',
+        stage: 'target-moving',
+        hadTarget: true,
+        stagingDirectory: staging,
+        backupDirectory: 'backup-00000000-0000-0000-0000-000000000000',
+      }),
+    )
+    const adapter = new LocalTransferAdapter(target)
+    await adapter.recover()
+    await expect(readFile(join(target, 'preserve'), 'utf8')).resolves.toBe('preserve')
+    await expect(readFile(join(state, staging, 'nested', 'value.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('restores the backup when a committed journal lost its installed target', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const state = join(parent, '.target.ocbox-sync-state')
+    const backup = 'backup-00000000-0000-0000-0000-000000000000'
+    await mkdir(join(state, backup), { recursive: true })
+    await writeFile(join(state, backup, 'restore.txt'), 'old')
+    await writeFile(
+      join(state, 'journal.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: '00000000-0000-0000-0000-000000000000',
+        stage: 'committed',
+        hadTarget: true,
+        stagingDirectory: 'stage-00000000-0000-0000-0000-000000000000',
+        backupDirectory: backup,
+      }),
+    )
+    const adapter = new LocalTransferAdapter(target)
+    await adapter.recover()
+    await expect(readFile(join(target, 'restore.txt'), 'utf8')).resolves.toBe('old')
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('refuses to dereference a linked target root', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const outside = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(outside)
+    await mkdir(join(outside, 'data'))
+    const target = join(parent, 'target')
+    await symlink(outside, target, 'junction')
+    const adapter = new LocalTransferAdapter(target)
+    await expect(adapter.beginApply({ allowReplace: true })).rejects.toMatchObject({
+      code: 'UNSAFE_TARGET',
+    })
+  })
+
+  it('fails closed when the journal is unreadable', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const state = join(parent, '.target.ocbox-sync-state')
+    await mkdir(state, { recursive: true })
+    await writeFile(join(state, 'journal.json'), '{"schemaVersion":1,')
+    const adapter = new LocalTransferAdapter(target)
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: true, operationId: null })
+    await expect(adapter.beginApply({ allowReplace: true })).rejects.toMatchObject({
+      code: 'RECOVERY_REQUIRED',
+    })
+    await expect(adapter.recover()).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' })
   })
 })
