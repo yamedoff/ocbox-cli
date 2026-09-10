@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstat, open, readdir, realpath } from 'node:fs/promises'
+import { lstat, opendir, open, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import { type ExclusionReason, exclusionForPath, type IgnoreRule } from './exclusions.js'
@@ -22,6 +22,12 @@ export const MAX_SYNC_FILE_BYTES = 268_435_456
 export const MAX_SYNC_DIRECTORIES = 100_000
 /** Total snapshot entries (files plus directories) accepted by archive/baseline. */
 export const MAX_SYNC_ENTRIES = MAX_SYNC_FILES + MAX_SYNC_DIRECTORIES
+/**
+ * Upper bound on reported blocked entries. Caps only bind transferables, so a
+ * hostile tree could otherwise grow `blocked` (and thus snapshot memory)
+ * without limit; past this point the overflow flag reports the truncation.
+ */
+export const MAX_SYNC_BLOCKED = 10_000
 
 export const ManifestEntrySchema = z
   .strictObject({
@@ -92,6 +98,8 @@ export interface SourceManifest {
   readonly totalBytes: number
   readonly transferableFiles: number
   readonly blocked: readonly BlockedSourceEntry[]
+  /** True when blocked entries exceeded `MAX_SYNC_BLOCKED` and were not reported. */
+  readonly blockedOverflow: boolean
   readonly collisions: readonly PathCollision[]
 }
 
@@ -136,6 +144,16 @@ function safeDisplayPath(raw: string): string {
     if (safe.length >= 4_096) break
   }
   return safe.slice(0, 4_096)
+}
+
+/**
+ * Serializes the mtime hint as integral nanoseconds. Pre-epoch clocks (and a
+ * clock that raced the stat read) must not crash the whole scan, so they clamp
+ * to the epoch instead; the hint is advisory and excluded from identity hashes.
+ */
+export function nanosecondMtimeHint(mtimeMs: number): string {
+  if (!Number.isFinite(mtimeMs) || mtimeMs < 0) return '0'
+  return BigInt(Math.trunc(mtimeMs * 1_000_000)).toString()
 }
 
 async function hashStableFile(
@@ -204,86 +222,123 @@ export async function scanSourceManifest(
   let directories = 0
   let totalBytes = 0
   let transferableFiles = 0
+  let blockedOverflow = false
+
+  /** Records a blocked entry while keeping the report list bounded. */
+  function addBlocked(candidate: BlockedSourceEntry): void {
+    if (blocked.length < MAX_SYNC_BLOCKED) blocked.push(candidate)
+    else blockedOverflow = true
+  }
+
+  /**
+   * Excluded files still produce manifest metadata, which must stay bounded;
+   * transferables fit the same budget through the file and directory caps.
+   */
+  const entryBudget = maxFiles + maxDirectories
 
   async function visit(directory: string, rawSegments: readonly string[]): Promise<void> {
     const directoryRealPath = await realpath(directory)
     if (!insideRoot(canonicalRoot, directoryRealPath)) {
-      blocked.push({ path: safeDisplayPath(rawSegments.join('/')), reason: 'filesystem-race' })
+      addBlocked({ path: safeDisplayPath(rawSegments.join('/')), reason: 'filesystem-race' })
       return
     }
-    const children = await readdir(directory, { withFileTypes: true })
-    children.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)))
-    for (const child of children) {
-      const rawChildSegments = [...rawSegments, child.name]
-      const rawPath = rawChildSegments.join('/')
-      const normalizedRawPath = rawChildSegments
-        .map((segment) => segment.normalize('NFC'))
-        .join('/')
-      rawPaths.push(rawPath)
-      let path: ManifestPath
-      try {
-        path = normalizeManifestPath(normalizedRawPath)
-      } catch {
-        blocked.push({ path: safeDisplayPath(rawPath), reason: 'special-file' })
-        continue
-      }
-      const fullPath = resolve(directory, child.name)
-      const metadata = await lstat(fullPath)
-      if (metadata.isSymbolicLink()) {
-        blocked.push({ path, reason: 'symlink' })
-        continue
-      }
-      const exclusionReason: ExclusionReason | null = exclusionForPath(
-        path,
-        options.ignoreRuleGroups ?? [],
-      )
-      const common = {
-        path,
-        mtimeHintNanoseconds: BigInt(Math.trunc(metadata.mtimeMs * 1_000_000)).toString(),
-        mode: metadata.mode & 0o7777,
-        linkTarget: null,
-        exclusionReason,
-      }
-      if (metadata.isDirectory()) {
-        if (directories >= maxDirectories) {
-          blocked.push({ path, reason: 'entry-limit' })
+    // `opendir` streams one entry at a time, so a directory with millions of
+    // children cannot materialize its whole listing in memory.
+    const directoryHandle = await opendir(directory)
+    try {
+      for await (const child of directoryHandle) {
+        const rawChildSegments = [...rawSegments, child.name]
+        const rawPath = rawChildSegments.join('/')
+        const normalizedRawPath = rawChildSegments
+          .map((segment) => segment.normalize('NFC'))
+          .join('/')
+        rawPaths.push(rawPath)
+        let path: ManifestPath
+        try {
+          path = normalizeManifestPath(normalizedRawPath)
+        } catch {
+          addBlocked({ path: safeDisplayPath(rawPath), reason: 'special-file' })
           continue
         }
-        directories += 1
-        entries.push(
-          ManifestEntrySchema.parse({ ...common, type: 'directory', size: 0, sha256: null }),
+        const fullPath = resolve(directory, child.name)
+        const metadata = await lstat(fullPath)
+        if (metadata.isSymbolicLink()) {
+          addBlocked({ path, reason: 'symlink' })
+          continue
+        }
+        const exclusionReason: ExclusionReason | null = exclusionForPath(
+          path,
+          options.ignoreRuleGroups ?? [],
         )
-        if (exclusionReason === null) await visit(fullPath, rawChildSegments)
-        continue
-      }
-      if (!metadata.isFile()) {
-        blocked.push({ path, reason: 'special-file' })
-        continue
-      }
-      if (exclusionReason !== null) {
+        const common = {
+          path,
+          mtimeHintNanoseconds: nanosecondMtimeHint(metadata.mtimeMs),
+          mode: metadata.mode & 0o7777,
+          linkTarget: null,
+          exclusionReason,
+        }
+        if (metadata.isDirectory()) {
+          if (directories >= maxDirectories) {
+            addBlocked({ path, reason: 'entry-limit' })
+            continue
+          }
+          directories += 1
+          entries.push(
+            ManifestEntrySchema.parse({ ...common, type: 'directory', size: 0, sha256: null }),
+          )
+          if (exclusionReason === null) await visit(fullPath, rawChildSegments)
+          continue
+        }
+        if (!metadata.isFile()) {
+          addBlocked({ path, reason: 'special-file' })
+          continue
+        }
+        if (exclusionReason !== null) {
+          if (entries.length >= entryBudget) {
+            addBlocked({ path, reason: 'entry-limit' })
+            continue
+          }
+          entries.push(
+            ManifestEntrySchema.parse({
+              ...common,
+              type: 'file',
+              size: metadata.size,
+              sha256: null,
+            }),
+          )
+          continue
+        }
+        if (metadata.size > maxFileBytes || totalBytes + metadata.size > maxBytes) {
+          addBlocked({ path, reason: 'size-limit' })
+          continue
+        }
+        if (transferableFiles >= maxFiles) {
+          addBlocked({ path, reason: 'file-limit' })
+          continue
+        }
+        // The directory was realpath-checked at visit entry; re-verify the file
+        // itself so a hostile directory swap between awaits cannot point the
+        // open/read outside the canonical root.
+        const fileRealPath = await realpath(fullPath)
+        if (!insideRoot(canonicalRoot, fileRealPath)) {
+          addBlocked({ path, reason: 'filesystem-race' })
+          continue
+        }
+        const sha256 = await hashStableFile(fullPath, metadata)
+        if (sha256 === null) {
+          addBlocked({ path, reason: 'filesystem-race' })
+          continue
+        }
+        totalBytes += metadata.size
+        transferableFiles += 1
         entries.push(
-          ManifestEntrySchema.parse({ ...common, type: 'file', size: metadata.size, sha256: null }),
+          ManifestEntrySchema.parse({ ...common, type: 'file', size: metadata.size, sha256 }),
         )
-        continue
       }
-      if (metadata.size > maxFileBytes || totalBytes + metadata.size > maxBytes) {
-        blocked.push({ path, reason: 'size-limit' })
-        continue
-      }
-      if (transferableFiles >= maxFiles) {
-        blocked.push({ path, reason: 'file-limit' })
-        continue
-      }
-      const sha256 = await hashStableFile(fullPath, metadata)
-      if (sha256 === null) {
-        blocked.push({ path, reason: 'filesystem-race' })
-        continue
-      }
-      totalBytes += metadata.size
-      transferableFiles += 1
-      entries.push(
-        ManifestEntrySchema.parse({ ...common, type: 'file', size: metadata.size, sha256 }),
-      )
+    } finally {
+      // Exhausting the async iterator closes the handle; a defensive close on
+      // the already-closed handle must not mask the scan result.
+      await directoryHandle.close().catch(() => undefined)
     }
   }
 
@@ -301,6 +356,7 @@ export async function scanSourceManifest(
     totalBytes,
     transferableFiles,
     blocked,
+    blockedOverflow,
     collisions,
   }
 }

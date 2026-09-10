@@ -208,6 +208,38 @@ describe('local transfer adapter', () => {
     })
   })
 
+  it('treats an existing file target as an unapproved replacement', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    await writeFile(target, 'occupied')
+    const adapter = new LocalTransferAdapter(target)
+    await expect(adapter.beginApply({ allowReplace: false })).rejects.toMatchObject({
+      code: 'REPLACE_NOT_APPROVED',
+    })
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('sweeps abandoned temporary journals during recovery', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const content = new TextEncoder().encode('new')
+    const next = entry('value.txt', content)
+    const adapter = new LocalTransferAdapter(target, { interruptAfterTargetMove: true })
+    const transaction = await adapter.beginApply({ allowReplace: true })
+    await transaction.stage([next], await archive([next], new Map([[next.path, content]])))
+    await transaction.commit().catch(() => undefined)
+    const stateDirectory = (await readdir(parent)).find((name) =>
+      name.endsWith('.ocbox-sync-state'),
+    )
+    const state = join(parent, stateDirectory ?? '')
+    await writeFile(join(state, 'journal.json.deadbeef.tmp'), 'partial')
+    await adapter.recover()
+    expect(await readdir(state)).toEqual([])
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
   it('fails closed when the journal is unreadable', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
     roots.push(parent)

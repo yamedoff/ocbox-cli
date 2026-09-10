@@ -54,6 +54,36 @@ describe('sync exclusions', () => {
     expect(exclusionForPath(path('.GIT/config'), [include])).toBe('git-metadata')
   })
 
+  it.each([
+    ['.envrc', 'secret-environment'],
+    ['.ENVRC', 'secret-environment'],
+    ['config/.env.production', 'secret-environment'],
+    ['Firefox/logins.json', 'os-or-browser-store'],
+    ['FireFox/Profiles/abc/key4.db', 'os-or-browser-store'],
+    ['sync/logins-backup.json', 'os-or-browser-store'],
+    ['legacy/signons3.sqlite', 'os-or-browser-store'],
+    ['.vercel/auth.json', 'provider-credential-store'],
+    ['.netlify/credentials.json', 'provider-credential-store'],
+    ['cli/.oci/config', 'provider-credential-store'],
+    ['legacy/.gsutil/cred', 'provider-credential-store'],
+    ['keys/id_ed25519_sk', 'key-material'],
+  ] as const)('blocks additional secret-store fixtures %s as %s', (value, reason) => {
+    expect(builtInExclusion(path(value))).toBe(reason)
+  })
+
+  it('matches a trailing-slash ignore rule against the directory itself', () => {
+    const rules = parseIgnoreRules('generated/\n!.pd.log\n', 'gitignore')
+    expect(exclusionForPath(path('generated'), [rules])).toBe('user-rule')
+    expect(exclusionForPath(path('generated/artifacts.tmp'), [rules])).toBe('user-rule')
+    expect(exclusionForPath(path('nested/generated'), [rules])).toBe('user-rule')
+    expect(exclusionForPath(path('other'), [rules])).toBeNull()
+  })
+
+  it('keeps negated file rules effective without trailing-slash splitting', () => {
+    const rules = parseIgnoreRules('!keep.md', 'cli')
+    expect(exclusionForPath(path('keep.md'), [rules])).toBeNull()
+  })
+
   it.each(['../escape', '/absolute', 'dir\\file', '!'])('rejects unsafe rule %s', (rule) => {
     expect(() => parseIgnoreRules(rule, 'cli')).toThrow(InvalidIgnoreRuleError)
   })

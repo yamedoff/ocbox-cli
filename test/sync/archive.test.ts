@@ -5,7 +5,11 @@ import {
   decodeSyncArchive,
   encodeSyncArchive,
 } from '../../src/sync/archive.js'
-import { type SyncSnapshotEntry, SyncSnapshotEntrySchema } from '../../src/sync/baseline.js'
+import {
+  snapshotSha256,
+  type SyncSnapshotEntry,
+  SyncSnapshotEntrySchema,
+} from '../../src/sync/baseline.js'
 import { type ManifestPath, normalizeManifestPath } from '../../src/sync/path-policy.js'
 
 function entry(path: string, data: Uint8Array): SyncSnapshotEntry {
@@ -17,6 +21,25 @@ function entry(path: string, data: Uint8Array): SyncSnapshotEntry {
     mode: 0o640,
     linkTarget: null,
   })
+}
+
+function directory(path: string): SyncSnapshotEntry {
+  return SyncSnapshotEntrySchema.parse({
+    path: normalizeManifestPath(path),
+    type: 'directory',
+    size: 0,
+    sha256: null,
+    mode: 0o755,
+    linkTarget: null,
+  })
+}
+
+/** Crafts a raw (unencoded) authenticated archive for hostile decoder inputs. */
+function frame(value: unknown): Uint8Array {
+  const body = Buffer.from(JSON.stringify(value), 'utf8')
+  const header = Buffer.alloc(4)
+  header.writeUInt32BE(body.byteLength, 0)
+  return Buffer.concat([header, body])
 }
 
 async function collect(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
@@ -138,5 +161,44 @@ describe('streaming sync archive', () => {
         // Drain the decoder so trailing input is observed.
       }
     }).rejects.toMatchObject({ code: 'ARCHIVE_FORMAT' })
+  })
+
+  it('enforces the directory cap on both encode and decode sides', async () => {
+    const directories = [directory('a'), directory('a/b'), directory('a/b/c')]
+    await expect(
+      collect(encodeSyncArchive(directories, async function* () {}, { maxDirectories: 2 })),
+    ).rejects.toMatchObject({ code: 'ARCHIVE_LIMIT' })
+
+    // Encode rejects the tree outright, so craft a matching raw archive by hand.
+    const digest = snapshotSha256(directories)
+    const raw = Buffer.concat([
+      Buffer.from('OCBOXA1\n', 'ascii'),
+      ...directories.map((entry) => frame({ type: 'entry', entry })),
+      frame({ type: 'end', snapshotSha256: digest }),
+    ])
+    await expect(async () => {
+      for await (const _event of decodeSyncArchive(fragments(raw, 3), { maxDirectories: 2 })) {
+        // Drain the decoder so the directory cap is exercised.
+      }
+    }).rejects.toMatchObject({ code: 'ARCHIVE_LIMIT' })
+    for await (const _event of decodeSyncArchive(fragments(raw, 3))) {
+      // The identical archive passes at the default (larger) cap.
+    }
+  })
+
+  it('keeps canonical JSONL byte-identical regardless of input key order', async () => {
+    const content = new Uint8Array([1, 2, 3])
+    const canonical = entry('x/y.txt', content)
+    // A hostile producer sends the fields in reversed order through the wire format.
+    const reordered = SyncSnapshotEntrySchema.parse({
+      linkTarget: null,
+      mode: 0o640,
+      sha256: canonical.sha256,
+      size: content.byteLength,
+      type: 'file',
+      path: 'x/y.txt',
+    })
+    expect(JSON.stringify(reordered)).toBe(JSON.stringify(canonical))
+    expect(snapshotSha256([reordered])).toBe(snapshotSha256([canonical]))
   })
 })

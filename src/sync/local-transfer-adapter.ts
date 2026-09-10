@@ -57,9 +57,18 @@ export class LocalTransferAdapter implements TransferAdapter {
     if ((await this.recoveryStatus()).recoveryRequired) throw new TransferError('RECOVERY_REQUIRED')
     // A linked target root is never dereferenced or replaced.
     if (await isSymbolicLink(this.targetRoot)) throw new TransferError('UNSAFE_TARGET')
-    if (!intent.allowReplace && (await exists(this.targetRoot))) {
-      const names = await readdir(this.targetRoot)
-      if (names.length > 0) throw new TransferError('REPLACE_NOT_APPROVED')
+    if (!intent.allowReplace) {
+      const targetStat = await lstat(this.targetRoot).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      })
+      if (targetStat !== null) {
+        // A non-directory target is treated as occupied, and so is any directory
+        // content; both demand explicit approval instead of a raw ENOTDIR.
+        if (!targetStat.isDirectory()) throw new TransferError('REPLACE_NOT_APPROVED')
+        const names = await readdir(this.targetRoot)
+        if (names.length > 0) throw new TransferError('REPLACE_NOT_APPROVED')
+      }
     }
     await mkdir(this.stateDirectory, { recursive: true })
     const id = randomUUID()
@@ -144,7 +153,28 @@ export class LocalTransferAdapter implements TransferAdapter {
       }
     }
     await rm(join(this.stateDirectory, journal.stagingDirectory), { force: true, recursive: true })
+    await this.sweepAbandonedTemporaryJournals()
     await rm(this.journalPath, { force: true })
+  }
+
+  /**
+   * `writeJournal` replaces the journal through a temporary file. A crash
+   * between the write and the rename leaves abandoned `*.tmp` peers; this sweep
+   * removes them once the caller owns recovery and no journal rename is in
+   * flight. Recovery must run exclusively (documented operational contract).
+   */
+  private async sweepAbandonedTemporaryJournals(): Promise<void> {
+    let names: string[]
+    try {
+      names = await readdir(this.stateDirectory)
+    } catch {
+      return
+    }
+    await Promise.all(
+      names
+        .filter((name) => name.startsWith('journal.json.') && name.endsWith('.tmp'))
+        .map((name) => rm(join(this.stateDirectory, name), { force: true })),
+    )
   }
 
   private async readJournal(): Promise<JournalReadResult> {

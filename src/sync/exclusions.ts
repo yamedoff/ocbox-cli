@@ -38,10 +38,16 @@ const CREDENTIAL_FILE_NAMES = new Set([
   '.pypirc',
   '_netrc',
 ])
+// FIDO2 security-key variants (`*_sk`) sit beside the classic private-key names.
 const KEY_FILE =
-  /(?:^|\/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:asc|gpg|jks|kdbx|key|keystore|p12|p8|pem|pfx|pgp|pkcs12|ppk))$/i
-const OS_OR_BROWSER = /(?:^|\/)(?:Cookies|Login Data|Keychains?|Local State|Web Data)(?:\/|$)/i
-const PROVIDER_STORE = /(?:^|\/)(?:\.aws|\.azure|\.config\/gcloud|\.docker|\.kube)(?:\/|$)/i
+  /(?:^|\/)(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|identity|[^/]+\.(?:asc|gpg|jks|kdbx|key|keystore|p12|p8|pem|pfx|pgp|pkcs12|ppk))$/i
+// Browser password stores beyond Chromium's cookie database names. `logins.json`
+// and `key4.db` hold every Firefox credential; `Cookies`/`Login Data` cover Chromium.
+const OS_OR_BROWSER =
+  /(?:^|\/)(?:Cookies|Login Data|Keychains?|Local State|Web Data|key4\.db|logins(?:-backup)?\.json|signons.*\.sqlite)(?:\/|$)/i
+// Cloud CLI credential stores: OCI, Vercel, Netlify and the legacy AWS/GCS hosts.
+const PROVIDER_STORE =
+  /(?:^|\/)(?:\.aws|\.azure|\.config\/gcloud|\.docker|\.gsutil|\.kube|\.netlify|\.oci|\.vercel)(?:\/|$)/i
 
 /** Returns an unoverrideable exclusion before user-authored rules run. */
 export function builtInExclusion(path: ManifestPath): ExclusionReason | null {
@@ -54,7 +60,8 @@ export function builtInExclusion(path: ManifestPath): ExclusionReason | null {
   if (lowerSegments.some((segment) => BUILD_SEGMENTS.has(segment))) return 'build-cache'
   const name = segments.at(-1) ?? ''
   const lowerName = name.toLowerCase()
-  if (/^\.env(?:\..*)?$/i.test(name)) return 'secret-environment'
+  // AC4 `.env*` in glob semantics also covers `.envrc` (direnv) and similar names.
+  if (/^\.env/i.test(name)) return 'secret-environment'
   if (KEY_FILE.test(path)) return 'key-material'
   if (lowerSegments.some((segment) => KEY_OR_CREDENTIAL_DIRECTORIES.has(segment))) {
     return 'key-material'
@@ -99,7 +106,16 @@ export function parseIgnoreRules(
     ) {
       throw new InvalidIgnoreRuleError(index + 1)
     }
-    if (pattern.endsWith('/')) pattern = `${pattern}**`
+    // A trailing slash targets a directory. `matchesGlob(dir, 'dir/**')` does not
+    // match the directory itself, so the bare segment gets its own rule as well.
+    if (pattern.endsWith('/')) {
+      let directory = pattern.slice(0, -1)
+      if (directory.length === 0) throw new InvalidIgnoreRuleError(index + 1)
+      if (!directory.includes('/')) directory = `**/${directory}`
+      rules.push({ include, pattern: directory, source })
+      rules.push({ include, pattern: `${directory}/**`, source })
+      continue
+    }
     if (!pattern.includes('/')) pattern = `**/${pattern}`
     rules.push({ include, pattern, source })
   }

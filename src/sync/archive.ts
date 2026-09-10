@@ -59,6 +59,7 @@ export type DecodedSyncArchiveEvent =
 
 export interface EncodeSyncArchiveOptions {
   readonly maxBytes?: number
+  readonly maxDirectories?: number
   readonly maxFileBytes?: number
   readonly maxFiles?: number
   readonly onProgress?: (progress: SyncArchiveProgress) => void | Promise<void>
@@ -77,7 +78,6 @@ function limit(value: number | undefined, fallback: number): number {
   }
   return result
 }
-
 function encodeHeader(value: unknown): Uint8Array {
   const parsed = ArchiveHeaderSchema.safeParse(value)
   if (!parsed.success) throw new SyncArchiveError('ARCHIVE_FORMAT')
@@ -108,6 +108,7 @@ function validateArchiveEntries(
   options: EncodeSyncArchiveOptions,
 ): readonly SyncSnapshotEntry[] {
   const maxBytes = limit(options.maxBytes, MAX_SYNC_BYTES)
+  const maxDirectories = limit(options.maxDirectories, MAX_SYNC_DIRECTORIES)
   const maxFileBytes = limit(options.maxFileBytes, MAX_SYNC_FILE_BYTES)
   const maxFiles = limit(options.maxFiles, MAX_SYNC_FILES)
   let entries: SyncSnapshotEntry[]
@@ -124,7 +125,7 @@ function validateArchiveEntries(
   for (const entry of entries) {
     if (entry.type === 'directory') {
       directories += 1
-      if (directories > MAX_SYNC_DIRECTORIES) throw new SyncArchiveError('ARCHIVE_LIMIT')
+      if (directories > maxDirectories) throw new SyncArchiveError('ARCHIVE_LIMIT')
       continue
     }
     files += 1
@@ -203,6 +204,7 @@ export async function* decodeSyncArchive(
   options: DecodeSyncArchiveOptions = {},
 ): AsyncIterable<DecodedSyncArchiveEvent> {
   const maxBytes = limit(options.maxBytes, MAX_SYNC_BYTES)
+  const maxDirectories = limit(options.maxDirectories, MAX_SYNC_DIRECTORIES)
   const maxFileBytes = limit(options.maxFileBytes, MAX_SYNC_FILE_BYTES)
   const maxFiles = limit(options.maxFiles, MAX_SYNC_FILES)
   let state: 'data' | 'ended' | 'header' | 'length' | 'magic' = 'magic'
@@ -215,6 +217,7 @@ export async function* decodeSyncArchive(
   let remainingFileBytes = 0
   let currentHash: ReturnType<typeof createHash> | undefined
   const entries: SyncSnapshotEntry[] = []
+  let directories = 0
   let previousPath: string | undefined
   let completedBytes = 0
   let completedFiles = 0
@@ -306,6 +309,8 @@ export async function* decodeSyncArchive(
         if (entries.length > MAX_SYNC_ENTRIES) throw new SyncArchiveError('ARCHIVE_LIMIT')
         yield { type: 'entry', entry }
         if (entry.type === 'directory') {
+          directories += 1
+          if (directories > maxDirectories) throw new SyncArchiveError('ARCHIVE_LIMIT')
           state = 'length'
           continue
         }
