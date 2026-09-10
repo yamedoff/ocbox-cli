@@ -3,6 +3,23 @@ import { ExecutionIdSchema, OperationIdSchema, SandboxIdSchema } from './ids.js'
 import { SandboxPathSchema } from './remote-path.js'
 import { UtcTimestampSchema } from './timestamps.js'
 
+const EXEC_ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+
+/** Non-secret execution settings. Secret references travel through a separate provider channel. */
+export const ExecEnvironmentSchema = z
+  .record(
+    z.string().regex(EXEC_ENVIRONMENT_NAME),
+    z
+      .string()
+      .max(32_768)
+      .refine((value) => !value.includes('\0')),
+  )
+  .superRefine((environment, context) => {
+    if (Object.keys(environment).length > 128) {
+      context.addIssue({ code: 'custom', message: 'Too many execution environment settings' })
+    }
+  })
+
 export const StructuredArgvCommandSchema = z
   .strictObject({
     mode: z.literal('argv'),
@@ -43,11 +60,12 @@ export const ExecRequestSchema = z.strictObject({
   command: ExecCommandSchema,
   workingDirectory: SandboxPathSchema.nullable(),
   timeoutMilliseconds: z.number().int().positive().safe().nullable(),
+  environment: ExecEnvironmentSchema,
 })
 
 export const ExecResultSchema = z
   .strictObject({
-    exitCode: z.number().int().safe(),
+    exitCode: z.number().int().min(0).max(255),
     stdout: z.instanceof(Uint8Array),
     stderr: z.instanceof(Uint8Array),
     timedOut: z.boolean(),
@@ -170,6 +188,7 @@ export type StructuredArgvCommand = z.infer<typeof StructuredArgvCommandSchema>
 export type ShellCommand = z.infer<typeof ShellCommandSchema>
 export type ExecCommand = z.infer<typeof ExecCommandSchema>
 export type ExecRequest = z.infer<typeof ExecRequestSchema>
+export type ExecEnvironment = z.infer<typeof ExecEnvironmentSchema>
 export type ExecResult = z.infer<typeof ExecResultSchema>
 export type ExecutionStatus = z.infer<typeof ExecutionStatusSchema>
 export type Execution = z.infer<typeof ExecutionSchema>

@@ -64,6 +64,6 @@ describe('public contract boundary', () => {
 
     const packageUrl = new URL('../../package.json', import.meta.url)
     const metadata = JSON.parse(await readFile(packageUrl, 'utf8')) as PackageMetadata
-    expect(Object.keys(metadata.dependencies)).toEqual(['@oclif/core', 'zod'])
+    expect(Object.keys(metadata.dependencies)).toEqual(['@oclif/core', 'smol-toml', 'zod'])
   })
 })

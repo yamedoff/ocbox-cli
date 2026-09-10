@@ -1,8 +1,8 @@
 # OpenCloudBox CLI
 
 `ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
-surface contains the empty oclif shell plus provider-neutral domain and adapter
-contracts. Product commands and provider integrations remain out of scope.
+surface contains the oclif shell, provider-neutral domain and adapter contracts,
+and the execution engine/helper boundary. Provider integrations remain out of scope.
 
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
@@ -12,7 +12,9 @@ import { SandboxSpecSchema, type SandboxProvider } from 'opencloudbox/contracts'
 ```
 
 See [docs/contracts.md](docs/contracts.md) for lifecycle, specification,
-idempotency, execution, file, preview, and error invariants.
+idempotency, execution, file, preview, and error invariants. See
+[docs/execution.md](docs/execution.md) for command grammar, streaming, cancellation,
+exit behavior, and the deliberately local fake-provider harness.
 
 ## Toolchain
 

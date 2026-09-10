@@ -466,6 +466,7 @@ describe('SandboxProvider contract', () => {
       command: { mode: 'argv', argv: ['false'] },
       workingDirectory: null,
       timeoutMilliseconds: null,
+      environment: {},
     })
     await expect(handle.result).resolves.toMatchObject({ exitCode: 17 })
   })
