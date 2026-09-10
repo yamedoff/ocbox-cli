@@ -71,6 +71,29 @@ describe('execution helper runtime', () => {
     expect(nonzero.result).toMatchObject({ exitCode: 17, timedOut: false, cancelled: false })
   })
 
+  it('keeps global event sequence ordered when a stdout sink is backpressured', async () => {
+    let release: () => void = () => {}
+    const stdoutBlocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const events: ExecEvent[] = []
+    const running = runExecutionHelper(
+      request([
+        process.execPath,
+        '-e',
+        "process.stdout.write('stdout'); setTimeout(() => process.stderr.write('stderr'), 10)",
+      ]),
+      async (event) => {
+        if (event.type === 'stdout') await stdoutBlocked
+        events.push(event)
+      },
+      { supportsBash: process.platform !== 'win32' },
+    )
+    setTimeout(release, 50).unref()
+    await running
+    expect(events.map((event) => event.sequence)).toEqual(events.map((_event, index) => index))
+  })
+
   it('rejects a missing executable as a typed before-start failure', async () => {
     const events: ExecEvent[] = []
     await expect(

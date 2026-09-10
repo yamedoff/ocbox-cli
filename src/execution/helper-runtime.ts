@@ -91,6 +91,14 @@ export async function runExecutionHelper(
   const spawnProcess = options.spawnProcess ?? spawn
   let sequence = 0
   let terminal = false
+  // stdout and stderr are independent async iterators. Serialize their calls to
+  // the transport so a slow sink cannot allow a later sequence to overtake an
+  // earlier one while it is backpressured.
+  let emitted: Promise<void> = Promise.resolve()
+  const emitOrdered = (event: ExecEvent): Promise<void> => {
+    emitted = emitted.then(() => emit(event))
+    return emitted
+  }
   const { executable, args } = helperSpawnArguments(request, options.supportsBash)
   let child: ChildProcess
   try {
@@ -124,7 +132,7 @@ export async function runExecutionHelper(
   await spawned
   const startedAt = now().toISOString() as UtcTimestamp
   try {
-    await emit({
+    await emitOrdered({
       type: 'started',
       executionId: request.executionId,
       sequence: sequence++,
@@ -142,7 +150,7 @@ export async function runExecutionHelper(
   }
 
   const writeChunk = async (stream: 'stdout' | 'stderr', data: Buffer): Promise<void> => {
-    await emit({
+    await emitOrdered({
       type: stream,
       executionId: request.executionId,
       sequence: sequence++,
@@ -223,7 +231,7 @@ export async function runExecutionHelper(
     startedAt,
     completedAt,
   }
-  await emit({
+  await emitOrdered({
     type: 'completed',
     executionId: request.executionId,
     sequence: sequence++,
