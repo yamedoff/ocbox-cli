@@ -5,6 +5,7 @@ export default defineConfig({
   dts: true,
   entry: {
     'commands/destroy': 'src/commands/destroy.ts',
+    'commands/exec': 'src/commands/exec.ts',
     'commands/init': 'src/commands/init.ts',
     'commands/ls': 'src/commands/ls.ts',
     'commands/pause': 'src/commands/pause.ts',

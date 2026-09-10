@@ -21,6 +21,7 @@ import {
 } from '../contracts.js'
 import { toSandboxSpec, type ProjectConfig } from '../config/index.js'
 import { OcboxError } from '../errors/index.js'
+import type { ExecutionTarget } from '../execution/service.js'
 import type { ProviderRegistry } from '../providers/registry.js'
 import { AtomicStoreCancelledError, AtomicStoreConflictError } from './atomic-json-store.js'
 import type { LifecycleProjectState } from './schema.js'
@@ -134,6 +135,71 @@ export class LifecycleService {
   async status(sessionId?: string): Promise<SessionView> {
     const session = await this.#resolveSession(sessionId)
     return this.#view(session.id)
+  }
+
+  /**
+   * Resolves the provider-neutral execution target for `ocbox exec`. This is the
+   * single composition point between the lifecycle state and the execution port:
+   * it selects `--session` or the active Session, enforces the v0.1 single primary
+   * running Sandbox binding, and never creates or replaces a Session or Sandbox.
+   */
+  async executionTarget(sessionId?: string): Promise<ExecutionTarget> {
+    const selected = await this.#resolveSession(sessionId)
+    const state = await this.#store.load()
+    const session = state.sessions[selected.id]
+    if (session === undefined) throw this.#notFound(selected.id)
+    if (session.state !== 'active') {
+      throw this.#invalidState(
+        session,
+        `Session ${session.id} is ${session.state}; ocbox exec requires an active Session`,
+      )
+    }
+
+    const activeBindings = session.bindings.filter((binding) => binding.releasedAt === null)
+    if (activeBindings.length > 1) {
+      throw this.#invalidState(
+        session,
+        `Session ${session.id} has ambiguous active Sandbox bindings; v0.1 permits exactly one`,
+      )
+    }
+    const binding = activeBindings[0]
+    if (binding === undefined || binding.role !== 'primary') {
+      throw this.#invalidState(
+        session,
+        `Session ${session.id} has no active primary Sandbox binding; run ocbox start`,
+      )
+    }
+    const sandbox = state.sandboxes[binding.sandboxId]
+    if (sandbox === undefined || sandbox.projectId !== session.projectId) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: `Session ${session.id} primary Sandbox binding is missing`,
+        requestId: RequestIdSchema.parse(this.#createId()),
+        details: { sessionId: session.id },
+      })
+    }
+    if (sandbox.lifecycle.normalizedState !== 'running') {
+      throw this.#invalidState(
+        session,
+        `Session ${session.id} Sandbox is ${sandbox.lifecycle.normalizedState}; run ocbox start`,
+      )
+    }
+
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const provider = this.#provider(requestId)
+    const capabilities = await provider.capabilities({
+      requestId,
+      issuedAt: this.#timestamp(),
+    })
+    if (!capabilities.execution.streaming || !capabilities.execution.cancellation) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: `Provider ${provider.name} does not support streaming cancellable execution`,
+        requestId,
+        details: { provider: provider.name },
+      })
+    }
+    return { session, sandbox, capabilities, provider }
   }
 
   async list(): Promise<readonly SessionView[]> {
