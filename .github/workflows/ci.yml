@@ -49,6 +49,8 @@ jobs:
         run: node scripts/verify-toolchain.mjs
       - name: Install dependencies from lockfile
         run: pnpm install --frozen-lockfile
+      - name: Verify pinned OpenAPI contract
+        run: pnpm run api:check
       - name: Typecheck
         run: pnpm run typecheck
       - name: Lint
