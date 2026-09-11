@@ -36,6 +36,34 @@ function takeValue(input: readonly string[], index: number, flag: string): strin
   return value
 }
 
+/**
+ * oclif's flag grammar accepts both `--flag VALUE` and `--flag=VALUE`; the exec
+ * grammar must accept the same forms. Returns the inline value when present.
+ */
+function splitInlineValue(token: string): { name: string; inline: string | null } | null {
+  if (!token.startsWith('--')) return null
+  const separator = token.indexOf('=')
+  if (separator === -1) return { name: token, inline: null }
+  return { name: token.slice(0, separator), inline: token.slice(separator + 1) }
+}
+
+function takeOptionValue(
+  input: readonly string[],
+  index: number,
+  flag: string,
+  inline: string | null,
+): string {
+  if (inline !== null) return inline
+  return takeValue(input, index, flag)
+}
+
+function parseBooleanOutputMode(inline: string | null, flag: string): boolean {
+  if (inline === null) return true
+  if (inline === 'true') return true
+  if (inline === 'false') return false
+  throw new ExecArgumentError(`${flag} expects true or false`)
+}
+
 function parseWorkingDirectory(value: string): string {
   if (!posix.isAbsolute(value) || value.includes('\\') || posix.normalize(value) !== value) {
     throw new ExecArgumentError('--cwd must be a normalized absolute sandbox path')
@@ -84,38 +112,50 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
   const environment: Record<string, string> = {}
 
   for (let index = 0; index < input.length; index++) {
-    const item = input[index]
+    const item = input[index] ?? ''
     if (item === '--') {
       argv = input.slice(index + 1)
       break
     }
-    if (item === '--session') {
-      const value = takeValue(input, index, item)
+    const inlineForm = splitInlineValue(item)
+    const name = inlineForm?.name ?? item
+    const inline = inlineForm?.inline ?? null
+    if (name === '--session') {
+      const value = takeOptionValue(input, index, name, inline)
       const parsed = SessionIdSchema.safeParse(value)
       if (!parsed.success) throw new ExecArgumentError('--session requires a valid Session ID')
       sessionId = parsed.data
-      index++
-    } else if (item === '--cwd') {
-      workingDirectory = parseWorkingDirectory(takeValue(input, index, item))
-      index++
-    } else if (item === '--timeout') {
-      timeoutMilliseconds = parseTimeout(takeValue(input, index, item))
-      index++
-    } else if (item === '--env') {
-      addEnvironment(environment, takeValue(input, index, item))
-      index++
-    } else if (item === '--shell') {
-      shell = takeValue(input, index, item)
-      index++
+      if (inline === null) index++
+    } else if (name === '--cwd') {
+      workingDirectory = parseWorkingDirectory(takeOptionValue(input, index, name, inline))
+      if (inline === null) index++
+    } else if (name === '--timeout') {
+      timeoutMilliseconds = parseTimeout(takeOptionValue(input, index, name, inline))
+      if (inline === null) index++
+    } else if (name === '--env') {
+      addEnvironment(environment, takeOptionValue(input, index, name, inline))
+      if (inline === null) index++
+    } else if (name === '--shell') {
+      shell = takeOptionValue(input, index, name, inline)
+      if (inline === null) index++
     } else if (item === '--json' || item === '--jsonl') {
       const requested = item.slice(2) as ExecutionOutputMode
       if (outputMode !== 'human')
         throw new ExecArgumentError('--json and --jsonl are mutually exclusive')
       outputMode = requested
     } else {
-      throw new ExecArgumentError(
-        'Unknown exec option; use -- before the executable and its arguments',
-      )
+      if (name === '--json' || name === '--jsonl') {
+        const requested = (name === '--json' ? 'json' : 'jsonl') as ExecutionOutputMode
+        if (parseBooleanOutputMode(inline, name)) {
+          if (outputMode !== 'human')
+            throw new ExecArgumentError('--json and --jsonl are mutually exclusive')
+          outputMode = requested
+        }
+      } else {
+        throw new ExecArgumentError(
+          'Unknown exec option; use -- before the executable and its arguments',
+        )
+      }
     }
   }
 

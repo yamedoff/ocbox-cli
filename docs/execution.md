@@ -1,9 +1,21 @@
 # Execution engine
 
-`runExecutionCommand` is the provider-neutral `ocbox exec` command runner. A thin
-oclif adapter supplies the resolved Session/provider target when the lifecycle
-command layer is composed. This slice does not register a provider-specific
-command or claim remote isolation.
+`ocbox exec` is registered as a thin oclif adapter over `runExecutionCommand`, the
+provider-neutral execution runner. The adapter resolves the selected Session and
+its v0.1 primary Sandbox binding through the lifecycle service and hands that
+target to the existing parser/runner/service. It never invokes a local shell and
+never claims remote isolation.
+
+## CLI usage
+
+`ocbox exec [OPTIONS] -- ARGV...` runs one structured command in the selected
+Session's primary running Sandbox. `--session` selects an explicit active Session;
+otherwise the lifecycle-selected Session is used. Host flags `--config`,
+`--state-dir`, and `--no-color` are consumed by the adapter and never reach the
+execution grammar. Missing selection, terminal/non-active Sessions, missing
+bindings, and unsupported capabilities are rejected with typed `OcboxError`
+codes surfaced in the bounded result envelope; a Session or Sandbox is never
+silently created or replaced.
 
 ## Grammar and validation
 
@@ -51,11 +63,12 @@ from the process code.
 ## Fake-provider scope and evidence
 
 `FakeProviderExecution` uses `LocalProcessExecutionHarness` to exercise the public
-provider port deterministically. The harness starts processes on the developer or
-CI host. It is only a contract/integration test fixture and is neither a sandbox
-adapter nor proof of isolation. It uses a bounded producer queue, tears down the
-process tree on timeout/cancellation, and stops producers when a consumer abandons
-the event stream.
+provider port deterministically. The fake provider exposes this port so the built
+CLI can be invoked end to end without a paid dependency. The harness starts
+processes on the developer or CI host. It is only a contract/integration test
+fixture and is neither a sandbox adapter nor proof of isolation. It uses a bounded
+producer queue, tears down the process tree on timeout/cancellation, and stops
+producers when a consumer abandons the event stream.
 
 The test matrix covers literal argv values, Unicode split boundaries, binary
 frames, malformed/truncated/oversized frames, shell gating, nonzero and reserved

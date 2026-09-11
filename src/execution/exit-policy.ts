@@ -22,7 +22,22 @@ export type ExecutionOutcome =
   | { readonly kind: 'remote_result'; readonly result: ExecResult }
   | { readonly kind: 'timeout'; readonly result: ExecResult }
   | { readonly kind: 'cancelled'; readonly result: ExecResult | null }
-  | { readonly kind: 'infrastructure_error'; readonly error: ExecutionInfrastructureError }
+  | {
+      readonly kind: 'infrastructure_error'
+      readonly error: ExecutionInfrastructureError
+      /**
+       * Curated code/message from a typed `OcboxError` detected before a remote
+       * process started. It is optional so infrastructure failures with no safe
+       * typed classification keep the original generic envelope.
+       */
+      readonly detail?: ExecutionOutcomeDetail
+    }
+
+/** Safe, already-redacted classification surfaced for pre-start target failures. */
+export interface ExecutionOutcomeDetail {
+  readonly code: string
+  readonly message: string
+}
 
 export function outcomeForResult(result: ExecResult): ExecutionOutcome {
   if (result.timedOut) return { kind: 'timeout', result }
