@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+# The compiled CLI ships as a self-contained bundle beside its oclif manifest;
+# this launcher is the stable command on PATH inside the image.
+exec node /opt/ocbox/cli/dist/index.js "$@"

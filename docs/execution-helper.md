@@ -1,10 +1,13 @@
 # Execution helper protocol v1
 
-The built helper is `dist/execution-helper.js`. T7 installs this file at a
-constant path in the baseline image; provider adapters invoke that constant
-command and pass protocol frames through a binary-safe channel. To negotiate the
-wire version, run `node dist/execution-helper.js --protocol-version`. Version 1
-prints exactly `1` followed by a newline, writes nothing to stderr, and exits 0.
+The built helper is `dist/execution-helper.js`. The helper build emits a single
+self-contained bundle with its production dependencies inlined and no shared
+chunks, so T7 can install it at a constant image path without a `node_modules`
+tree. Provider adapters invoke that constant command
+(`/opt/ocbox/bin/ocbox-exec-helper.js`) and pass protocol frames through a
+binary-safe channel. To negotiate the wire version, run
+`node dist/execution-helper.js --protocol-version`. Version 1 prints exactly `1`
+followed by a newline, writes nothing to stderr, and exits 0.
 
 The adapter sends one unsigned 32-bit big-endian byte length, followed by one
 UTF-8 JSON request, then closes the request channel. The decoder consumes EOF

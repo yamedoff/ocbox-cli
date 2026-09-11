@@ -20,5 +20,11 @@
     "skipLibCheck": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "tsup.config.ts", "vitest.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "tsup.config.ts",
+    "tsup.helper.config.ts",
+    "vitest.config.ts"
+  ]
 }

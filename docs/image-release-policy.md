@@ -5,6 +5,15 @@ stable gate false until T8 and T9 have published provider-internal artifacts and
 recorded five successful runs with measured startup, operation latency, and cost.
 The repository does not expose snapshots as a product feature.
 
+The candidate ships the compiled `ocbox` CLI and the v1 execution helper. The CLI
+and commands are built with their production dependencies inlined, so the image
+carries no `node_modules` tree and no build-only dependency graph. The helper is a
+single self-contained file installed at the fixed contract path
+`/opt/ocbox/bin/ocbox-exec-helper.js`. The image readiness probe asserts the
+non-root identity, home/workspace paths, `tini` entrypoint, runtime umask,
+writable workspace, DNS/HTTPS egress, pinned toolchain versions, the helper
+protocol version, and that the compiled CLI starts.
+
 ## Rebuild and patch policy
 
 The candidate workflow runs each Tuesday and on relevant pull requests. A change
@@ -24,7 +33,10 @@ digest and records the reason rather than rebuilding an old tag.
 
 The workflow builds `linux/amd64`, records the final digest and BuildKit
 provenance, emits an SPDX JSON SBOM from the final image, and scans that same image
-for critical vulnerabilities and credential material. Non-pull-request runs also
+for critical vulnerabilities and credential material. The classic loadable image
+is built with provenance disabled, and a second OCI export carries the
+attestations; both builds pin `SOURCE_DATE_EPOCH` to the source commit time and are
+accepted only when their image config digests match. Non-pull-request runs also
 attest and sign the candidate archive through GitHub OIDC, then verify the bundle;
 there is no long-lived signing key. All third-party actions use immutable commit
 SHAs.

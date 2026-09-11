@@ -1,6 +1,12 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
+  banner: {
+    // @oclif/core ships CommonJS. When it is inlined into an ESM bundle its
+    // runtime `require` calls (for example `require('url')`) need a real
+    // CommonJS require rooted at this module.
+    js: "import { createRequire as __ocboxCreateRequire } from 'node:module';\nconst require = __ocboxCreateRequire(import.meta.url);",
+  },
   clean: true,
   dts: true,
   entry: {
@@ -15,11 +21,18 @@ export default defineConfig({
     'commands/stop': 'src/commands/stop.ts',
     'commands/use': 'src/commands/use.ts',
     contracts: 'src/contracts.ts',
-    'execution-helper': 'src/execution/helper-main.ts',
     index: 'src/index.ts',
     infrastructure: 'src/infrastructure.ts',
   },
   format: ['esm'],
+  // The CLI is copied into the base image without a node_modules tree, so every
+  // production dependency must be inlined. Shared output chunks keep one copy of
+  // @oclif/core across the entry points. The execution helper is built
+  // separately by tsup.helper.config.ts as a single self-contained file.
+  // TypeScript stays external: oclif only loads it for dev-mode ts paths, and
+  // inlining it would add ~10 MiB to the compiled CLI.
+  external: ['typescript'],
+  noExternal: ['@oclif/core', 'smol-toml', 'zod'],
   outDir: 'dist',
   platform: 'node',
   sourcemap: true,

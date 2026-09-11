@@ -15,7 +15,7 @@ fail() {
 [[ ! -S /var/run/docker.sock ]] || fail 'docker socket is mounted'
 command -v sudo >/dev/null 2>&1 && fail 'sudo is installed'
 
-for command_name in bash node corepack pnpm git ssh curl tar gzip xz jq rg patch make g++ python3 tini; do
+for command_name in bash node corepack pnpm git ssh curl tar gzip xz jq rg patch make g++ python3 tini ocbox; do
   command -v "$command_name" >/dev/null 2>&1 || fail "missing ${command_name}"
 done
 
@@ -23,9 +23,13 @@ done
 [[ "$(corepack --version)" == "0.36.0" ]] || fail 'corepack version'
 [[ "$(pnpm --version)" == "11.24.0" ]] || fail 'pnpm version'
 [[ "$(node /opt/ocbox/bin/ocbox-exec-helper.js --protocol-version)" == "1" ]] || fail 'execution helper'
+ocbox --version >/dev/null || fail 'compiled cli'
 
-probe_path="$(mktemp /workspace/.ocbox-readiness.XXXXXX)"
-trap 'rm -f "$probe_path"' EXIT
+# mktemp forces mode 0600, so create the probe file with a normal redirect to
+# observe the runtime umask (027 gives owner rw, group r, other none).
+probe_directory="$(mktemp -d /workspace/.ocbox-readiness.XXXXXX)"
+probe_path="${probe_directory}/probe"
+trap 'rm -rf "$probe_directory"' EXIT
 printf 'ready\n' >"$probe_path"
 [[ "$(stat -c '%u:%g:%a' "$probe_path")" == "10001:10001:640" ]] || fail 'workspace ownership or mode'
 

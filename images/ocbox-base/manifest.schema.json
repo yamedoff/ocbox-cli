@@ -67,7 +67,28 @@
       }
     },
     "guaranteedTools": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-    "capabilities": { "type": "object" },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structuredArgv",
+        "bashShell",
+        "tty",
+        "preview",
+        "database",
+        "dockerSocket",
+        "sudo"
+      ],
+      "properties": {
+        "structuredArgv": { "const": true },
+        "bashShell": { "const": true },
+        "tty": { "const": false },
+        "preview": { "const": false },
+        "database": { "const": false },
+        "dockerSocket": { "const": false },
+        "sudo": { "const": false }
+      }
+    },
     "release": {
       "type": "object",
       "additionalProperties": false,

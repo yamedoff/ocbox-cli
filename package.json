@@ -54,7 +54,7 @@
     "commands": "./dist/commands"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsup --config tsup.helper.config.ts",
     "cli:smoke": "node dist/index.js --version && node dist/index.js --help && pnpm run helper:smoke",
     "dependencies:check": "pnpm audit --audit-level=high",
     "format": "biome format . --write",
@@ -62,8 +62,9 @@
     "helper:smoke": "node scripts/verify-execution-helper.mjs",
     "licenses:check": "node scripts/check-licenses.mjs",
     "lint": "biome lint .",
-    "test": "pnpm run test:unit && pnpm run build && pnpm run test:cli",
+    "test": "pnpm run test:unit && pnpm run test:image-verifier && pnpm run build && pnpm run test:cli",
     "test:cli": "node scripts/test-cli-lifecycle.mjs && node scripts/test-cli-exec.mjs",
+    "test:image-verifier": "node scripts/test-image-verifier.mjs",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   },

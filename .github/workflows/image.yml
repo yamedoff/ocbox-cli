@@ -6,7 +6,11 @@ on:
     paths:
       - images/ocbox-base/**
       - scripts/verify-image-candidate.mjs
-      - src/execution/**
+      - scripts/verify-execution-helper.mjs
+      - src/**
+      - tsup.config.ts
+      - tsup.helper.config.ts
+      - tsconfig.json
       - package.json
       - pnpm-lock.yaml
       - .github/workflows/image.yml
@@ -33,6 +37,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pin reproducible build epoch
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -54,6 +60,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm run build
           test -f dist/execution-helper.js
+          node scripts/verify-execution-helper.mjs
       - name: Verify source and registry pins
         run: node scripts/verify-image-candidate.mjs --registry
       - name: Build loadable runtime candidate
@@ -65,6 +72,7 @@ jobs:
             --tag "$IMAGE_REF" \
             --load \
             --provenance=false \
+            --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             --metadata-file runtime-build-metadata.json \
             .
           jq -e '."containerimage.config.digest" | test("^sha256:[0-9a-f]{64}$")' runtime-build-metadata.json
@@ -76,20 +84,24 @@ jobs:
             --file images/ocbox-base/Dockerfile \
             --tag "$IMAGE_REF" \
             --provenance=mode=max \
+            --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             --metadata-file build-metadata.json \
             --output type=oci,dest=artifacts/ocbox-base.oci.tar \
             .
           jq -e '."containerimage.digest" | test("^sha256:[0-9a-f]{64}$")' build-metadata.json
           test "$(jq -r '."containerimage.config.digest"' runtime-build-metadata.json)" = \
             "$(jq -r '."containerimage.config.digest"' build-metadata.json)"
-          jq '."buildx.build.provenance"' build-metadata.json > artifacts/provenance.json
+          jq -e '."buildx.build.provenance"' build-metadata.json > artifacts/provenance.json
           jq --arg digest "$(jq -r '."containerimage.digest"' build-metadata.json)" \
             '.image.digest = $digest' images/ocbox-base/manifest.json > artifacts/image-manifest.json
       - name: Run readiness and image policy checks
         run: |
           docker run --rm --network=bridge "$IMAGE_REF" /opt/ocbox/bin/readiness.sh
+          docker run --rm "$IMAGE_REF" ocbox --version
           test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.User}}')" = '10001:10001'
           test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.WorkingDir}}')" = '/workspace'
+          test "$(docker image inspect "$IMAGE_REF" --format '{{index .Config.Labels "org.opencontainers.image.base.digest"}}')" = \
+            'sha256:6642ef280aebc09c4541bee0b15c9f89f0f3f3c247ddee79ae1d37eddfdcbbaa'
           ! docker history --no-trunc "$IMAGE_REF" | grep -E '(AKIA[A-Z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9_-]{8,})'
       - name: Generate SPDX SBOM from final image
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2

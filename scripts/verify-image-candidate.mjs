@@ -33,6 +33,15 @@ async function source(name) {
   return readFile(new URL(name, IMAGE), 'utf8')
 }
 
+function workflowStep(workflow, name, nextName) {
+  const start = workflow.indexOf(name)
+  assert(start !== -1, `workflow step ${name}`)
+  const end =
+    nextName === undefined ? workflow.length : workflow.indexOf(nextName, start + name.length)
+  assert(end !== -1, `workflow step ${nextName}`)
+  return workflow.slice(start, end)
+}
+
 async function walk(directory) {
   const paths = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -43,17 +52,15 @@ async function walk(directory) {
   return paths
 }
 
-export async function verifyStaticCandidate() {
-  const manifest = JSON.parse(await source('manifest.json'))
-  const schema = JSON.parse(await source('manifest.schema.json'))
-  const dockerfile = await source('Dockerfile')
-  const entrypoint = await source('entrypoint.sh')
-  const readiness = await source('readiness.sh')
-  const workflow = await readFile(
-    new URL('../.github/workflows/image.yml', import.meta.url),
-    'utf8',
-  )
-
+export function verifyImageSources({
+  manifest,
+  schema,
+  dockerfile,
+  entrypoint,
+  readiness,
+  launcher,
+  workflow,
+}) {
   assert(schema.$id.endsWith('base-image-manifest-v1.json'), 'manifest schema id')
   assert(manifest.schemaVersion === 1, 'manifest version')
   assert(manifest.base.platformDigest === BASE_DIGEST, 'base platform digest')
@@ -80,8 +87,26 @@ export async function verifyStaticCandidate() {
   assert(dockerfile.includes('FROM --platform=linux/amd64'), 'Dockerfile architecture')
   assert(dockerfile.includes('USER 10001:10001'), 'Dockerfile non-root user')
   assert(
+    dockerfile.includes(`org.opencontainers.image.base.digest="${BASE_DIGEST}"`),
+    'OCI base digest label',
+  )
+  assert(
+    dockerfile.includes('ENTRYPOINT ["/usr/bin/tini", "--", "/opt/ocbox/bin/entrypoint.sh"]'),
+    'tini init entrypoint',
+  )
+  assert(
     dockerfile.includes('dist/execution-helper.js /opt/ocbox/bin/ocbox-exec-helper.js'),
     'fixed helper path',
+  )
+  assert(
+    dockerfile.includes('COPY --chown=ocbox:ocbox dist /opt/ocbox/cli/dist') &&
+      dockerfile.includes('package.json /opt/ocbox/cli/package.json') &&
+      dockerfile.includes('images/ocbox-base/ocbox /opt/ocbox/bin/'),
+    'compiled CLI install',
+  )
+  assert(
+    launcher.includes('node /opt/ocbox/cli/dist/index.js') && launcher.includes('exec '),
+    'compiled CLI launcher',
   )
   assert(
     dockerfile.includes('npm install --global --ignore-scripts --force'),
@@ -93,17 +118,70 @@ export async function verifyStaticCandidate() {
     'entrypoint semantics',
   )
   assert(
-    readiness.includes('--protocol-version') && readiness.includes('registry.npmjs.org'),
+    readiness.includes('--protocol-version') &&
+      readiness.includes('registry.npmjs.org') &&
+      readiness.includes('ocbox --version') &&
+      readiness.includes('mktemp -d /workspace'),
     'readiness coverage',
+  )
+  assert(
+    manifest.capabilities.structuredArgv === true &&
+      manifest.capabilities.bashShell === true &&
+      manifest.capabilities.tty === false &&
+      manifest.capabilities.preview === false &&
+      manifest.capabilities.database === false &&
+      manifest.capabilities.dockerSocket === false &&
+      manifest.capabilities.sudo === false,
+    'runtime capability gate',
+  )
+  assert(
+    schema.properties.capabilities.additionalProperties === false &&
+      schema.properties.capabilities.properties.structuredArgv.const === true &&
+      schema.properties.capabilities.properties.sudo.const === false &&
+      schema.properties.capabilities.properties.dockerSocket.const === false,
+    'capability schema gate',
   )
   assert(
     workflow.includes('docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5'),
     'isolated Buildx builder pin',
   )
+  const loadableStep = workflowStep(
+    workflow,
+    'Build loadable runtime candidate',
+    'Export attested OCI candidate',
+  )
+  const ociStep = workflowStep(
+    workflow,
+    'Export attested OCI candidate',
+    'Run readiness and image policy checks',
+  )
+  assert(loadableStep.includes('--load'), 'classic load output')
+  assert(loadableStep.includes('--provenance=false'), 'classic load must disable provenance')
   assert(
-    workflow.includes('--provenance=false') &&
-      workflow.includes('--output type=oci,dest=artifacts/ocbox-base.oci.tar'),
-    'loadable runtime and attested OCI outputs are separated',
+    !loadableStep.includes('--provenance=mode=max'),
+    'classic load must not claim attestations',
+  )
+  assert(ociStep.includes('--provenance=mode=max'), 'OCI output must enable provenance')
+  assert(ociStep.includes('--output type=oci,dest=artifacts/ocbox-base.oci.tar'), 'OCI output file')
+  assert(!ociStep.includes('--provenance=false'), 'OCI output must not disable provenance')
+  assert(dockerfile.includes('ARG SOURCE_DATE_EPOCH='), 'reproducible build epoch default')
+  assert(
+    workflow.includes('SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)'),
+    'reproducible build epoch source',
+  )
+  assert(
+    loadableStep.includes('--build-arg SOURCE_DATE_EPOCH=') &&
+      ociStep.includes('--build-arg SOURCE_DATE_EPOCH='),
+    'reproducible build epoch is pinned on both outputs',
+  )
+  assert(
+    workflow.includes('subject-path: artifacts/ocbox-base.oci.tar') &&
+      !workflow.includes('subject-path: artifacts/ocbox-base.tar'),
+    'attestation subject is the OCI archive',
+  )
+  assert(
+    workflow.includes(`jq -e '."buildx.build.provenance"'`),
+    'provenance metadata fails closed',
   )
   const actionReferences = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s]+)/g)]
   assert(actionReferences.length >= 7, 'supply-chain action coverage')
@@ -119,6 +197,22 @@ export async function verifyStaticCandidate() {
   ]) {
     assert(workflow.includes(required), `workflow is missing ${required}`)
   }
+}
+
+export async function loadImageSources() {
+  return {
+    manifest: JSON.parse(await source('manifest.json')),
+    schema: JSON.parse(await source('manifest.schema.json')),
+    dockerfile: await source('Dockerfile'),
+    entrypoint: await source('entrypoint.sh'),
+    readiness: await source('readiness.sh'),
+    launcher: await source('ocbox'),
+    workflow: await readFile(new URL('../.github/workflows/image.yml', import.meta.url), 'utf8'),
+  }
+}
+
+export async function verifyStaticCandidate() {
+  verifyImageSources(await loadImageSources())
 
   const files = await walk(fileURLToPath(IMAGE))
   const credentialPattern =
