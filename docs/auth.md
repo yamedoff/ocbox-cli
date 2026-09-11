@@ -13,9 +13,14 @@ ocbox auth status
 ocbox auth logout
 ```
 
-`--api-url` (or `OCBOX_API_URL`) is the hosted API base URL. The registered
-public client is `ocb_cli` with the single `source:read` scope and the `cli`
-audience; the authorized redirect is exactly
+`--api-url` (or `OCBOX_API_URL`) is the hosted API base URL. All protocol
+endpoints are derived from the pinned hosted OpenAPI contract root: the value
+is normalized (a trailing `/v1` is removed first, exactly like the generated
+client) and served under `/v1/auth/...`. Cleartext `http` is only accepted for
+literal loopback hosts (`127.0.0.1`, `localhost`, `[::1]`), so codes, PKCE
+verifiers, and token pairs never cross a non-loopback network hop in cleartext.
+The registered public client is `ocb_cli` with the single `source:read` scope
+and the `cli` audience; the authorized redirect is exactly
 `http://127.0.0.1:{randomPort}/callback`.
 
 `login` prints/opens the authorization URL and waits for the loopback callback.

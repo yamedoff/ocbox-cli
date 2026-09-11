@@ -82,7 +82,7 @@ function startMockAuthApi() {
           .end(JSON.stringify({ error: { code: 'INVALID_REQUEST' } }))
         return
       }
-      if (url.pathname === '/auth/cli/token') {
+      if (url.pathname === '/v1/auth/cli/token') {
         if (body.grantType === 'authorization_code') {
           calls.exchange += 1
           const record = codes.get(body.code)
@@ -122,7 +122,7 @@ function startMockAuthApi() {
           return
         }
       }
-      if (url.pathname === '/auth/revoke') {
+      if (url.pathname === '/v1/auth/revoke') {
         calls.revoke += 1
         calls.revoked.push(body.token)
         if (revokeFails) {

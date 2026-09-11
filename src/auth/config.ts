@@ -31,6 +31,9 @@ export interface AuthEndpointOverrides {
   readonly scopes?: readonly string[] | undefined
 }
 
+/** Hosts for which cleartext http is tolerated (loopback-only development setups). */
+const HTTP_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
 /** Normalizes an issuer base URL and rejects non-http(s) or credentialed forms. */
 export function normalizeIssuer(issuer: string): string {
   let parsed: URL
@@ -41,6 +44,15 @@ export function normalizeIssuer(issuer: string): string {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new TypeError('The hosted API URL must use http or https')
+  }
+  if (
+    parsed.protocol === 'http:' &&
+    !HTTP_LOOPBACK_HOSTS.has(parsed.hostname.trim().toLowerCase())
+  ) {
+    // Authorization codes, PKCE verifiers, and token pairs must never cross a
+    // non-loopback network hop in cleartext; loopback http stays available for
+    // development and integration mocks.
+    throw new TypeError('The hosted API URL must use https except on loopback hosts')
   }
   if (parsed.username !== '' || parsed.password !== '') {
     throw new TypeError('The hosted API URL must not embed credentials')
@@ -56,21 +68,35 @@ function joinEndpoint(issuer: string, path: string): string {
   return `${issuer}/${path.replace(/^\/+/, '')}`
 }
 
+/**
+ * The pinned hosted OpenAPI contract serves every operation under `/v1`
+ * (`servers: [{url: "/v1"}]`, matching the generated client). Users naturally
+ * provide the bare deployment origin, so the version segment is appended here
+ * and a caller-supplied trailing `/v1` is normalized away exactly like the
+ * generated client does.
+ */
+export const HOSTED_API_VERSION_SEGMENT = 'v1'
+
+function versionedApiBase(normalizedIssuer: string): string {
+  return `${normalizedIssuer.replace(/\/v1\/?$/, '')}/${HOSTED_API_VERSION_SEGMENT}`
+}
+
 /** Derives the documented protocol endpoints from a single hosted API base URL. */
 export function authEndpointsFromIssuer(
   issuer: string,
   overrides: AuthEndpointOverrides = {},
 ): AuthEndpoints {
   const normalized = normalizeIssuer(issuer)
+  const apiBase = versionedApiBase(normalized)
   return {
     audience: DEFAULT_AUDIENCE,
     authorizationEndpoint:
-      overrides.authorizationEndpoint ?? joinEndpoint(normalized, 'auth/cli/authorize'),
+      overrides.authorizationEndpoint ?? joinEndpoint(apiBase, 'auth/cli/authorize'),
     clientId: overrides.clientId ?? DEFAULT_CLIENT_ID,
     issuer: normalized,
-    revocationEndpoint: overrides.revocationEndpoint ?? joinEndpoint(normalized, 'auth/revoke'),
+    revocationEndpoint: overrides.revocationEndpoint ?? joinEndpoint(apiBase, 'auth/revoke'),
     scopes: overrides.scopes ?? [...DEFAULT_SCOPES],
-    tokenEndpoint: overrides.tokenEndpoint ?? joinEndpoint(normalized, 'auth/cli/token'),
+    tokenEndpoint: overrides.tokenEndpoint ?? joinEndpoint(apiBase, 'auth/cli/token'),
   }
 }
 

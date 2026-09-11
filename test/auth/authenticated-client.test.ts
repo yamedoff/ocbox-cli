@@ -111,6 +111,45 @@ describe('authenticated HTTP client', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('owns the Authorization and Idempotency-Key headers exclusively across spellings', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    const captured: Array<{ authorization: string; idempotencyKey: string }> = []
+    const fetchImpl: FetchPort = (_input, init) => {
+      const headers = new Headers(init?.headers)
+      captured.push({
+        authorization: headers.get('authorization') ?? '',
+        idempotencyKey: headers.get('idempotency-key') ?? '',
+      })
+      return Promise.resolve(new Response('ok', { status: 200 }))
+    }
+    const client = new AuthenticatedHttpClient({
+      fetch: fetchImpl,
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+    const result = await client.request({
+      headers: { Authorization: 'forgotten', 'Idempotency-Key': 'stale' },
+      idempotencyKey: 'fresh-key-1',
+      method: 'POST',
+      url: 'https://api.test/v1/projects',
+    })
+    expect(result.response.status).toBe(200)
+    // The caller-supplied spellings must be gone; undici would otherwise merge
+    // same-name entries into a combined header on the wire.
+    expect(captured[0]).toEqual({
+      authorization: `Bearer ${ACCESS_A}`,
+      idempotencyKey: 'fresh-key-1',
+    })
+  })
+
   it('serializes refresh across concurrent 401 responses', async () => {
     const store = new MemoryCredentialStore()
     await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))

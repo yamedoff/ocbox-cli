@@ -31,6 +31,12 @@ function retryAfterSecondsOf(response: Response): number | null {
   return delta >= 0 && delta <= 86_400 ? delta : null
 }
 
+function deleteOwnedHeader(headers: Record<string, string>, name: string): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) delete headers[key]
+  }
+}
+
 export interface AuthenticatedHttpClientOptions {
   readonly tokens: HostedTokenManager
   readonly fetch: FetchPort
@@ -108,6 +114,12 @@ export class AuthenticatedHttpClient {
 
   async #send(request: AuthenticatedRequest, token: string): Promise<AuthenticatedFetchResult> {
     const headers: Record<string, string> = { ...(request.headers ?? {}) }
+    // Header ownership: remove every caller-supplied spelling of the managed
+    // headers before writing the canonical ones. Keeping a second casing would
+    // make undici merge both values into one combined header on the wire
+    // (e.g. `Authorization: attacker, Bearer <token>`).
+    deleteOwnedHeader(headers, 'authorization')
+    deleteOwnedHeader(headers, 'idempotency-key')
     headers['authorization'] = `Bearer ${token}`
     if (request.idempotencyKey !== undefined) {
       headers['idempotency-key'] = request.idempotencyKey

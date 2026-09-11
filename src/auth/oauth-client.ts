@@ -5,6 +5,13 @@ import { newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
 
 const MAX_RESPONSE_BYTES = 64 * 1024
+/**
+ * Hard ceiling on bytes pulled off the wire before a response is even parsed,
+ * so a hostile or broken endpoint cannot run the CLI out of memory with an
+ * oversized (or endless) body. Parsed payloads are capped separately at
+ * `MAX_RESPONSE_BYTES`.
+ */
+const MAX_BODY_READ_BYTES = 256 * 1024
 const PROVIDER_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/
 
 /** Strict runtime shape of the documented CLI token pair. */
@@ -59,6 +66,38 @@ function unsafeMessage(message: string): OcboxError {
     message,
     requestId: newRequestId(),
   })
+}
+
+/**
+ * Reads at most `ceilingBytes` from the response and aborts the body beyond
+ * that, so an oversized stream cannot buffer unboundedly in the CLI process.
+ */
+async function readBoundedResponseText(response: Response): Promise<string> {
+  const body = response.body
+  if (body === null) return ''
+  const reader = body.getReader()
+  const decoder = new TextDecoder('utf8', { fatal: false })
+  let bytes = 0
+  let text = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    bytes += value.byteLength
+    if (bytes > MAX_BODY_READ_BYTES) {
+      await reader.cancel().catch(() => undefined)
+      throw new OversizedResponseError()
+    }
+    text += decoder.decode(value, { stream: true })
+  }
+  text += decoder.decode()
+  return text
+}
+
+class OversizedResponseError extends Error {
+  constructor() {
+    super('Authentication response exceeded the bounded read size')
+    this.name = 'OversizedResponseError'
+  }
 }
 
 export interface CliOAuthClientOptions {
@@ -179,7 +218,12 @@ export class CliOAuthClient implements CliOAuthClientPort {
         method: 'POST',
         signal: timeout.signal,
       })
-      const text = await response.text()
+      let text = ''
+      try {
+        text = await readBoundedResponseText(response)
+      } catch {
+        text = ''
+      }
       if (!response.ok) throw this.#mapError(response, text, timeout.didTimeout())
     } catch (error) {
       if (error instanceof OcboxError) throw error
@@ -201,7 +245,14 @@ export class CliOAuthClient implements CliOAuthClientPort {
         method: 'POST',
         signal: timeout.signal,
       })
-      const text = await response.text()
+      let text: string
+      try {
+        text = await readBoundedResponseText(response)
+      } catch {
+        // The bounded read shield (response size/tearing) is not diagnostic;
+        // the payload can never be trusted or echoed.
+        throw unsafeMessage('The authentication response was not understood')
+      }
       if (!response.ok) throw this.#mapError(response, text, timeout.didTimeout())
       if (text.length === 0 || text.length > MAX_RESPONSE_BYTES) {
         throw unsafeMessage('The authentication response was not understood')

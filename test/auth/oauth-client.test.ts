@@ -90,6 +90,44 @@ describe('CLI OAuth client', () => {
     })
   })
 
+  it('refuses a token response whose body exceeds the bounded read size instead of buffering it', async () => {
+    // A 1 MB stream is far above the 256 KiB read ceiling and the 64 KiB parse cap.
+    const oversized = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let chunk = 0; chunk < 64; chunk += 1) {
+            controller.enqueue(new Uint8Array(16 * 1024).fill(0x61))
+          }
+          controller.close()
+        },
+      }),
+      { status: 200 },
+    )
+    const client = clientWith(() => Promise.resolve(oversized))
+    const error = await client.exchangeAuthorizationCode(EXCHANGE).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('PROVIDER_AUTH')
+    expect(JSON.stringify(error)).not.toContain('aaaaaaaa')
+  })
+
+  it('still maps non-ok responses whose body exceeds the bounded read size without echoing it', async () => {
+    const oversizedError = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let chunk = 0; chunk < 64; chunk += 1) {
+            controller.enqueue(new Uint8Array(16 * 1024).fill(0x62))
+          }
+          controller.close()
+        },
+      }),
+      { status: 503 },
+    )
+    const client = clientWith(() => Promise.resolve(oversizedError))
+    const error = await client.revoke({ token: 'r'.repeat(48) }).catch((value: unknown) => value)
+    expect((error as OcboxError).code).toBe('PROVIDER_UNAVAILABLE')
+    expect(JSON.stringify(error)).not.toContain('bbbbbbbb')
+  })
+
   it('never sends a client secret in the public-client grant', async () => {
     let captured = ''
     const client = clientWith((_input, init) => {
