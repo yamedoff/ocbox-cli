@@ -91,6 +91,35 @@ describe('sync service', () => {
     expect(second.operations).toEqual([])
   })
 
+  it('preserves excluded target-side material through push and pull', async () => {
+    const { context: sync, local, remote } = await pair()
+    await writeFile(join(local, '.env'), 'LOCAL_SECRET=1')
+    await writeFile(join(local, 'value.txt'), 'v1')
+    await runSyncApply(sync, 'push', applyOptions())
+    // Excluded material already on the target side is invisible to the planner
+    // yet must survive a whole-root replacement without any deletion gate.
+    await mkdir(join(remote, '.git'))
+    await writeFile(join(remote, 'vcs-head'), 'head', { flag: 'a' })
+    await writeFile(join(remote, '.git', 'HEAD'), 'ref: refs/heads/main')
+    await writeFile(join(remote, '.env'), 'REMOTE_SECRET=1')
+    await writeFile(join(remote, 'value.txt'), 'v2')
+
+    const pulled = await runSyncApply(sync, 'pull', applyOptions())
+    expect(pulled.applied).toBe(true)
+    expect(await readFile(join(local, 'value.txt'), 'utf8')).toBe('v2')
+
+    await writeFile(join(local, 'value.txt'), 'v3')
+    await runSyncApply(sync, 'push', applyOptions())
+    expect(await readFile(join(remote, 'value.txt'), 'utf8')).toBe('v3')
+    expect(await readFile(join(remote, '.env'), 'utf8')).toBe('REMOTE_SECRET=1')
+    expect(await readFile(join(remote, '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/main')
+    // A later pull must also keep the locally excluded material.
+    await writeFile(join(remote, 'value.txt'), 'v4')
+    await runSyncApply(sync, 'pull', applyOptions())
+    expect(await readFile(join(local, 'value.txt'), 'utf8')).toBe('v4')
+    expect(await readFile(join(local, '.env'), 'utf8')).toBe('LOCAL_SECRET=1')
+  })
+
   it('keeps diff non-mutating while reporting a local modification', async () => {
     const { context: sync, local, remote } = await pair()
     await writeFile(join(local, 'value.txt'), 'v1')

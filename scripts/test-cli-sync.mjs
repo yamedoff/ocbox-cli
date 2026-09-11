@@ -265,6 +265,27 @@ try {
   })
   assert.equal(await readFile(join(exclusions.remote, 'app.js'), 'utf8'), 'app')
 
+  // 8b. Target-side excluded material survives later applications without a
+  // deletion gate: a whole-root swap must carry it into the staged snapshot.
+  await mkdir(join(exclusions.remote, '.git'), { recursive: true })
+  await writeFile(join(exclusions.remote, '.git', 'HEAD'), 'ref: refs/heads/main')
+  await writeFile(join(exclusions.remote, '.env'), 'REMOTE_SECRET=1')
+  await writeFile(join(exclusions.local, 'app.js'), 'app-v2')
+  const carryPushed = assertSingleResultEnvelope(
+    await run(['sync', 'push', ...exclusions.runtime, ...exclusions.sync, '--json'], {
+      cwd: exclusions.project,
+    }),
+    'sync.pushed',
+  )
+  assert.equal(carryPushed.data.applied, true)
+  assert.equal(await readFile(join(exclusions.local, 'app.js'), 'utf8'), 'app-v2')
+  assert.equal(
+    await readFile(join(exclusions.remote, '.git', 'HEAD'), 'utf8'),
+    'ref: refs/heads/main',
+  )
+  assert.equal(await readFile(join(exclusions.remote, '.env'), 'utf8'), 'REMOTE_SECRET=1')
+  assert.equal(await readFile(join(exclusions.remote, 'app.js'), 'utf8'), 'app-v2')
+
   // 9. An invalid ignore pattern is a typed configuration failure.
   const invalidRules = await run(
     ['sync', 'diff', ...exclusions.runtime, ...exclusions.sync, '--exclude', '../escape', '--json'],

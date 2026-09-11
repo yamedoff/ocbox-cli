@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import {
+  constants as copyFileConstants,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { decodeSyncArchive } from './archive.js'
 import type { SyncSnapshotEntry } from './baseline.js'
 import { normalizeManifestPath } from './path-policy.js'
@@ -95,7 +107,7 @@ export class LocalTransferAdapter implements TransferAdapter {
         throw new TransferError('RECOVERY_REQUIRED')
       throw error
     }
-    return new LocalTransferTransaction(this, journal)
+    return new LocalTransferTransaction(this, journal, intent.carryOverPaths ?? [])
   }
 
   async recoveryStatus(): Promise<TransferRecoveryStatus> {
@@ -218,6 +230,7 @@ class LocalTransferTransaction implements TransferTransaction {
   constructor(
     private readonly adapter: LocalTransferAdapter,
     private journal: Journal,
+    private readonly carryOverPaths: readonly string[],
   ) {}
 
   async stage(
@@ -278,10 +291,65 @@ class LocalTransferTransaction implements TransferTransaction {
         await current.handle.close()
       }
       if (declared.size !== expected.size) throw new TransferError('INTEGRITY')
+      // Excluded target material must survive the whole-root swap; copying it
+      // into staging must happen before the swap is approved. A failure leaves
+      // the journal at `staged` so the caller's rollback is still clean.
+      await this.#carryOver()
       this.staged = true
     } catch (error) {
       await Promise.allSettled([...seen.values()].map((current) => current.handle.close()))
       throw error
+    }
+  }
+
+  /**
+   * Copies excluded target-side paths into the staged root after the archive
+   * verified successfully. Paths are re-validated against the frozen target
+   * root, links are never dereferenced, and any disappearance or mutation into
+   * a link since planning fails closed instead of deleting gated material.
+   */
+  async #carryOver(): Promise<void> {
+    if (this.carryOverPaths.length === 0) return
+    const stagingRoot = this.adapter.statePath(this.journal.stagingDirectory)
+    for (const raw of this.carryOverPaths) {
+      let normalizedPath: ReturnType<typeof normalizeManifestPath>
+      try {
+        normalizedPath = normalizeManifestPath(raw)
+      } catch {
+        throw new TransferError('UNSAFE_PATH')
+      }
+      const source = resolve(this.adapter.target(), ...normalizedPath.split('/'))
+      const targetRelativity = relative(this.adapter.target(), source)
+      if (
+        targetRelativity === '' ||
+        targetRelativity === '..' ||
+        targetRelativity.startsWith(`..${sep}`) ||
+        isAbsolute(targetRelativity)
+      ) {
+        throw new TransferError('UNSAFE_PATH')
+      }
+      const metadata = await lstat(source).catch(() => {
+        throw new TransferError('UNSAFE_PATH')
+      })
+      if (metadata.isSymbolicLink() || (!metadata.isFile() && !metadata.isDirectory())) {
+        throw new TransferError('UNSAFE_PATH')
+      }
+      const destination = safeJoin(stagingRoot, normalizedPath)
+      if (metadata.isDirectory()) {
+        await mkdir(destination, { recursive: true })
+        await copyDirectoryContents(source, destination)
+      } else {
+        await mkdir(dirname(destination), { recursive: true })
+        // Exclusive create guards against a stray collision that exclusion
+        // analysis already proved impossible between carry and desired paths.
+        await copyFile(source, destination, copyFileConstants.COPYFILE_EXCL).catch(
+          (error: NodeJS.ErrnoException) => {
+            throw error.code === 'EEXIST'
+              ? new TransferError('INTEGRITY')
+              : new TransferError('UNSAFE_PATH')
+          },
+        )
+      }
     }
   }
 
@@ -363,6 +431,33 @@ async function writeAll(handle: Awaited<ReturnType<typeof open>>, data: Uint8Arr
     const { bytesWritten } = await handle.write(data, offset, data.byteLength - offset)
     if (bytesWritten <= 0) throw new TransferError('INTEGRITY')
     offset += bytesWritten
+  }
+}
+
+/**
+ * Copies an excluded target subtree into staging without dereferencing links
+ * or copying special files: either case ends the carry-over with UNSAFE_PATH
+ * so a hostile swap can never land in the installed target.
+ */
+async function copyDirectoryContents(source: string, destination: string): Promise<void> {
+  const listing = await opendir(source)
+  try {
+    for await (const child of listing) {
+      const childSource = join(source, child.name)
+      const childDestination = join(destination, child.name)
+      const metadata = await lstat(childSource)
+      if (metadata.isSymbolicLink() || (!metadata.isFile() && !metadata.isDirectory())) {
+        throw new TransferError('UNSAFE_PATH')
+      }
+      if (metadata.isDirectory()) {
+        await mkdir(childDestination)
+        await copyDirectoryContents(childSource, childDestination)
+      } else {
+        await copyFile(childSource, childDestination)
+      }
+    }
+  } finally {
+    await listing.close().catch(() => undefined)
   }
 }
 

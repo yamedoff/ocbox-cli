@@ -43,6 +43,14 @@ cannot be weakened by `--include`. Excluded names are reported by `diff` but are
 never transferred. Provisional caps are 1 GiB total, 100k files, 100k
 directories, and 256 MiB per file.
 
+Excluded material already present on the target side is not planner-visible, so
+it is also excluded from deletion gates. The transfer therefore carries it into
+the staged root before an atomic swap: a push or pull can only delete entries
+the planner can see, and target-side secrets, caches, or VCS metadata survive
+an apply unchanged. Carry-over re-validates every path inside the target root
+at transfer time and fails closed (`SYNC_CONFLICT`) without mutating anything
+if a path races away, becomes a link, or would escape the target root.
+
 ## Three-way planning and conflicts
 
 `diff`, `push`, and `pull` compare local, remote, and the last verified baseline.

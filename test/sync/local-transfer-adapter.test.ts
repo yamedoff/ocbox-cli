@@ -55,6 +55,77 @@ describe('local transfer adapter', () => {
     expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
   })
 
+  it('carries excluded target material into the staged root before replacing', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    await mkdir(join(target, '.git'), { recursive: true })
+    await writeFile(join(target, '.git', 'HEAD'), 'head')
+    await writeFile(join(target, '.env'), 'SECRET=1')
+    const content = new TextEncoder().encode('tracked')
+    const next = entry('value.txt', content)
+    const adapter = new LocalTransferAdapter(target)
+    const transaction = await adapter.beginApply({
+      allowReplace: true,
+      carryOverPaths: ['.git', '.env'],
+    })
+    await transaction.stage([next], await archive([next], new Map([[next.path, content]])))
+    await transaction.commit()
+    expect(await readFile(join(target, '.env'), 'utf8')).toBe('SECRET=1')
+    expect(await readFile(join(target, '.git', 'HEAD'), 'utf8')).toBe('head')
+    expect(await readFile(join(target, 'value.txt'), 'utf8')).toBe('tracked')
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('aborts without mutating when a carry-over path races away', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    await mkdir(target)
+    await writeFile(join(target, 'preserve'), 'preserve')
+    const content = new TextEncoder().encode('tracked')
+    const next = entry('value.txt', content)
+    const adapter = new LocalTransferAdapter(target)
+    const transaction = await adapter.beginApply({
+      allowReplace: true,
+      carryOverPaths: ['.vanished'],
+    })
+    await expect(
+      transaction.stage([next], await archive([next], new Map([[next.path, content]]))),
+    ).rejects.toMatchObject({ code: 'UNSAFE_PATH' })
+    await expect(readFile(join(target, 'preserve'), 'utf8')).resolves.toBe('preserve')
+    // The clean rollback must leave no journal behind.
+    await transaction.rollback()
+    expect(await adapter.recoveryStatus()).toEqual({ recoveryRequired: false, operationId: null })
+  })
+
+  it('refuses to carry over a link or escape the target root', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    await mkdir(target)
+    await writeFile(join(target, 'preserve'), 'preserve')
+    const content = new TextEncoder().encode('tracked')
+    const next = entry('value.txt', content)
+    const linked = async (path: string) => {
+      const adapter = new LocalTransferAdapter(target)
+      const transaction = await adapter.beginApply({ allowReplace: true, carryOverPaths: [path] })
+      await expect(
+        transaction.stage([next], await archive([next], new Map([[next.path, content]]))),
+      ).rejects.toMatchObject({ code: 'UNSAFE_PATH' })
+      await transaction.rollback()
+      expect(await adapter.recoveryStatus()).toEqual({
+        recoveryRequired: false,
+        operationId: null,
+      })
+    }
+    const outside = join(parent, 'outside')
+    await mkdir(outside)
+    await symlink(outside, join(target, '.link'), 'junction')
+    await linked('.link')
+    await linked('../escape')
+  })
+
   it('does not replace the target when archive checksum verification fails', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'ocbox-transfer-'))
     roots.push(parent)

@@ -552,6 +552,11 @@ function transferFailure(error: unknown): OcboxError {
         )
       case 'REPLACE_NOT_APPROVED':
         return syncError('SYNC_CONFLICT', 'The sync target replacement was not approved')
+      case 'UNSAFE_PATH':
+        return syncError(
+          'SYNC_CONFLICT',
+          'Excluded target material could not be preserved during the sync; nothing was replaced',
+        )
       case 'UNSAFE_TARGET':
         return syncError('SYNC_CONFLICT', 'The sync target root is a link and was not dereferenced')
       case 'INTEGRITY':
@@ -699,9 +704,17 @@ export async function runSyncApply(
     }
 
     const canonicalRoot = await realpath(roots.sourceRoot)
+    // Excluded target-side material (secrets, caches, VCS metadata, user rules)
+    // is invisible to the planner, so a whole-root swap would delete it without
+    // the `--delete` gate ever seeing it. The adapter carries these paths into
+    // the staged root before replacing the target, and any carry-over race
+    // fails closed before the destructive move instead of deleting silently.
+    const carryOverPaths = targetManifest.entries
+      .filter((entry) => entry.exclusionReason !== null)
+      .map((entry) => entry.path)
     let transaction: Awaited<ReturnType<typeof adapter.beginApply>> | undefined
     try {
-      transaction = await adapter.beginApply({ allowReplace: true })
+      transaction = await adapter.beginApply({ allowReplace: true, carryOverPaths })
       await transaction.stage(
         desired,
         encodeSyncArchive(desired, (path) => openSourceFile(canonicalRoot, path)),

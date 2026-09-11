@@ -17,6 +17,15 @@ export interface TransferAdapter {
 export interface TransferApplyIntent {
   /** The planner has verified the target snapshot and approved replacement. */
   readonly allowReplace: boolean
+  /**
+   * Relative POSIX paths of excluded target-side material (secrets, caches,
+   * VCS metadata, user-ruled names) that would be invisible to the planner but
+   * destroyed by a whole-root replacement. The adapter copies them into the
+   * staged root before the swap so an apply deletes only entries the planner
+   * can actually see; deleting gated material is never implicit. Every path is
+   * re-validated against the target root and a race away fails closed.
+   */
+  readonly carryOverPaths?: readonly string[]
 }
 
 export interface TransferTransaction {
@@ -35,11 +44,18 @@ export interface TransferRecoveryStatus {
  * `RECOVERY_REQUIRED` means an incomplete transaction must be resolved first.
  * `REPLACE_NOT_APPROVED` means the caller did not authorize replacing a
  * non-empty target. `UNSAFE_TARGET` means the target root itself is a link and
- * must not be dereferenced.
+ * must not be dereferenced. `UNSAFE_PATH` means excluded target-side material
+ * could not be carried over safely (it escaped the target root, raced away, or
+ * became a link), so the apply aborted before mutating anything.
  */
 export class TransferError extends Error {
   constructor(
-    readonly code: 'INTEGRITY' | 'RECOVERY_REQUIRED' | 'REPLACE_NOT_APPROVED' | 'UNSAFE_TARGET',
+    readonly code:
+      | 'INTEGRITY'
+      | 'RECOVERY_REQUIRED'
+      | 'REPLACE_NOT_APPROVED'
+      | 'UNSAFE_PATH'
+      | 'UNSAFE_TARGET',
   ) {
     super(`Sync transfer failed: ${code}`)
     this.name = 'TransferError'
