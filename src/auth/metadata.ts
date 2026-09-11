@@ -1,4 +1,3 @@
-import { rm } from 'node:fs/promises'
 import { z } from 'zod'
 import { HostedOAuthCredentialKeySchema } from '../credentials/store.js'
 import { UtcTimestampSchema } from '../domain/timestamps.js'
@@ -43,11 +42,9 @@ function assertSafe(metadata: AuthMetadata): AuthMetadata {
 
 /** Atomic, lock-protected store for the machine-level hosted-auth metadata. */
 export class AuthMetadataStore implements AuthMetadataRepository {
-  readonly #path: string
   readonly #store: AtomicJsonStore<AuthMetadata>
 
   constructor(path: string, options: AtomicJsonStoreOptions = {}) {
-    this.#path = path
     this.#store = new AtomicJsonStore(path, AuthMetadataSchema, options)
   }
 
@@ -65,7 +62,8 @@ export class AuthMetadataStore implements AuthMetadataRepository {
     )
   }
 
+  /** Locked, best-effort removal through the shared atomic-store contract. */
   async clear(): Promise<void> {
-    await rm(this.#path, { force: true })
+    await this.#store.delete()
   }
 }

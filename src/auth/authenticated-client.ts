@@ -1,5 +1,5 @@
 import { OcboxError } from '../errors/index.js'
-import { LoginRequiredError, newRequestId } from './errors.js'
+import { AuthBindingError, LoginRequiredError, newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
 import type { HostedTokenManager } from './token-manager.js'
 
@@ -41,6 +41,56 @@ export interface AuthenticatedHttpClientOptions {
   readonly tokens: HostedTokenManager
   readonly fetch: FetchPort
   readonly timeoutMilliseconds: number
+  /**
+   * Certified API origin the bearer credential was minted for (derived from
+   * the configured hosted endpoints). When set, every request URL is refused
+   * unless it resolves to exactly this origin, so bearer material can never be
+   * attached to another destination by a misconfigured or hostile caller.
+   */
+  readonly apiOrigin?: string | undefined
+}
+
+/**
+ * Resolves the wire target and binds it to the certified API origin. Requests
+ * must be absolute http(s), uncredentialed, fragment-free, and (when bound)
+ * aimed at exactly the configured origin; otherwise the bearer credential
+ * would be sent to an unexpected destination.
+ */
+function requestTargetOf(
+  request: Pick<AuthenticatedRequest, 'url'>,
+  apiOrigin: string | undefined,
+): URL {
+  let url: URL
+  try {
+    url = request.url instanceof URL ? request.url : new URL(String(request.url))
+  } catch {
+    throw new TypeError('The request URL must be an absolute URL')
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new TypeError('The request URL must use http or https')
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new TypeError('The request URL must not embed credentials')
+  }
+  if (url.hash !== '') {
+    throw new TypeError('The request URL must not include a fragment')
+  }
+  if (apiOrigin !== undefined) {
+    let origin: string
+    try {
+      origin = new URL(apiOrigin.trim()).origin
+    } catch {
+      throw new TypeError('The configured API origin must be an absolute URL')
+    }
+    if (url.origin !== origin) {
+      throw new AuthBindingError(
+        undefined,
+        'The request destination is not the configured hosted API; ' +
+          're-run `ocbox auth login` with the matching --api-url',
+      )
+    }
+  }
+  return url
 }
 
 interface TimeoutSignal {
@@ -73,10 +123,15 @@ function withTimeout(signal: AbortSignal | undefined, milliseconds: number): Tim
 }
 
 /**
- * Attaches access tokens only as `Authorization: Bearer`. One eligible 401
- * triggers a single serialized refresh and at most one retry of an
- * idempotent/safe request. Refresh reuse or revocation clears material and
- * surfaces a typed login-required error.
+ * Attaches access tokens only as `Authorization: Bearer`, and only to the
+ * configured API origin. Eligibility for rotation and the single retry is
+ * derived before any rotation happens: refresh happens exactly when the
+ * request could be safely replayed (idempotent/safe methods, or any method
+ * carrying an idempotency key), and a repeatedly-401ing request clears local
+ * material only when no concurrent actor has rotated it since. Redirects are
+ * never followed, so bearer material cannot leak to an alternate destination.
+ * Refresh reuse or revocation clears material and surfaces a typed
+ * login-required error.
  */
 export class AuthenticatedHttpClient {
   readonly #options: AuthenticatedHttpClientOptions
@@ -86,17 +141,25 @@ export class AuthenticatedHttpClient {
   }
 
   async request(request: AuthenticatedRequest): Promise<AuthenticatedFetchResult> {
+    // Destination binding happens before any credential is read from the store.
+    const target = requestTargetOf(request, this.#options.apiOrigin)
     const credential = await this.#options.tokens.getValidCredential(request.signal)
     const usedToken = credential.accessToken
-    let result = await this.#send(request, usedToken)
-    if (result.response.status === 401) {
+    let result = await this.#send(request, target, usedToken)
+    // Rotation plus the retry is only justified when the request is safe to
+    // replay: idempotent methods, or any method carrying a contract idempotency
+    // key. Derived once, before any rotation, so a non-replayable request never
+    // burns a refresh family unnecessarily.
+    const replayable =
+      IDEMPOTENT_METHODS.has(request.method.toUpperCase()) || request.idempotencyKey !== undefined
+    if (result.response.status === 401 && replayable) {
       const token = await this.#recover(usedToken, request.signal)
-      if (IDEMPOTENT_METHODS.has(request.method.toUpperCase())) {
-        result = await this.#send(request, token)
-        if (result.response.status === 401) {
-          await this.#options.tokens.clear()
-          throw new LoginRequiredError()
-        }
+      result = await this.#send(request, target, token)
+      if (result.response.status === 401) {
+        const cleared = await this.#options.tokens.clearIfToken(token)
+        if (cleared) throw new LoginRequiredError()
+        // A concurrent actor rotated to a newer credential while we were
+        // retrying; keep it (it may be valid) and surface the 401 truthfully.
       }
     }
     return result
@@ -112,7 +175,11 @@ export class AuthenticatedHttpClient {
     return refreshed.accessToken
   }
 
-  async #send(request: AuthenticatedRequest, token: string): Promise<AuthenticatedFetchResult> {
+  async #send(
+    request: AuthenticatedRequest,
+    target: URL,
+    token: string,
+  ): Promise<AuthenticatedFetchResult> {
     const headers: Record<string, string> = { ...(request.headers ?? {}) }
     // Header ownership: remove every caller-supplied spelling of the managed
     // headers before writing the canonical ones. Keeping a second casing would
@@ -120,18 +187,31 @@ export class AuthenticatedHttpClient {
     // (e.g. `Authorization: attacker, Bearer <token>`).
     deleteOwnedHeader(headers, 'authorization')
     deleteOwnedHeader(headers, 'idempotency-key')
+    // Index-signature access is required by the Record type; biome's
+    // useLiteralKeys suggestion conflicts with the TS4111 compiler rule here.
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     headers['authorization'] = `Bearer ${token}`
     if (request.idempotencyKey !== undefined) {
       headers['idempotency-key'] = request.idempotencyKey
     }
     const timeout = withTimeout(request.signal, this.#options.timeoutMilliseconds)
     try {
-      const response = await this.#options.fetch(request.url, {
+      const response = await this.#options.fetch(target, {
         headers,
         method: request.method,
+        // Redirects are never followed: the bearer credential travels only to
+        // the exact caller-provided, origin-bound target.
+        redirect: 'manual',
         ...(request.body === undefined ? {} : { body: request.body }),
         signal: timeout.signal,
       })
+      if (response.status >= 300 && response.status < 400) {
+        throw new OcboxError({
+          code: 'PROVIDER_AUTH',
+          message: 'The hosted service returned an unexpected redirect',
+          requestId: newRequestId(),
+        })
+      }
       return {
         requestId: response.headers.get('x-request-id'),
         response,

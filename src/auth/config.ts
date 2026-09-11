@@ -69,6 +69,39 @@ function joinEndpoint(issuer: string, path: string): string {
 }
 
 /**
+ * Validates an operator-supplied endpoint override. Protocol endpoint overrides
+ * carry codes, verifiers, and refresh material, so they must be absolute
+ * uncredentialed, query/fragment-free http(s) URLs, and cleartext http stays
+ * restricted to loopback hosts exactly like the issuer itself. A different
+ * origin than the issuer is allowed (hosted deployments may serve the browser
+ * authorization page from a separate web origin) but every other form fails
+ * closed instead of silently handing token material to a malformed target.
+ */
+export function validateEndpointOverride(name: string, value: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(value.trim())
+  } catch {
+    throw new TypeError(`The ${name} override must be an absolute http(s) URL`)
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new TypeError(`The ${name} override must use http or https`)
+  }
+  if (
+    parsed.protocol === 'http:' &&
+    !HTTP_LOOPBACK_HOSTS.has(parsed.hostname.trim().toLowerCase())
+  ) {
+    throw new TypeError(`The ${name} override must use https except on loopback hosts`)
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new TypeError(`The ${name} override must not embed credentials`)
+  }
+  if (parsed.search !== '' || parsed.hash !== '') {
+    throw new TypeError(`The ${name} override must not include a query or fragment`)
+  }
+}
+
+/**
  * The pinned hosted OpenAPI contract serves every operation under `/v1`
  * (`servers: [{url: "/v1"}]`, matching the generated client). Users naturally
  * provide the bare deployment origin, so the version segment is appended here
@@ -88,6 +121,13 @@ export function authEndpointsFromIssuer(
 ): AuthEndpoints {
   const normalized = normalizeIssuer(issuer)
   const apiBase = versionedApiBase(normalized)
+  for (const [name, value] of [
+    ['authorizationEndpoint', overrides.authorizationEndpoint],
+    ['revocationEndpoint', overrides.revocationEndpoint],
+    ['tokenEndpoint', overrides.tokenEndpoint],
+  ] as const) {
+    if (value !== undefined) validateEndpointOverride(name, value)
+  }
   return {
     audience: DEFAULT_AUDIENCE,
     authorizationEndpoint:

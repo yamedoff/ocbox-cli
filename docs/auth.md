@@ -8,7 +8,7 @@ There is no static API-token launch path and no client secret.
 ## CLI usage
 
 ```sh
-ocbox auth login  --api-url https://api.example [--no-browser] [--authorize-url URL]
+ocbox auth login --api-url https://api.example --authorize-url https://hosted/authorize [--no-browser]
 ocbox auth status
 ocbox auth logout
 ```
@@ -22,6 +22,16 @@ verifiers, and token pairs never cross a non-loopback network hop in cleartext.
 The registered public client is `ocb_cli` with the single `source:read` scope
 and the `cli` audience; the authorized redirect is exactly
 `http://127.0.0.1:{randomPort}/callback`.
+
+**Integration blocker (fail closed).** The pinned hosted contract (`/v1`,
+private commit `96ea2292…`) publishes `/auth/cli/authorize` only as an
+*authenticated POST* web-consent route and does not yet expose a browser-facing
+GET authorization page that the CLI could open. `login` therefore *requires* an
+explicit `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) naming the hosted
+browser authorization URL, validated to be an absolut, uncredentialed,
+query/fragment-free http(s) (https off-loopback) endpoint. The manual URL shape
+and the T16 web wiring must land before a default can exist; the CLI never
+pretends the API POST route is a browser page.
 
 `login` prints/opens the authorization URL and waits for the loopback callback.
 `--no-browser` forces the manual-open path, which prints the same safe
@@ -52,14 +62,33 @@ There is deliberately no out-of-band or pasted-code fallback.
 
 ## Token lifecycle
 
-Access material is attached only as `Authorization: Bearer`. Expiry skew is
-enforced before use. On one eligible `401`, concurrent requests collapse into a
-single serialized refresh, the rotated material is stored atomically, and only
-an idempotent/safe request is retried once. Refresh reuse or revocation clears
-local material and returns a typed login-required error (`AUTH_REQUIRED`).
-Requests are bounded by a timeout and expose the server request ID and
-`Retry-After` hints. Audience, client, and required scopes are bound before a
-credential is used.
+Access material is attached only as `Authorization: Bearer`, only to the
+configured API origin (any other absolute URL is refused before the credential
+is even read), and never across redirects: requests run with manual redirect
+mode and any 3xx is an opaque failure. Expiry skew is enforced before use. On a
+401, rotation and the single retry are justified only when the request is
+replay-safe (idempotent/safe methods, or any method carrying a contract
+idempotency key); POST/PATCH without a key is surfaced as-is without burning a
+refresh family. Concurrent readers collapse into one serialized refresh —
+in-process and across separate CLI processes through the state-directory file
+lock — and a terminal second 401 clears local material only when no concurrent
+actor already stored newer material. Refresh reuse or revocation clears local
+material and returns a typed login-required error (`AUTH_REQUIRED`). Requests
+are bounded by a timeout and expose the server request ID and `Retry-After`
+hints. Issuer, audience, client, and required scopes are bound before a
+credential is used: the machine-level metadata must attest that the stored
+credential was minted by the configured issuer, or use fails with `AUTH_FORBIDDEN`.
+
+## Concurrency
+
+Refresh rotation runs inside a bounded cross-process lock on the state
+directory (`auth.refresh.lock`), so two `ocbox` processes never present the
+same rotating refresh token simultaneously; contention surfaces as
+`OPERATION_CONFLICT` instead of an unbounded stall. Status and logout do not
+take that lock. Local cleanup failures on logout surface a typed
+`INVALID_STATE` failure rather than a false success, and login restores the
+exact prior credential/metadata state if its own commit fails in a way that
+cannot be rolled back cleanly.
 
 ## Storage boundary
 

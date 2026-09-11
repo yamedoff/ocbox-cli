@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -310,21 +310,50 @@ let mock
 try {
   mock = await startMockAuthApi()
 
+  // 0. Login fails closed without an explicit browser authorization endpoint:
+  // the pinned hosted contract publishes no browser GET authorization page.
+  const blocked = await run(
+    ['auth', 'login', '--api-url', mock.url, '--json', '--state-dir', stateRoot],
+    { timeout: 60_000 },
+  )
+  assert.equal(blocked.code, 1)
+  const blockedOutput = `${blocked.stdout.toString('utf8')}
+${blocked.stderr.toString('utf8')}`
+  assert.equal(blockedOutput.includes('"code": "CONFIG_INVALID"'), true)
+  assert.equal(
+    blockedOutput.includes('browser authorization page'),
+    true,
+    'the failure must name the integration blocker',
+  )
+
   // 1. Successful manual-open login completed by a mock-loopback callback.
+  const authorizeUrl = `${mock.url}/v1/auth/cli/authorize`
   let loginCode
   const login = await run(
-    ['auth', 'login', '--api-url', mock.url, '--no-browser', '--json', '--state-dir', stateRoot],
+    [
+      'auth',
+      'login',
+      '--api-url',
+      mock.url,
+      '--authorize-url',
+      authorizeUrl,
+      '--no-browser',
+      '--json',
+      '--state-dir',
+      stateRoot,
+    ],
     {
       onEvent: (envelope) => {
         if (envelope.kind !== 'event' || envelope.name !== 'auth.authorization_url') return
         const authorizationUrl = new URL(envelope.data.url)
+        assert.equal(authorizationUrl.origin + authorizationUrl.pathname, authorizeUrl)
         assert.equal(authorizationUrl.searchParams.get('response_type'), 'code')
         assert.equal(authorizationUrl.searchParams.get('audience'), 'cli')
         assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256')
         const redirectUri = authorizationUrl.searchParams.get('redirect_uri')
         const state = authorizationUrl.searchParams.get('state')
         const challenge = authorizationUrl.searchParams.get('code_challenge')
-        loginCode = `mocked_code_${Date.now()}`
+        loginCode = `mocked_code_${Date.now()}`.padEnd(56, 'k')
         mock.issueCode(loginCode, challenge, redirectUri)
         void sendCallback(redirectUri, loginCode, state).catch(() => undefined)
       },
@@ -377,7 +406,18 @@ try {
 
   // 5. Revocation failure still clears local material.
   const secondLogin = await run(
-    ['auth', 'login', '--api-url', mock.url, '--no-browser', '--json', '--state-dir', stateRoot],
+    [
+      'auth',
+      'login',
+      '--api-url',
+      mock.url,
+      '--authorize-url',
+      authorizeUrl,
+      '--no-browser',
+      '--json',
+      '--state-dir',
+      stateRoot,
+    ],
     {
       onEvent: (envelope) => {
         if (envelope.kind !== 'event' || envelope.name !== 'auth.authorization_url') return
@@ -385,7 +425,7 @@ try {
         const redirectUri = authorizationUrl.searchParams.get('redirect_uri')
         const state = authorizationUrl.searchParams.get('state')
         const challenge = authorizationUrl.searchParams.get('code_challenge')
-        const code = `mocked_code_fail_${Date.now()}`
+        const code = `mocked_code_fail_${Date.now()}`.padEnd(56, 'k')
         mock.issueCode(code, challenge, redirectUri)
         void sendCallback(redirectUri, code, state).catch(() => undefined)
       },

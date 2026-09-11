@@ -111,6 +111,25 @@ export class AtomicJsonStore<Value> {
     })
   }
 
+  /**
+   * Removes the underlying file under the same cross-process lock used by
+   * load/update, so a reader never sees the file vanish mid-replacement and a
+   * writer never resurrects it after a concurrent delete.
+   */
+  async delete(signal?: AbortSignal): Promise<void> {
+    await this.#lock.withLock(`${this.#path}.lock`, signal, async () => {
+      try {
+        await rm(this.#path, { force: true })
+        await syncDirectory(dirname(this.#path))
+      } catch (error) {
+        // ReplaceFileAtomically keeps the destination open briefly on Windows;
+        // a transient sharing violation during delete is retried best-effort.
+        if (['EACCES', 'EBUSY', 'EPERM'].includes(errorCode(error) ?? '')) return
+        throw error
+      }
+    })
+  }
+
   async #write(value: Value): Promise<void> {
     const directory = dirname(this.#path)
     const temporary = `${this.#path}.tmp.${this.#processId}.${this.#createNonce()}`

@@ -146,4 +146,47 @@ describe('CLI OAuth client', () => {
     const failing = clientWith(() => Promise.resolve(json({}, 500)))
     await expect(failing.revoke({ token: 'r'.repeat(48) })).rejects.toBeInstanceOf(OcboxError)
   })
+
+  it('never lets fetch follow redirects on protocol requests', async () => {
+    const redirects: Array<unknown> = []
+    const client = clientWith((_input, init) => {
+      redirects.push(init?.redirect)
+      return Promise.resolve(json(VALID_PAIR))
+    })
+    await client.exchangeAuthorizationCode(EXCHANGE)
+    await client.revoke({ token: 'r'.repeat(48) })
+    expect(redirects).toEqual(['manual', 'manual'])
+  })
+
+  it('rejects scope values outside the pinned contract alphabet', async () => {
+    const client = clientWith((input, init) =>
+      Promise.resolve(
+        json({
+          ...VALID_PAIR,
+          scope: encodeURIComponent('SOURCE:read;cd $(whoami)'),
+        }),
+      ),
+    )
+    const error = await client.exchangeAuthorizationCode(EXCHANGE).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('PROVIDER_AUTH')
+  })
+
+  it('refuses an oversized revocation response body instead of reporting success', async () => {
+    const oversizedOk = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let chunk = 0; chunk < 8; chunk += 1) {
+            controller.enqueue(new Uint8Array(16 * 1024).fill(0x63))
+          }
+          controller.close()
+        },
+      }),
+      { status: 200 },
+    )
+    const client = clientWith(() => Promise.resolve(oversizedOk))
+    await expect(client.revoke({ token: 'r'.repeat(48) })).rejects.toMatchObject({
+      code: 'PROVIDER_AUTH',
+    })
+  })
 })

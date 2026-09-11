@@ -4,6 +4,9 @@ import { type LoopbackListener, startLoopbackListener } from '../../src/auth/loo
 import { OcboxError } from '../../src/errors/index.js'
 
 const STATE = 'state-value-1234567890'
+// Codes match the pinned contract boundary (32-256 base64url characters).
+const LONG_CODE = 'c'.repeat(40)
+const OTHER_LONG_CODE = 'd'.repeat(40)
 
 interface SentResponse {
   readonly status: number
@@ -61,12 +64,12 @@ describe('loopback callback listener', () => {
     await withListener(async (listener) => {
       expect(listener.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/callback$/)
       const pending = listener.waitForCallback()
-      const accepted = await send(`${listener.redirectUri}?code=valid-code&state=${STATE}`)
+      const accepted = await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}`)
       expect(accepted.status).toBe(200)
-      expect(accepted.body).not.toContain('valid-code')
-      await expect(pending).resolves.toEqual({ code: 'valid-code' })
+      expect(accepted.body).not.toContain(LONG_CODE)
+      await expect(pending).resolves.toEqual({ code: LONG_CODE })
 
-      const duplicate = await send(`${listener.redirectUri}?code=second-code&state=${STATE}`)
+      const duplicate = await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}`)
       expect(duplicate.status).toBe(409)
     })
   })
@@ -76,16 +79,21 @@ describe('loopback callback listener', () => {
       const pending = listener.waitForCallback()
       const method = await send(listener.redirectUri, { method: 'POST' })
       expect(method.status).toBe(405)
-      const path = await send(listener.redirectUri, { path: `/other?code=x&state=${STATE}` })
-      expect(path.status).toBe(404)
-      const host = await send(`${listener.redirectUri}?code=x&state=${STATE}`, {
-        host: 'localhost',
+      const path = await send(listener.redirectUri, {
+        path: `/other?code=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&state=${STATE}`,
       })
+      expect(path.status).toBe(404)
+      const host = await send(
+        `${listener.redirectUri}?code=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&state=${STATE}`,
+        {
+          host: 'localhost',
+        },
+      )
       expect(host.status).toBe(400)
 
-      const accepted = await send(`${listener.redirectUri}?code=ok-code&state=${STATE}`)
+      const accepted = await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}`)
       expect(accepted.status).toBe(200)
-      await expect(pending).resolves.toEqual({ code: 'ok-code' })
+      await expect(pending).resolves.toEqual({ code: LONG_CODE })
     })
   })
 
@@ -93,10 +101,10 @@ describe('loopback callback listener', () => {
     await withListener(async (listener) => {
       const pending = listener.waitForCallback()
       expect((await send(`${listener.redirectUri}?code=abc`)).status).toBe(400)
-      expect((await send(`${listener.redirectUri}?code=abc&state=wrong-state`)).status).toBe(400)
-      const accepted = await send(`${listener.redirectUri}?code=abc&state=${STATE}`)
+      expect((await send(`${listener.redirectUri}?code=&state=wrong-state`)).status).toBe(400)
+      const accepted = await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}`)
       expect(accepted.status).toBe(200)
-      await expect(pending).resolves.toEqual({ code: 'abc' })
+      await expect(pending).resolves.toEqual({ code: LONG_CODE })
     })
   })
 
@@ -106,10 +114,13 @@ describe('loopback callback listener', () => {
       expect((await send(`${listener.redirectUri}?code=bad%20code&state=${STATE}`)).status).toBe(
         400,
       )
-      expect((await send(`${listener.redirectUri}?code=&state=${STATE}`)).status).toBe(400)
-      const accepted = await send(`${listener.redirectUri}?code=good&state=${STATE}`)
+      // Encoded slashes decode outside the base64url alphabet.
+      expect(
+        (await send(`${listener.redirectUri}?code=${'%2F'.repeat(32)}&state=${STATE}`)).status,
+      ).toBe(400)
+      const accepted = await send(`${listener.redirectUri}?code=${'f'.repeat(32)}&state=${STATE}`)
       expect(accepted.status).toBe(200)
-      await expect(pending).resolves.toEqual({ code: 'good' })
+      await expect(pending).resolves.toEqual({ code: 'f'.repeat(32) })
     })
   })
 
@@ -144,5 +155,46 @@ describe('loopback callback listener', () => {
     await listener.close()
     await rejection
     await expect(send(redirectUri)).rejects.toBeTruthy()
+  })
+
+  it('refuses ambiguous duplicate code, state, and error parameters', async () => {
+    await withListener(async (listener) => {
+      const pending = listener.waitForCallback()
+      expect(
+        (
+          await send(
+            `${listener.redirectUri}?code=${LONG_CODE}&code=${OTHER_LONG_CODE}&state=${STATE}`,
+          )
+        ).status,
+      ).toBe(400)
+      expect(
+        (await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}&state=${STATE}`))
+          .status,
+      ).toBe(400)
+      expect(
+        (
+          await send(
+            `${listener.redirectUri}?error=access_denied&error=server_error&state=${STATE}`,
+          )
+        ).status,
+      ).toBe(400)
+      // The refusal does not settle the listener; one clean callback still wins.
+      const accepted = await send(`${listener.redirectUri}?code=${LONG_CODE}&state=${STATE}`)
+      expect(accepted.status).toBe(200)
+      await expect(pending).resolves.toEqual({ code: LONG_CODE })
+    })
+  })
+
+  it('refuses authorization codes shorter than the pinned contract minimum', async () => {
+    await withListener(async (listener) => {
+      const pending = listener.waitForCallback()
+      expect((await send(`${listener.redirectUri}?code=short&state=${STATE}`)).status).toBe(400)
+      expect(
+        (await send(`${listener.redirectUri}?code=${'e'.repeat(31)}&state=${STATE}`)).status,
+      ).toBe(400)
+      const accepted = await send(`${listener.redirectUri}?code=${'e'.repeat(32)}&state=${STATE}`)
+      expect(accepted.status).toBe(200)
+      await expect(pending).resolves.toEqual({ code: 'e'.repeat(32) })
+    })
   })
 })

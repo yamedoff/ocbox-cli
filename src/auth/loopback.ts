@@ -5,7 +5,9 @@ import { LOOPBACK_HOST, LOOPBACK_PATH } from './config.js'
 import { newRequestId } from './errors.js'
 import { timingSafeEqualText } from './pkce.js'
 
-const CODE_PATTERN = /^[A-Za-z0-9_-]{1,256}$/
+// Authorization codes are pinned by the hosted contract schema: 32-256 chars
+// of unreserved base64url alphabet.
+const CODE_PATTERN = /^[A-Za-z0-9_-]{32,256}$/
 const MAX_REQUEST_TARGET_LENGTH = 2_048
 
 const SUCCESS_BODY =
@@ -174,6 +176,15 @@ export class LoopbackCallbackListener implements LoopbackListener {
 
     const state = url.searchParams.get('state') ?? ''
     const providerError = url.searchParams.get('error')
+    // Ambiguous shapes are refused: an authorization endpoint must emit each
+    // nonce parameter exactly once, and duplicated values would leave which
+    // copy governs undefined behavior.
+    for (const parameter of ['code', 'state', 'error'] as const) {
+      if (url.searchParams.getAll(parameter).length > 1) {
+        respond(response, 400, FAILURE_BODY)
+        return
+      }
+    }
     if (providerError !== null) {
       if (!timingSafeEqualText(state, this.#expectedState)) {
         respond(response, 400, FAILURE_BODY)

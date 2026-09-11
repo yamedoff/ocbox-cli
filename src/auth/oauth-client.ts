@@ -6,10 +6,13 @@ import type { FetchPort } from './ports.js'
 
 const MAX_RESPONSE_BYTES = 64 * 1024
 /**
- * Hard ceiling on bytes pulled off the wire before a response is even parsed,
- * so a hostile or broken endpoint cannot run the CLI out of memory with an
- * oversized (or endless) body. Parsed payloads are capped separately at
- * `MAX_RESPONSE_BYTES`.
+ * Wire shield above the protocol parse ceiling. Token-pair payloads must parse
+ * within `MAX_RESPONSE_BYTES` (64 KiB, matching the pinned contract-shape
+ * bound); the larger wire ceiling exists only so that oversize material can be
+ * detected and safely discarded (stopped mid-stream) instead of trickling
+ * through the socket unboundedly. A successful revocation response must also
+ * stay within the 64 KiB protocol ceiling, since the contract defines it as
+ * status 204/200 with no meaningful content.
  */
 const MAX_BODY_READ_BYTES = 256 * 1024
 const PROVIDER_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/
@@ -23,7 +26,11 @@ export const CliTokenPairSchema = z.strictObject({
     .regex(/^[A-Za-z0-9_-]+$/),
   tokenType: z.literal('Bearer'),
   expiresIn: z.number().int().min(1).max(3600),
-  scope: z.string().min(1).max(256),
+  scope: z
+    .string()
+    .min(1)
+    .max(256)
+    .regex(/^[a-z0-9._:-]+(?: [a-z0-9._:-]+)*$/),
   refreshToken: z
     .string()
     .min(32)
@@ -100,6 +107,20 @@ class OversizedResponseError extends Error {
   }
 }
 
+function withRedirectDisabled(init: RequestInit): RequestInit {
+  // OAuth token/revocation endpoints must never hand credentials across a
+  // redirect; manual-mode makes any 3xx surface as an opaque failure instead.
+  return { redirect: 'manual', ...init }
+}
+
+/**
+ * Minimal public-client OAuth protocol client for the CLI token and revocation
+ * endpoints. It attaches no credentials to the protocol requests and never
+ * lets fetch follow a redirect (manual mode): token, verifier, and refresh
+ * material can only ever travel to the validated configured endpoints. It never
+ * logs or embeds tokens, codes, or verifiers in errors.
+ */
+/** Endpoints, client id, transport, and bound timeout for the protocol client. */
 export interface CliOAuthClientOptions {
   readonly tokenEndpoint: string
   readonly revocationEndpoint: string
@@ -212,12 +233,15 @@ export class CliOAuthClient implements CliOAuthClientPort {
   async revoke(input: RevokeInput): Promise<void> {
     const timeout = withTimeout(input.signal, this.#options.timeoutMilliseconds)
     try {
-      const response = await this.#options.fetch(this.#options.revocationEndpoint, {
-        body: JSON.stringify({ clientId: this.#options.clientId, token: input.token }),
-        headers: { accept: 'application/json', 'content-type': 'application/json' },
-        method: 'POST',
-        signal: timeout.signal,
-      })
+      const response = await this.#options.fetch(
+        this.#options.revocationEndpoint,
+        withRedirectDisabled({
+          body: JSON.stringify({ clientId: this.#options.clientId, token: input.token }),
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          method: 'POST',
+          signal: timeout.signal,
+        }),
+      )
       let text = ''
       try {
         text = await readBoundedResponseText(response)
@@ -225,6 +249,11 @@ export class CliOAuthClient implements CliOAuthClientPort {
         text = ''
       }
       if (!response.ok) throw this.#mapError(response, text, timeout.didTimeout())
+      // The contract defines no response content; a bounded but oversized
+      // successful body is a protocol violation, never accepted silently.
+      if (text.length > MAX_RESPONSE_BYTES) {
+        throw unsafeMessage('The revocation response was not understood')
+      }
     } catch (error) {
       if (error instanceof OcboxError) throw error
       throw this.#transportError(timeout.didTimeout())
@@ -239,12 +268,15 @@ export class CliOAuthClient implements CliOAuthClientPort {
   ): Promise<CliTokenPair> {
     const timeout = withTimeout(signal, this.#options.timeoutMilliseconds)
     try {
-      const response = await this.#options.fetch(this.#options.tokenEndpoint, {
-        body: JSON.stringify(body),
-        headers: { accept: 'application/json', 'content-type': 'application/json' },
-        method: 'POST',
-        signal: timeout.signal,
-      })
+      const response = await this.#options.fetch(
+        this.#options.tokenEndpoint,
+        withRedirectDisabled({
+          body: JSON.stringify(body),
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          method: 'POST',
+          signal: timeout.signal,
+        }),
+      )
       let text: string
       try {
         text = await readBoundedResponseText(response)

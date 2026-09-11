@@ -12,7 +12,9 @@ export default class AuthLogin extends OcboxCommand {
       description: 'Hosted API base URL; defaults to OCBOX_API_URL',
     }),
     'authorize-url': Flags.string({
-      description: 'Override the browser authorization endpoint',
+      description:
+        'Hosted browser authorization URL; required because the pinned contract does not ' +
+        'yet publish one (defaults to OCBOX_AUTHORIZE_URL)',
     }),
     'no-browser': Flags.boolean({
       description: 'Print the authorization URL instead of opening a browser',
@@ -22,13 +24,20 @@ export default class AuthLogin extends OcboxCommand {
   async run(): Promise<void> {
     const { flags } = await this.parse(AuthLogin)
     const writer = this.writerFor(flags)
+    // Ctrl+C travels into the loopback listener and token exchange as the same
+    // cancellation signal other long-running commands use, and is disposed so
+    // no stale process listener survives the command.
+    const interrupt = this.abortOnInterrupt()
     try {
       const session = createAuthSessionService({
-        endpoints: resolveAuthEndpoints(flags),
+        endpoints: resolveAuthEndpoints(flags, process.env, {
+          requireBrowserAuthorizationEndpoint: true,
+        }),
         flags,
       })
       const result = await session.login({
         openBrowser: flags['no-browser'] !== true,
+        signal: interrupt.signal,
         onAuthorizationUrl: (authorizationUrl, opened) => {
           if (!opened) {
             writer.event(
@@ -45,6 +54,8 @@ export default class AuthLogin extends OcboxCommand {
     } catch (error) {
       writer.error(error)
       process.exitCode = 1
+    } finally {
+      interrupt.dispose()
     }
   }
 }

@@ -1,9 +1,15 @@
-import type { CredentialStore, HostedOAuthCredentialKey } from '../credentials/store.js'
+import type {
+  CredentialStore,
+  HostedOAuthCredential,
+  HostedOAuthCredentialKey,
+} from '../credentials/store.js'
+import { OcboxError } from '../errors/index.js'
 import type { ClockPort } from './clock.js'
 import { type AuthEndpoints, authEndpointsFromIssuer, buildAuthorizationUrl } from './config.js'
+import { newRequestId } from './errors.js'
 import type { EntropyPort } from './entropy.js'
 import type { LoopbackListener, LoopbackListenerFactory } from './loopback.js'
-import { type AuthMetadataRepository, AuthMetadataSchema } from './metadata.js'
+import { type AuthMetadata, type AuthMetadataRepository, AuthMetadataSchema } from './metadata.js'
 import type { CliOAuthClientPort, RevokeInput } from './oauth-client.js'
 import { codeChallengeS256, generateCodeVerifier, generateState } from './pkce.js'
 import type { BrowserOpenerPort } from './ports.js'
@@ -93,6 +99,10 @@ export class AuthSessionService {
       expectedState: state,
       timeoutMilliseconds: this.#options.loginTimeoutMilliseconds,
     })
+    // Prior state is captured so a failed metadata commit restores exactly
+    // what was on disk before this run instead of leaving a half-written pair.
+    const previousCredential = await this.#options.credentialStore.get(this.#options.credentialKey)
+    const previousMetadata = await this.#options.metadataStore.load()
     try {
       const authorizationUrl = buildAuthorizationUrl(endpoints, {
         codeChallenge,
@@ -113,7 +123,6 @@ export class AuthSessionService {
       })
       const now = this.#options.clock.now()
       const credential = credentialFromTokenPair(pair, now)
-      await this.#options.credentialStore.set(this.#options.credentialKey, credential)
       const metadata = AuthMetadataSchema.parse({
         audience: endpoints.audience,
         clientId: endpoints.clientId,
@@ -124,11 +133,42 @@ export class AuthSessionService {
         scopes: credential.scopes,
         updatedAt: new Date(now).toISOString(),
       })
-      await this.#options.metadataStore.save(metadata)
+      // Committed as a pair; if the metadata commit fails, the previous
+      // credential/metadata state is restored so disk never holds a credential
+      // that its metadata disagrees about.
+      await this.#options.credentialStore.set(this.#options.credentialKey, credential)
+      try {
+        await this.#options.metadataStore.save(metadata)
+      } catch (error) {
+        await this.#restore(previousCredential, previousMetadata)
+        throw error
+      }
       const status = statusFrom(metadata, credential, now)
       return { ...status, browserOpened: opened }
     } finally {
       await listener.close().catch(() => undefined)
+    }
+  }
+
+  /** Best-effort restoration of the pre-login state on a failed commit. */
+  async #restore(
+    previousCredential: HostedOAuthCredential | null,
+    previousMetadata: AuthMetadata | null,
+  ): Promise<void> {
+    try {
+      if (previousCredential === null) {
+        await this.#options.credentialStore.delete(this.#options.credentialKey)
+      } else {
+        await this.#options.credentialStore.set(this.#options.credentialKey, previousCredential)
+      }
+    } catch {
+      // Restoration is best effort; the original save failure is still thrown.
+    }
+    try {
+      if (previousMetadata === null) await this.#options.metadataStore.clear()
+      else await this.#options.metadataStore.save(previousMetadata)
+    } catch {
+      // Best effort; the original commit failure is what callers must see.
     }
   }
 
@@ -144,7 +184,7 @@ export class AuthSessionService {
   }
 
   async logout(options: { signal?: AbortSignal | undefined } = {}): Promise<AuthLogoutView> {
-    const metadata = await this.#options.metadataStore.load()
+    const metadata = await this.#options.metadataStore.load(options.signal)
     const credential =
       metadata === null ? null : await this.#options.credentialStore.get(metadata.identity)
     let revocationAttempted = false
@@ -164,14 +204,35 @@ export class AuthSessionService {
           await this.#options.oauth(endpoints).revoke(input)
           revoked = true
         } catch {
-          // Local material is always cleared even when revocation fails.
+          // Revocation failures never block local cleanup; the outcome is
+          // reported truthfully instead of thrown.
           revoked = false
         }
       }
     }
+    // Every cleanup step is attempted even after an earlier failure; a failed
+    // step is reported truthfully instead of claiming the material was cleared.
+    let cleanupError: unknown = null
     const identity = metadata?.identity ?? this.#options.credentialKey
-    await this.#options.credentialStore.delete(identity).catch(() => undefined)
-    await this.#options.metadataStore.clear().catch(() => undefined)
+    try {
+      await this.#options.credentialStore.delete(identity)
+    } catch (error) {
+      cleanupError ??= error
+    }
+    try {
+      await this.#options.metadataStore.clear()
+    } catch (error) {
+      cleanupError ??= error
+    }
+    if (cleanupError !== null) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message:
+          'Local authentication material could not be fully cleared; ' +
+          'run `ocbox auth logout` again and inspect the state directory',
+        requestId: newRequestId(),
+      })
+    }
     return { loggedOut: true, revocationAttempted, revoked }
   }
 }

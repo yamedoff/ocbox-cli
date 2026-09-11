@@ -4,7 +4,8 @@ import { authEndpointsFromIssuer } from '../../src/auth/config.js'
 import type { EntropyPort } from '../../src/auth/entropy.js'
 import { newRequestId } from '../../src/auth/errors.js'
 import { startLoopbackListener } from '../../src/auth/loopback.js'
-import { AuthMetadataSchema } from '../../src/auth/metadata.js'
+import { AuthMetadataSchema, type AuthMetadata } from '../../src/auth/metadata.js'
+import type { CredentialStore, HostedOAuthCredentialKey } from '../../src/credentials/index.js'
 import type {
   CliOAuthClientPort,
   ExchangeAuthorizationCodeInput,
@@ -22,7 +23,7 @@ import {
   tokenPair,
 } from './doubles.js'
 
-const CODE = 'authorization-code-value'
+const CODE = 'authorization-code-value-'.padEnd(40, 'x')
 
 class CountingEntropy implements EntropyPort {
   #value = 0
@@ -275,5 +276,164 @@ describe('auth session service', () => {
     const result = await h.service.logout()
     expect(result.revoked).toBe(true)
     expect(h.revokeCalls[0]?.token).toBe('A'.repeat(48))
+  })
+})
+
+class FailingMetadataRepository extends MemoryMetadataRepository {
+  readonly #failSave = new Set<number>()
+  #saveCalls = 0
+
+  failSaveOn(callIndex: number): void {
+    this.#failSave.add(callIndex)
+  }
+
+  override async save(metadata: AuthMetadata): Promise<void> {
+    this.#saveCalls += 1
+    if (this.#failSave.has(this.#saveCalls)) {
+      throw new Error('disk failure')
+    }
+    this.value = metadata
+    this.saves.push(metadata)
+  }
+}
+
+class FailingDeleteCredentialStore extends MemoryCredentialStore {
+  failDeletes = false
+
+  override delete(key: HostedOAuthCredentialKey): Promise<void> {
+    if (this.failDeletes) return Promise.reject(new Error('disk failure'))
+    return super.delete(key)
+  }
+}
+
+describe('auth session service failure legs', () => {
+  it('restores the previous credential and metadata when the metadata commit fails', async () => {
+    const credentials = new MemoryCredentialStore()
+    const metadata = new FailingMetadataRepository()
+    const previous = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 1_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://old.example.test',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW - 1_000).toISOString(),
+    })
+    metadata.value = previous
+    const previousCredential = credentialFromTokenPair(tokenPair('a'), TEST_NOW)
+    await credentials.set(TEST_KEY, previousCredential)
+    const service = new AuthSessionService({
+      browser: { open: () => Promise.resolve(false) },
+      clock: fixedClock(TEST_NOW),
+      credentialKey: TEST_KEY,
+      credentialStore: credentials,
+      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      entropy: new CountingEntropy(),
+      listenerFactory: startLoopbackListener,
+      loginTimeoutMilliseconds: 5_000,
+      metadataStore: metadata,
+      oauth: () => ({
+        exchangeAuthorizationCode: () => Promise.resolve(tokenPair('b')),
+        refresh: () => Promise.resolve(tokenPair('b')),
+        revoke: () => Promise.resolve(),
+      }),
+    })
+    const failingSaveCalls = metadata.saves.length
+    metadata.failSaveOn(failingSaveCalls + 1)
+    await expect(
+      service.login({
+        openBrowser: false,
+        onAuthorizationUrl: (url) => {
+          const redirectUri = new URL(url).searchParams.get('redirect_uri') ?? ''
+          const state = new URL(url).searchParams.get('state') ?? ''
+          setTimeout(() => void sendCallback(redirectUri, CODE, state), 10)
+        },
+      }),
+    ).rejects.toMatchObject({ message: 'disk failure' })
+    // Exactly the previous state remains on disk.
+    await expect(credentials.get(TEST_KEY)).resolves.toMatchObject({
+      accessToken: 'a'.repeat(48),
+    })
+    expect(metadata.value).toEqual(previous)
+  })
+
+  it('persists nothing when the metadata commit fails on a clean machine', async () => {
+    const credentials = new MemoryCredentialStore()
+    const metadata = new FailingMetadataRepository()
+    metadata.failSaveOn(1)
+    const service = new AuthSessionService({
+      browser: { open: () => Promise.resolve(false) },
+      clock: fixedClock(TEST_NOW),
+      credentialKey: TEST_KEY,
+      credentialStore: credentials,
+      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      entropy: new CountingEntropy(),
+      listenerFactory: startLoopbackListener,
+      loginTimeoutMilliseconds: 5_000,
+      metadataStore: metadata,
+      oauth: () => ({
+        exchangeAuthorizationCode: () => Promise.resolve(tokenPair('b')),
+        refresh: () => Promise.resolve(tokenPair('b')),
+        revoke: () => Promise.resolve(),
+      }),
+    })
+    await expect(
+      service.login({
+        openBrowser: false,
+        onAuthorizationUrl: (url) => {
+          const redirectUri = new URL(url).searchParams.get('redirect_uri') ?? ''
+          const state = new URL(url).searchParams.get('state') ?? ''
+          setTimeout(() => void sendCallback(redirectUri, CODE, state), 10)
+        },
+      }),
+    ).rejects.toBeTruthy()
+    expect(credentials.values.size).toBe(0)
+    expect(metadata.value).toBeNull()
+  })
+
+  it('surfaces a typed failure and still clears everything when local cleanup fails on logout', async () => {
+    const credentials = new FailingDeleteCredentialStore()
+    credentials.failDeletes = true
+    const metadata = new MemoryMetadataRepository()
+    await credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://api.example.test',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW).toISOString(),
+    })
+    const service = new AuthSessionService({
+      browser: { open: () => Promise.resolve(true) },
+      clock: fixedClock(TEST_NOW),
+      credentialKey: TEST_KEY,
+      credentialStore: credentials,
+      endpoints: null,
+      entropy: new CountingEntropy(),
+      listenerFactory: startLoopbackListener,
+      loginTimeoutMilliseconds: 5_000,
+      metadataStore: metadata,
+      oauth: () => ({
+        exchangeAuthorizationCode: () => Promise.resolve(tokenPair('b')),
+        refresh: () => Promise.resolve(tokenPair('b')),
+        revoke: () => Promise.resolve(),
+      }),
+    })
+    // The error is typed; no false "logged_out" result reaches the caller.
+    await expect(service.logout()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+  })
+
+  it('rejects a cancelled login with auth-required and stops the listener', async () => {
+    const h = harness()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      h.service.login({ openBrowser: false, signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'AUTH_REQUIRED' })
+    expect(h.credentials.sets).toHaveLength(0)
   })
 })
