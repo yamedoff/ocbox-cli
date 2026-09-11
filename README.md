@@ -2,8 +2,9 @@
 
 `ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
 surface contains the oclif shell, provider-neutral domain and adapter contracts,
-the execution engine/helper boundary, and the manifest-based `sync diff|push|pull`
-source transport. Provider integrations remain out of scope.
+the execution engine/helper boundary, the manifest-based `sync diff|push|pull`
+source transport, and OAuth 2.1 PKCE CLI authentication. Provider integrations
+remain out of scope.
 
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
@@ -17,7 +18,9 @@ idempotency, execution, file, preview, and error invariants. See
 [docs/execution.md](docs/execution.md) for command grammar, streaming, cancellation,
 exit behavior, and the deliberately local fake-provider harness. See
 [docs/sync.md](docs/sync.md) for the manifest, path/secret policy, three-way
-planner, deletion confirmation, and staging/recovery contract.
+planner, deletion confirmation, and staging/recovery contract. See
+[docs/auth.md](docs/auth.md) for the OAuth 2.1 PKCE login/logout/status contract,
+token lifecycle, and the pinned hosted OpenAPI artifact.
 
 ## Toolchain
 
@@ -46,6 +49,7 @@ disabled with `private: true` until a later registry and release review. Both
 ## Validate
 
 ```sh
+pnpm run api:check
 pnpm run typecheck
 pnpm run lint
 pnpm run format:check

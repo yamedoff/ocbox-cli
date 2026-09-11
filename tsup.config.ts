@@ -10,6 +10,10 @@ export default defineConfig({
   clean: true,
   dts: true,
   entry: {
+    'commands/auth/index': 'src/commands/auth/index.ts',
+    'commands/auth/login': 'src/commands/auth/login.ts',
+    'commands/auth/logout': 'src/commands/auth/logout.ts',
+    'commands/auth/status': 'src/commands/auth/status.ts',
     'commands/destroy': 'src/commands/destroy.ts',
     'commands/exec': 'src/commands/exec.ts',
     'commands/init': 'src/commands/init.ts',

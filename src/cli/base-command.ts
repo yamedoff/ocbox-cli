@@ -1,4 +1,5 @@
 import { Command, Flags } from '@oclif/core'
+import type { OutputWriter } from '../output/index.js'
 import { createOutputWriter, type RuntimeFlags } from './runtime.js'
 
 export const runtimeFlags = {
@@ -17,7 +18,7 @@ export abstract class OcboxCommand extends Command {
     humanMessage: (result: Result) => string,
     action: () => Promise<Result>,
   ): Promise<void> {
-    const writer = createOutputWriter(flags, { stdout: process.stdout, stderr: process.stderr })
+    const writer = this.writerFor(flags)
     try {
       const result = await action()
       writer.result(name, result, { humanMessage: humanMessage(result) })
@@ -25,6 +26,11 @@ export abstract class OcboxCommand extends Command {
       writer.error(error)
       process.exitCode = 1
     }
+  }
+
+  /** Shared writer so streaming commands can emit events before their result. */
+  protected writerFor(flags: RuntimeFlags): OutputWriter {
+    return createOutputWriter(flags, { stdout: process.stdout, stderr: process.stderr })
   }
 
   protected abortOnInterrupt(): { readonly signal: AbortSignal; readonly dispose: () => void } {
