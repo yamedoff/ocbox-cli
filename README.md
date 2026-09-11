@@ -2,7 +2,8 @@
 
 `ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
 surface contains the oclif shell, provider-neutral domain and adapter contracts,
-and the execution engine/helper boundary. Provider integrations remain out of scope.
+the execution engine/helper boundary, and the manifest-based `sync diff|push|pull`
+source transport. Provider integrations remain out of scope.
 
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
@@ -14,7 +15,9 @@ import { SandboxSpecSchema, type SandboxProvider } from 'opencloudbox/contracts'
 See [docs/contracts.md](docs/contracts.md) for lifecycle, specification,
 idempotency, execution, file, preview, and error invariants. See
 [docs/execution.md](docs/execution.md) for command grammar, streaming, cancellation,
-exit behavior, and the deliberately local fake-provider harness.
+exit behavior, and the deliberately local fake-provider harness. See
+[docs/sync.md](docs/sync.md) for the manifest, path/secret policy, three-way
+planner, deletion confirmation, and staging/recovery contract.
 
 ## Toolchain
 

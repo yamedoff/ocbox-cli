@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
+import { OperationIdSchema } from '../domain/ids.js'
 import { type UtcTimestamp, UtcTimestampSchema } from '../domain/timestamps.js'
 import { MAX_SYNC_ENTRIES, ManifestEntrySchema, type SourceManifest } from './manifest.js'
 import { ManifestPathSchema } from './path-policy.js'
@@ -129,6 +130,23 @@ export const SyncBaselineEvidenceSchema = z.union([
 export type VerifiedSyncBaseline = z.infer<typeof VerifiedSyncBaselineSchema>
 export type SyncBaselineEvidence = z.infer<typeof SyncBaselineEvidenceSchema>
 
+/**
+ * Durable intent written before a target commit and promoted to the verified
+ * baseline only after the commit succeeds. It closes the crash window between
+ * target mutation and baseline persistence: a later run can prove the target
+ * matches `baseline` (promote) or does not (discard), instead of observing an
+ * ambiguous divergence. It carries only relative paths and hashes.
+ */
+export const PendingSyncBaselineSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  operationId: OperationIdSchema,
+  mode: z.enum(['push', 'pull']),
+  targetSide: z.enum(['local', 'remote']),
+  baseline: VerifiedSyncBaselineSchema,
+})
+
+export type PendingSyncBaseline = z.infer<typeof PendingSyncBaselineSchema>
+
 /** Creates baseline evidence only after the caller has verified the completed apply. */
 export function createVerifiedBaseline(
   manifest: SourceManifest,
@@ -150,6 +168,11 @@ export function createVerifiedBaseline(
 /** Parses persisted evidence and rejects tampered or non-canonical baselines. */
 export function parseSyncBaseline(input: unknown): SyncBaselineEvidence {
   return SyncBaselineEvidenceSchema.parse(input)
+}
+
+/** Parses a pending-baseline intent document at the persistence boundary. */
+export function parsePendingSyncBaseline(input: unknown): PendingSyncBaseline {
+  return PendingSyncBaselineSchema.parse(input)
 }
 
 /** Converts validated manifest entries received through a transfer boundary. */
