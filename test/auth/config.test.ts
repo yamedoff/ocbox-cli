@@ -99,19 +99,19 @@ describe('auth endpoint configuration', () => {
     expect(endpoints.revocationEndpoint).toBe('https://api.example.test/v1/auth/revoke')
 
     expect(() =>
-      authEndpointsFromIssuer('https://api.example.test', {
+      protocolEndpointsFromIssuer('https://api.example.test', {
         tokenEndpoint: 'https://evil.example.test/v1/auth/cli/token',
       }),
-    ).toThrow(/configured hosted API origin/)
+    ).toThrow(/configured hosted API base/)
     expect(() =>
-      authEndpointsFromIssuer('https://api.example.test', {
+      protocolEndpointsFromIssuer('https://api.example.test', {
         revocationEndpoint: 'https://evil.example.test/v1/auth/revoke',
       }),
-    ).toThrow(/configured hosted API origin/)
+    ).toThrow(/configured hosted API base/)
   })
 
   it('accepts same-origin token and revocation overrides', () => {
-    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+    const endpoints = protocolEndpointsFromIssuer('https://api.example.test', {
       revocationEndpoint: 'https://api.example.test/v1/custom/revoke',
       tokenEndpoint: 'https://api.example.test/v1/custom/token',
     })
@@ -119,19 +119,29 @@ describe('auth endpoint configuration', () => {
     expect(endpoints.revocationEndpoint).toBe('https://api.example.test/v1/custom/revoke')
   })
 
+  it('rejects same-origin protocol overrides outside a configured deployment subpath', () => {
+    expect(() =>
+      protocolEndpointsFromIssuer('https://api.example.test/deploy', {
+        tokenEndpoint: 'https://api.example.test/other/v1/auth/cli/token',
+      }),
+    ).toThrow(/configured hosted API base/)
+  })
+
   it('rejects credentialed, relative, and query/fragment endpoint overrides', () => {
     expect(() =>
-      authEndpointsFromIssuer('https://api.example.test', {
+      protocolEndpointsFromIssuer('https://api.example.test', {
         tokenEndpoint: 'https://user:pass@api.example.test/v1/auth/cli/token',
       }),
     ).toThrow()
     expect(() =>
-      authEndpointsFromIssuer('https://api.example.test', {
+      protocolEndpointsFromIssuer('https://api.example.test', {
         tokenEndpoint: 'https://api.example.test/v1/auth/cli/token?x=1',
       }),
     ).toThrow()
     expect(() =>
-      authEndpointsFromIssuer('https://api.example.test', { revocationEndpoint: '/auth/revoke' }),
+      protocolEndpointsFromIssuer('https://api.example.test', {
+        revocationEndpoint: '/auth/revoke',
+      }),
     ).toThrow()
   })
 })

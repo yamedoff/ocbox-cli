@@ -19,13 +19,12 @@ is normalized (a trailing `/v1` is removed first, exactly like the generated
 client) and served under `/v1/auth/...`. Cleartext `http` is only accepted for
 literal loopback hosts (`127.0.0.1`, `localhost`, `[::1]`), so codes, PKCE
 verifiers, and token pairs never cross a non-loopback network hop in cleartext.
-Token and revocation endpoint overrides (`--token-url`/`--revoke-url`, and the
-programmatic overrides) must resolve to the configured API origin: the pinned
-contract publishes no separate token/revoke host, and those endpoints receive
-codes, verifiers, refresh tokens, and revoke tokens. A browser authorization
-override (`--authorize-url`) may use a separate origin, because only public
-parameters (client id, redirect URI, state, PKCE challenge) travel to the
-browser page. The registered public client is `ocb_cli` with the single
+Programmatic token and revocation endpoint overrides must stay under the
+configured API base: the pinned contract publishes no separate token/revoke
+host, and those endpoints receive codes, verifiers, refresh tokens, and revoke
+tokens. The browser authorization URL (`--authorize-url`) may use a separate
+origin, because only public parameters (client id, redirect URI, state, PKCE
+challenge) travel to the browser page. The registered public client is `ocb_cli` with the single
 `source:read` scope and the `cli` audience; the authorized redirect is exactly
 `http://127.0.0.1:{randomPort}/callback`.
 
@@ -94,36 +93,32 @@ store holds the rejected access token. Lock waits are cancellable. A terminal
 second 401 compare-deletes only the generation it used, under that same lock.
 Refresh reuse or revocation clears matching local material and returns
 `AUTH_REQUIRED`. OAuth protocol response reads are bounded at 64 KiB on success
-and error paths and never echo the body. Caller cancellation is
-`OPERATION_CANCELLED`; a transport deadline is `PROVIDER_TIMEOUT`. Issuer,
-client, credential identity, audience, and required scopes must all match the
-machine-level metadata before the credential is used, otherwise the client
-fails with `AUTH_FORBIDDEN`.
+and error paths; generated hosted-client response reads default to a 16 MiB
+ceiling. Both reads cover streaming bodies and never echo the body. Caller
+cancellation is `OPERATION_CANCELLED`; a transport deadline is
+`PROVIDER_TIMEOUT`. Issuer, client, credential identity, audience, and the
+exact scope set must match the machine-level metadata before the credential is
+used, otherwise the client fails with `AUTH_FORBIDDEN`.
 
 ## Concurrency
 
-Refresh rotation runs inside a bounded cross-process lock on the state
-directory (`auth.refresh.lock`), so two `ocbox` processes never present the
-same rotating refresh token simultaneously; contention surfaces as
-`OPERATION_CONFLICT` instead of an unbounded stall.
-
-Login/status/logout run their snapshot-and-commit sections inside a separate
-bounded cross-process lock (`auth.session.lock`): login snapshots prior state
-and commits (or rolls back) the credential/metadata pair under the lock, and
-status/logout read and clear under it, so a concurrent CLI process can never
-interleave a snapshot with another actor's commit. The session lock is always
-the outermost lock and the stores keep their own internal locks, so no lock
-cycle exists. Login deliberately releases the lock while the user is in the
-browser and re-acquires it only to commit.
+Authenticated credential reads, refresh rotation, login commits, status
+reconciliation, and logout all use one bounded cross-process state lock in the selected state
+directory (`auth.state.lock`). This prevents a fresh read from crossing a
+login/logout commit and prevents two processes from presenting one rotating
+refresh token. Contention is `OPERATION_CONFLICT`; cancellation while waiting
+is `OPERATION_CANCELLED`. The state lock is always outermost and each store
+keeps its own internal lock, so lock acquisition has one order. Login holds the
+state lock only for its state commit, not while the user is in the browser.
 
 Local cleanup failures on logout, and a failed metadata clear on status,
 surface a typed `INVALID_STATE` failure rather than a false success. If login's
-rollback itself fails after a failed metadata commit, the commit failure is
-what callers see and the state directory may still hold the previous pair;
-running `ocbox auth logout` clears both stores regardless. The metadata store
-reports a cleared file only after its absence has been confirmed; transient
-Windows sharing violations are retried with backoff instead of being silently
-treated as success.
+rollback itself fails after a failed metadata commit, callers receive a typed
+`INVALID_STATE` error because the credential and metadata generations may no
+longer agree; running `ocbox auth logout` clears both stores regardless. The
+metadata store reports a cleared file only after its absence has been
+confirmed; transient sharing violations are retried with backoff instead of
+being silently treated as success.
 
 ## Storage boundary
 
@@ -152,7 +147,7 @@ the generated client can never disagree:
   normalization the single URL model.
 - **One state directory.** `resolveAuthStateDirectory` (explicit directory,
   then `--state-dir`/`OCBOX_STATE_DIR`, then the platform default) locates the
-  `auth.json` metadata and the `auth.refresh.lock` for both login and
+  `auth.json` metadata and the `auth.state.lock` for both login and
   `createHostedTokenManager`. Bearer material itself stays in the T3 platform
   credential directory, never in the state directory.
 - **One credential identity.** The single CLI identity is the `hosted-oauth`
@@ -163,9 +158,9 @@ the generated client can never disagree:
 - **One transport.** `createAuthenticatedTransport` adapts
   `AuthenticatedHttpClient` to the generated client's `ApiTransport` port:
   bearer-only `Authorization`, origin *and* base-subpath binding, manual
-  redirects, bounded timeouts, and the single serialized refresh-and-retry for
-  replayable requests (idempotent methods or calls carrying an
-  `Idempotency-Key`). Per-operation keys flow through from the generated
+  redirects, bounded response bodies and timeouts, and the single serialized
+  refresh-and-retry for replayable requests (idempotent methods or calls
+  carrying an `Idempotency-Key`). Per-operation keys flow through from the generated
   client; `AbortSignal`s propagate; `ApiResult` request IDs and replay flags
   surface per call. HTTP/auth error-to-catalogue mapping stays with the hosted
   provider layer.

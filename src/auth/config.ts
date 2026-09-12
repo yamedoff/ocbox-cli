@@ -92,14 +92,14 @@ function joinEndpoint(issuer: string, path: string): string {
  * carry codes, verifiers, and refresh material, so they must be absolute
  * uncredentialed, query/fragment-free http(s) URLs, and cleartext http stays
  * restricted to loopback hosts exactly like the issuer itself. When an
- * `expectedOrigin` is supplied the override must resolve to exactly that
- * origin; everything else fails closed instead of silently handing token
- * material to a malformed or foreign target.
+ * `expectedApiBase` is supplied the override must stay on that origin and
+ * beneath its deployment path; everything else fails closed instead of
+ * silently handing token material to a malformed or foreign target.
  */
 export function validateEndpointOverride(
   name: string,
   value: string,
-  options: { readonly expectedOrigin?: string | undefined } = {},
+  options: { readonly expectedApiBase?: string | undefined } = {},
 ): void {
   let parsed: URL
   try {
@@ -122,8 +122,15 @@ export function validateEndpointOverride(
   if (parsed.search !== '' || parsed.hash !== '') {
     throw new TypeError(`The ${name} override must not include a query or fragment`)
   }
-  if (options.expectedOrigin !== undefined && parsed.origin !== options.expectedOrigin) {
-    throw new TypeError(`The ${name} override must use the configured hosted API origin`)
+  if (options.expectedApiBase !== undefined) {
+    const base = new URL(options.expectedApiBase)
+    const prefix = base.pathname.replace(/\/+$/, '')
+    if (
+      parsed.origin !== base.origin ||
+      (prefix !== '' && parsed.pathname !== prefix && !parsed.pathname.startsWith(`${prefix}/`))
+    ) {
+      throw new TypeError(`The ${name} override must stay under the configured hosted API base`)
+    }
   }
 }
 
@@ -147,22 +154,16 @@ export function protocolEndpointsFromIssuer(
 ): HostedProtocolEndpoints {
   const normalized = normalizeIssuer(issuer)
   const apiBase = versionedApiBase(normalized)
-  const issuerOrigin = new URL(normalized).origin
   for (const [name, value] of [
     ['revocationEndpoint', overrides.revocationEndpoint],
     ['tokenEndpoint', overrides.tokenEndpoint],
   ] as const) {
     if (value === undefined) continue
-    validateEndpointOverride(name, value, {
-      // A browser authorization page may legitimately live on a separate web
-      // origin: only public parameters (client id, redirect URI, state, PKCE
-      // challenge) travel there, never a code, verifier, or token. The token
-      // and revocation endpoints receive authorization codes, PKCE verifiers,
-      // refresh tokens, and revoke tokens, and the pinned contract publishes
-      // them only under the issuer's own `/v1` root, so a cross-origin override
-      // for them has no contract evidence and must fail closed.
-      ...(name === 'authorizationEndpoint' ? {} : { expectedOrigin: issuerOrigin }),
-    })
+    // Token and revocation endpoints receive codes, verifiers, refresh tokens,
+    // and revoke tokens. They therefore stay inside the configured API base,
+    // including its deployment subpath, even when a browser page is hosted on
+    // another origin.
+    validateEndpointOverride(name, value, { expectedApiBase: normalized })
   }
   return {
     audience: DEFAULT_AUDIENCE,
@@ -181,9 +182,10 @@ export function protocolEndpointsFromIssuer(
  */
 export function authEndpointsFromIssuer(
   issuer: string,
-  overrides: AuthEndpointOverrides & BrowserAuthorizationEndpointOverride,
+  overrides: (AuthEndpointOverrides & BrowserAuthorizationEndpointOverride) | undefined,
 ): AuthEndpoints {
   if (
+    overrides === undefined ||
     typeof overrides.authorizationEndpoint !== 'string' ||
     overrides.authorizationEndpoint.trim().length === 0
   ) {

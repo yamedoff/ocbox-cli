@@ -13,6 +13,7 @@ const VALID_PAIR = {
 
 function clientWith(fetchImpl: FetchPort, timeoutMilliseconds = 1_000): CliOAuthClient {
   return new CliOAuthClient({
+    apiBase: 'https://api.test',
     clientId: 'ocb_cli',
     fetch: fetchImpl,
     revocationEndpoint: 'https://api.test/auth/revoke',
@@ -60,6 +61,7 @@ describe('CLI OAuth client', () => {
     expect(error).toBeInstanceOf(OcboxError)
     expect((error as OcboxError).code).toBe('AUTH_REQUIRED')
     expect((error as OcboxError).providerCode).toBe('INVALID_GRANT')
+    // biome-ignore lint/complexity/useLiteralKeys: redacted details are an index signature
     expect((error as OcboxError).details?.['providerRequestId']).toBe('req_srv')
   })
 
@@ -69,6 +71,7 @@ describe('CLI OAuth client', () => {
     )
     const error = await client.exchangeAuthorizationCode(EXCHANGE).catch((value: unknown) => value)
     expect((error as OcboxError).code).toBe('PROVIDER_RATE_LIMIT')
+    // biome-ignore lint/complexity/useLiteralKeys: redacted details are an index signature
     expect((error as OcboxError).details?.['retryAfterSeconds']).toBe(12)
   })
 
@@ -88,6 +91,44 @@ describe('CLI OAuth client', () => {
     await expect(client.exchangeAuthorizationCode(EXCHANGE)).rejects.toMatchObject({
       code: 'PROVIDER_TIMEOUT',
     })
+  })
+
+  it('enforces timeout and cancellation while a response body is still streaming', async () => {
+    const bodyThatNeverEnds = (): Response =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() {
+            // Intentionally produce neither a chunk nor EOF.
+          },
+        }),
+      )
+    const timeoutClient = clientWith(() => Promise.resolve(bodyThatNeverEnds()), 20)
+    await expect(timeoutClient.exchangeAuthorizationCode(EXCHANGE)).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+    })
+
+    const controller = new AbortController()
+    const cancellingClient = clientWith(() => Promise.resolve(bodyThatNeverEnds()), 10_000)
+    const pending = cancellingClient.exchangeAuthorizationCode({
+      ...EXCHANGE,
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+  })
+
+  it('binds both credential-bearing endpoints to one configured API base', () => {
+    expect(
+      () =>
+        new CliOAuthClient({
+          apiBase: 'https://api.test/deploy',
+          clientId: 'ocb_cli',
+          fetch: () => Promise.reject(new Error('must not run')),
+          revocationEndpoint: 'https://api.test/deploy/v1/auth/revoke',
+          timeoutMilliseconds: 1_000,
+          tokenEndpoint: 'https://api.test/other/v1/auth/cli/token',
+        }),
+    ).toThrow(/configured hosted API base/)
   })
 
   it('refuses a token response whose body exceeds the bounded read size instead of buffering it', async () => {
@@ -159,7 +200,7 @@ describe('CLI OAuth client', () => {
   })
 
   it('rejects scope values outside the pinned contract alphabet', async () => {
-    const client = clientWith((input, init) =>
+    const client = clientWith(() =>
       Promise.resolve(
         json({
           ...VALID_PAIR,
@@ -214,6 +255,18 @@ describe('CLI OAuth client', () => {
     controller.abort()
     await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
     await expect(pending).rejects.not.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' })
+
+    let called = false
+    const alreadyCancelled = new AbortController()
+    alreadyCancelled.abort()
+    const ignoring = clientWith(() => {
+      called = true
+      return Promise.resolve(json(VALID_PAIR))
+    })
+    await expect(
+      ignoring.exchangeAuthorizationCode({ ...EXCHANGE, signal: alreadyCancelled.signal }),
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(called).toBe(false)
   })
 
   it('rejects a successful revocation body beyond the wire ceiling instead of silently succeeding', async () => {

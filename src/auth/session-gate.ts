@@ -8,15 +8,20 @@ import { OcboxError } from '../errors/index.js'
 import { newRequestId } from './errors.js'
 
 /**
- * Bounded coordinator for the login/status/logout critical sections. It wraps
- * the shared T3 exclusive-file lock so two CLI processes never interleave a
- * state snapshot with another actor's credential/metadata commit. It is always
- * the outermost lock: the metadata and credential stores keep their own locks
- * and are only ever acquired inside this one, so no lock cycle exists. Login
- * deliberately releases the gate while the user is in the browser and
- * re-acquires it only to snapshot prior state and to commit (or roll back).
+ * Bounded coordinator for authenticated credential reads and every session
+ * mutation. It wraps the shared T3 exclusive-file lock so login, status,
+ * logout, and token refresh cannot interleave different state generations across CLI processes.
+ * It is always the outermost lock: the metadata and credential stores keep
+ * their own locks and are only ever acquired inside this one, so no lock cycle
+ * exists. Login releases the gate while the user is in the browser and
+ * acquires it only to snapshot prior state and commit (or roll back).
  */
-export type SessionGate = <Result>(action: () => Promise<Result>) => Promise<Result>
+export const AUTH_STATE_LOCK_FILENAME = 'auth.state.lock'
+
+export type SessionGate = <Result>(
+  action: () => Promise<Result>,
+  signal?: AbortSignal | undefined,
+) => Promise<Result>
 
 export interface SessionGateOptions {
   readonly lockWaitMilliseconds?: number
@@ -33,11 +38,18 @@ export function createSessionGate(
       ? {}
       : { timeoutMilliseconds: options.lockWaitMilliseconds }),
   })
-  return async (action) => {
+  return async (action, signal) => {
     try {
-      return await lock.withLock(join(stateDirectory, 'auth.session.lock'), undefined, action)
+      return await lock.withLock(join(stateDirectory, AUTH_STATE_LOCK_FILENAME), signal, action)
     } catch (error) {
-      if (error instanceof AtomicStoreConflictError || error instanceof AtomicStoreCancelledError) {
+      if (error instanceof AtomicStoreCancelledError) {
+        throw new OcboxError({
+          code: 'OPERATION_CANCELLED',
+          message: 'The wait for another CLI process updating authentication state was cancelled',
+          requestId: newRequestId(),
+        })
+      }
+      if (error instanceof AtomicStoreConflictError) {
         throw new OcboxError({
           code: 'OPERATION_CONFLICT',
           message: 'Another CLI process is updating authentication state; try again shortly',

@@ -8,7 +8,9 @@ import type { ClockPort } from './clock.js'
 import {
   type AuthEndpoints,
   buildAuthorizationUrl,
+  DEFAULT_CLIENT_ID,
   type HostedProtocolEndpoints,
+  normalizeIssuer,
   protocolEndpointsFromIssuer,
 } from './config.js'
 import { newRequestId } from './errors.js'
@@ -58,7 +60,7 @@ export interface AuthSessionServiceOptions {
   readonly browser: BrowserOpenerPort
   readonly listenerFactory: LoopbackListenerFactory
   readonly loginTimeoutMilliseconds: number
-  /** Serializes login/status/logout snapshot-and-commit sections across processes. */
+  /** Serializes session lifecycle snapshot-and-commit sections across processes. */
   readonly sessionGate?: SessionGate | undefined
 }
 
@@ -97,6 +99,17 @@ function staleStateError(message: string): OcboxError {
   })
 }
 
+function sameIdentity(a: HostedOAuthCredentialKey, b: HostedOAuthCredentialKey): boolean {
+  return a.kind === b.kind && a.provider === b.provider && a.accountId === b.accountId
+}
+
+function sameScopes(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const expected = new Set(a)
+  if (expected.size !== a.length || new Set(b).size !== b.length) return false
+  return b.every((scope) => expected.has(scope))
+}
+
 /** Orchestrates the public-client login, status, and logout lifecycle. */
 export class AuthSessionService {
   readonly #options: AuthSessionServiceOptions
@@ -106,9 +119,9 @@ export class AuthSessionService {
   }
 
   /** Runs `action` under the injected cross-process session gate when present. */
-  #gated<Result>(action: () => Promise<Result>): Promise<Result> {
+  #gated<Result>(action: () => Promise<Result>, signal?: AbortSignal | undefined): Promise<Result> {
     const gate = this.#options.sessionGate
-    return gate === undefined ? action() : gate(action)
+    return gate === undefined ? action() : gate(action, signal)
   }
 
   async login(options: AuthLoginOptions = {}): Promise<AuthLoginView> {
@@ -157,7 +170,7 @@ export class AuthSessionService {
         scopes: credential.scopes,
         updatedAt: new Date(now).toISOString(),
       })
-      await this.#gated(() => this.#commit(credential, metadata))
+      await this.#gated(() => this.#commit(credential, metadata, options.signal), options.signal)
       const status = statusFrom(metadata, credential, now)
       return { ...status, browserOpened: opened }
     } finally {
@@ -169,29 +182,39 @@ export class AuthSessionService {
    * Snapshots prior state, commits the new credential/metadata pair, and rolls
    * both stores back on a failed metadata commit. The gate is held across the
    * snapshot/commit/rollback so a concurrent CLI process cannot interleave a
-   * login, logout, or refresh with this critical section. Rollback is
-   * best-effort: if restoration itself fails, the commit failure is still the
-   * one callers see, and the residual risk (a credential whose metadata was
-   * not restored) is documented rather than hidden — `ocbox auth logout`
-   * clears both stores regardless.
+   * login, logout, or refresh with this critical section. If restoration
+   * itself fails, a typed invalid-state error replaces the original commit
+   * error so callers are never told rollback succeeded while credential and
+   * metadata generations may disagree.
    */
-  async #commit(credential: HostedOAuthCredential, metadata: AuthMetadata): Promise<void> {
+  async #commit(
+    credential: HostedOAuthCredential,
+    metadata: AuthMetadata,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const previousCredential = await this.#options.credentialStore.get(this.#options.credentialKey)
-    const previousMetadata = await this.#options.metadataStore.load()
+    const previousMetadata = await this.#options.metadataStore.load(signal)
     await this.#options.credentialStore.set(this.#options.credentialKey, credential)
     try {
-      await this.#options.metadataStore.save(metadata)
+      await this.#options.metadataStore.save(metadata, signal)
     } catch (error) {
-      await this.#restore(previousCredential, previousMetadata)
+      const restored = await this.#restore(previousCredential, previousMetadata)
+      if (!restored) {
+        throw staleStateError(
+          'Login could not commit or restore local authentication state; ' +
+            'run `ocbox auth logout` and inspect the state directory',
+        )
+      }
       throw error
     }
   }
 
-  /** Best-effort restoration of the pre-login state on a failed commit. */
+  /** Restores both halves and reports whether the pre-login state is exact. */
   async #restore(
     previousCredential: HostedOAuthCredential | null,
     previousMetadata: AuthMetadata | null,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let restored = true
     try {
       if (previousCredential === null) {
         await this.#options.credentialStore.delete(this.#options.credentialKey)
@@ -199,21 +222,43 @@ export class AuthSessionService {
         await this.#options.credentialStore.set(this.#options.credentialKey, previousCredential)
       }
     } catch {
-      // Restoration is best effort; the original save failure is still thrown.
+      restored = false
     }
     try {
       if (previousMetadata === null) await this.#options.metadataStore.clear()
       else await this.#options.metadataStore.save(previousMetadata)
     } catch {
-      // Best effort; the original commit failure is what callers must see.
+      restored = false
     }
+    return restored
   }
 
   async status(): Promise<AuthStatusView> {
     return this.#gated(async () => {
-      const metadata = await this.#options.metadataStore.load()
-      if (metadata === null) return statusFrom(null, null, this.#options.clock.now())
-      const credential = await this.#options.credentialStore.get(metadata.identity)
+      let metadata: AuthMetadata | null
+      let credential: HostedOAuthCredential | null
+      try {
+        metadata = await this.#options.metadataStore.load()
+        credential = await this.#options.credentialStore.get(this.#options.credentialKey)
+      } catch {
+        throw staleStateError(
+          'Stored authentication state could not be validated; run `ocbox auth logout`',
+        )
+      }
+      if (metadata === null) {
+        if (credential !== null) {
+          throw staleStateError(
+            'Stored credentials have no matching login metadata; run `ocbox auth logout`',
+          )
+        }
+        return statusFrom(null, null, this.#options.clock.now())
+      }
+      if (!sameIdentity(metadata.identity, this.#options.credentialKey)) {
+        throw staleStateError(
+          'Stored login metadata points to an unexpected credential identity; ' +
+            'run `ocbox auth logout`',
+        )
+      }
       if (credential === null) {
         // Stale metadata for a missing credential is cleared under the gate; a
         // failed clear surfaces as a typed failure instead of a false
@@ -228,36 +273,70 @@ export class AuthSessionService {
         }
         return statusFrom(null, null, this.#options.clock.now())
       }
+      const expectedClientId = this.#options.endpoints?.clientId ?? DEFAULT_CLIENT_ID
+      let canonicalIssuer: string
+      try {
+        canonicalIssuer = normalizeIssuer(metadata.issuer)
+      } catch {
+        throw staleStateError(
+          'Stored login metadata contains an invalid hosted API URL; run `ocbox auth logout`',
+        )
+      }
+      if (
+        canonicalIssuer !== metadata.issuer ||
+        metadata.clientId !== expectedClientId ||
+        !sameScopes(metadata.scopes, credential.scopes)
+      ) {
+        throw staleStateError(
+          'Stored login metadata does not match the credential generation; ' +
+            'run `ocbox auth logout` then `ocbox auth login`',
+        )
+      }
       return statusFrom(metadata, credential, this.#options.clock.now())
     })
   }
 
   async logout(options: { signal?: AbortSignal | undefined } = {}): Promise<AuthLogoutView> {
     return this.#gated(async () => {
-      const metadata = await this.#options.metadataStore.load(options.signal)
-      const credential =
-        metadata === null ? null : await this.#options.credentialStore.get(metadata.identity)
+      // Once the state gate is acquired, local cleanup is unconditional. The
+      // caller signal still cancels the remote revoke, but cannot interrupt
+      // deletion halfway and leave a credential/metadata split.
+      let metadata: AuthMetadata | null = null
+      let credential: HostedOAuthCredential | null = null
+      try {
+        metadata = await this.#options.metadataStore.load()
+      } catch {
+        // A malformed/unreadable metadata record cannot identify a safe remote
+        // endpoint, but it must not prevent local credential deletion.
+      }
+      // Always target the configured CLI slot. Untrusted/stale metadata must
+      // never redirect local deletion to a different credential identity.
+      try {
+        credential = await this.#options.credentialStore.get(this.#options.credentialKey)
+      } catch {
+        // Cleanup below still attempts the store's delete operation directly.
+      }
       let revocationAttempted = false
       let revoked = false
-      if (credential !== null) {
-        const endpoints =
-          this.#options.endpoints ??
-          (metadata === null ? null : protocolEndpointsFromIssuer(metadata.issuer))
-        if (endpoints !== null) {
+      if (
+        credential !== null &&
+        metadata !== null &&
+        sameIdentity(metadata.identity, this.#options.credentialKey)
+      ) {
+        try {
+          const endpoints = this.#logoutEndpoints(metadata)
           revocationAttempted = true
           const token = credential.refreshToken ?? credential.accessToken
           const input: RevokeInput = {
             token,
             ...(options.signal === undefined ? {} : { signal: options.signal }),
           }
-          try {
-            await this.#options.oauth(endpoints).revoke(input)
-            revoked = true
-          } catch {
-            // Revocation failures never block local cleanup; the outcome is
-            // reported truthfully instead of thrown.
-            revoked = false
-          }
+          await this.#options.oauth(endpoints).revoke(input)
+          revoked = true
+        } catch {
+          // Invalid legacy metadata and remote revocation failures never block
+          // local cleanup; the outcome remains explicit in the returned view.
+          revoked = false
         }
       }
       // Both deletions target exactly the generation that was read above; the
@@ -266,9 +345,8 @@ export class AuthSessionService {
       // step is attempted even after an earlier failure; a failed step is
       // reported truthfully instead of claiming the material was cleared.
       let cleanupError: unknown = null
-      const identity = metadata?.identity ?? this.#options.credentialKey
       try {
-        await this.#options.credentialStore.delete(identity)
+        await this.#options.credentialStore.delete(this.#options.credentialKey)
       } catch (error) {
         cleanupError ??= error
       }
@@ -284,6 +362,24 @@ export class AuthSessionService {
         )
       }
       return { loggedOut: true, revocationAttempted, revoked }
+    }, options.signal)
+  }
+
+  /** Resolves a revocation endpoint only when it agrees with stored binding facts. */
+  #logoutEndpoints(metadata: AuthMetadata): HostedProtocolEndpoints {
+    const configured = this.#options.endpoints
+    if (configured !== null) {
+      if (configured.issuer !== metadata.issuer || configured.clientId !== metadata.clientId) {
+        throw staleStateError('Configured authentication endpoints do not match the stored login')
+      }
+      return configured
+    }
+    if (metadata.clientId !== DEFAULT_CLIENT_ID) {
+      throw staleStateError('Stored login metadata names an unexpected OAuth client')
+    }
+    return protocolEndpointsFromIssuer(metadata.issuer, {
+      clientId: metadata.clientId,
+      scopes: metadata.scopes,
     })
   }
 }

@@ -127,22 +127,31 @@ export class AtomicJsonStore<Value> {
     await this.#lock.withLock(`${this.#path}.lock`, signal, async () => {
       const retryable = ['EACCES', 'EBUSY', 'EPERM']
       for (let attempt = 0; ; attempt += 1) {
+        if (signal?.aborted === true) throw new AtomicStoreCancelledError()
         try {
           await rm(this.#path, { force: true })
           await syncDirectory(dirname(this.#path))
           // Windows `rm` can fail transiently with EACCES/EBUSY/EPERM while
           // another handle holds the destination; absence is verified so a
           // silently retained file can never be reported as cleared.
-          await access(this.#path)
-          return
+          try {
+            await access(this.#path)
+          } catch (error) {
+            if (errorCode(error) === 'ENOENT') return
+            throw error
+          }
+          // `rm({force:true})` reported success but the destination is still
+          // present. Treat that as contention and retry instead of claiming a
+          // credential-bearing metadata file was cleared.
+          throw Object.assign(new Error('State file remained after deletion'), { code: 'EBUSY' })
         } catch (error) {
           if (errorCode(error) === 'ENOENT') return
-          if (
-            process.platform === 'win32' &&
-            retryable.includes(errorCode(error) ?? '') &&
-            attempt < DELETE_RETRY_ATTEMPTS
-          ) {
-            await delay(Math.min(5 * (attempt + 1), 50))
+          if (retryable.includes(errorCode(error) ?? '') && attempt < DELETE_RETRY_ATTEMPTS) {
+            try {
+              await delay(Math.min(5 * (attempt + 1), 50), undefined, { signal })
+            } catch {
+              throw new AtomicStoreCancelledError()
+            }
             continue
           }
           throw error

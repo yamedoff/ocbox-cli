@@ -13,9 +13,17 @@ import {
   resolveAuthStateDirectory,
 } from '../../src/auth/runtime.js'
 import { credentialFromTokenPair } from '../../src/auth/token-manager.js'
+import { AUTH_STATE_LOCK_FILENAME, createSessionGate } from '../../src/auth/session-gate.js'
 import { OcboxError } from '../../src/errors/index.js'
 import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
-import { fixedClock, MemoryCredentialStore, TEST_KEY, TEST_NOW, tokenPair } from './doubles.js'
+import {
+  deferred,
+  fixedClock,
+  MemoryCredentialStore,
+  TEST_KEY,
+  TEST_NOW,
+  tokenPair,
+} from './doubles.js'
 
 const directories: string[] = []
 
@@ -167,10 +175,30 @@ describe('hosted token manager runtime construction', () => {
 })
 
 describe('refresh gate', () => {
+  it('uses the same outer lock as session state commits', async () => {
+    const stateDirectory = await temporaryStateDirectory()
+    const release = deferred<void>()
+    const holder = createSessionGate(stateDirectory)(() => release.promise)
+    await vi.waitFor(() =>
+      expect(existsSync(join(stateDirectory, AUTH_STATE_LOCK_FILENAME))).toBe(true),
+    )
+
+    let refreshRan = false
+    const refresh = createRefreshGate(stateDirectory)(async () => {
+      refreshRan = true
+    })
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    expect(refreshRan).toBe(false)
+
+    release.resolve()
+    await Promise.all([holder, refresh])
+    expect(refreshRan).toBe(true)
+  })
+
   it('maps a cancelled wait for another process to a typed cancellation error', async () => {
     const stateDirectory = await temporaryStateDirectory()
     const gate = createRefreshGate(stateDirectory)
-    const lockPath = join(stateDirectory, 'auth.refresh.lock')
+    const lockPath = join(stateDirectory, AUTH_STATE_LOCK_FILENAME)
     const blocker = new ExclusiveFileLock({
       createCancelledError: () => new Error('test-cancelled'),
       createTimeoutError: () => new Error('test-timeout'),

@@ -44,6 +44,11 @@ function deleteOwnedHeader(headers: Record<string, string>, name: string): void 
   }
 }
 
+/** Releases a response body that the client will not expose to its caller. */
+function discardBody(response: Response): void {
+  void response.body?.cancel().catch(() => undefined)
+}
+
 export interface AuthenticatedHttpClientOptions {
   readonly tokens: HostedTokenManager
   readonly fetch: FetchPort
@@ -57,7 +62,7 @@ export interface AuthenticatedHttpClientOptions {
    * origin and normalized base-path subtree. The path check prevents a bearer
    * minted for a subpath deployment from reaching a same-origin sibling app.
    */
-  readonly apiOrigin: string
+  readonly apiOrigin?: string | undefined
 }
 
 function assertContractIdempotencyKey(value: string): void {
@@ -166,6 +171,12 @@ export class AuthenticatedHttpClient {
   readonly #apiBase: URL
 
   constructor(options: AuthenticatedHttpClientOptions) {
+    if (!Number.isFinite(options.timeoutMilliseconds) || options.timeoutMilliseconds <= 0) {
+      throw new TypeError('The hosted request timeout must be a positive number')
+    }
+    if (options.apiOrigin === undefined) {
+      throw new TypeError('The authenticated HTTP client requires a certified API base')
+    }
     this.#options = options
     this.#apiBase = certifiedApiBase(options.apiOrigin)
   }
@@ -187,11 +198,21 @@ export class AuthenticatedHttpClient {
     const replayable =
       IDEMPOTENT_METHODS.has(request.method.toUpperCase()) || request.idempotencyKey !== undefined
     if (result.response.status === 401 && replayable) {
+      discardBody(result.response)
       const token = await this.#recover(usedToken, request.signal)
       result = await this.#send(request, target, token)
       if (result.response.status === 401) {
-        const cleared = await this.#options.tokens.clearIfToken(token)
-        if (cleared) throw new LoginRequiredError()
+        let cleared: boolean
+        try {
+          cleared = await this.#options.tokens.clearIfToken(token, request.signal)
+        } catch (error) {
+          discardBody(result.response)
+          throw error
+        }
+        if (cleared) {
+          discardBody(result.response)
+          throw new LoginRequiredError()
+        }
         // A concurrent actor rotated to a newer credential while we were
         // retrying; keep it (it may be valid) and surface the 401 truthfully.
       }
@@ -200,13 +221,10 @@ export class AuthenticatedHttpClient {
   }
 
   async #recover(usedToken: string, signal: AbortSignal | undefined): Promise<string> {
-    const current = await this.#options.tokens.read()
-    if (current === null) throw new LoginRequiredError()
-    // Another concurrent 401 may already have rotated the token; reuse it
-    // rather than starting a second refresh.
-    if (current.accessToken !== usedToken) return current.accessToken
-    // The rotation is forced only while the store still holds the rejected
-    // token; a generation another process already rotated to is adopted as-is.
+    // Binding validation and the generation decision happen together under
+    // the shared auth-state gate. A direct store read here could otherwise
+    // adopt a token written by a concurrent login without validating its
+    // issuer/client/scope metadata.
     const refreshed = await this.#options.tokens.refresh({
       rejectedAccessToken: usedToken,
       ...(signal === undefined ? {} : { signal }),
@@ -235,6 +253,7 @@ export class AuthenticatedHttpClient {
     }
     const timeout = withTimeout(request.signal, this.#options.timeoutMilliseconds)
     try {
+      if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
       const response = await this.#options.fetch(target, {
         headers,
         method: request.method,
@@ -244,7 +263,12 @@ export class AuthenticatedHttpClient {
         ...(request.body === undefined ? {} : { body: request.body }),
         signal: timeout.signal,
       })
+      if (timeout.didCancel() || timeout.didTimeout()) {
+        discardBody(response)
+        throw this.#transportError(timeout)
+      }
       if (response.status >= 300 && response.status < 400) {
+        discardBody(response)
         throw new OcboxError({
           code: 'PROVIDER_AUTH',
           message: 'The hosted service returned an unexpected redirect',

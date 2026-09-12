@@ -4,9 +4,10 @@ import {
   type HostedOAuthCredentialKey,
   HostedOAuthCredentialSchema,
 } from '../credentials/store.js'
+import { OcboxError } from '../errors/index.js'
 import type { ClockPort } from './clock.js'
-import { AuthBindingError, isLoginRequired, LoginRequiredError } from './errors.js'
-import type { AuthMetadataRepository } from './metadata.js'
+import { AuthBindingError, isLoginRequired, LoginRequiredError, newRequestId } from './errors.js'
+import type { AuthMetadata, AuthMetadataRepository } from './metadata.js'
 import type { CliTokenPair } from './oauth-client.js'
 
 export interface TokenRefreshInput {
@@ -91,12 +92,32 @@ function sameIdentity(a: HostedOAuthCredentialKey, b: HostedOAuthCredentialKey):
   return a.kind === b.kind && a.provider === b.provider && a.accountId === b.accountId
 }
 
+/** OAuth scopes are an unordered set; duplicate entries are never coherent. */
+function sameScopes(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const expected = new Set(a)
+  if (expected.size !== a.length || new Set(b).size !== b.length) return false
+  return b.every((scope) => expected.has(scope))
+}
+
+function cancelledError(): OcboxError {
+  return new OcboxError({
+    code: 'OPERATION_CANCELLED',
+    message: 'The wait for authentication state was cancelled',
+    requestId: newRequestId(),
+  })
+}
+
+function isCancelled(error: unknown): boolean {
+  return error instanceof OcboxError && error.code === 'OPERATION_CANCELLED'
+}
+
 /**
- * Sole reader/writer of bearer material. It enforces origin/client/identity/
- * scope binding, serializes concurrent refreshes (in-process, and across
- * processes through the injected refresh gate), and clears local material on
- * reuse/revocation so callers see a typed login error — but never deletes
- * material that a concurrent actor already replaced.
+ * Coordinates security-sensitive access to bearer material. It enforces
+ * origin/client/identity/scope binding, serializes concurrent refreshes
+ * (in-process, and across processes through the injected state gate), and
+ * clears local material on reuse/revocation so callers see a typed login error
+ * — but never deletes material that a concurrent actor already replaced.
  */
 export class HostedTokenManager {
   readonly #options: HostedTokenManagerOptions
@@ -111,8 +132,8 @@ export class HostedTokenManager {
     return this.#options.store.get(this.#options.key)
   }
 
-  clear(): Promise<void> {
-    return this.#options.store.delete(this.#options.key)
+  async clear(signal?: AbortSignal): Promise<void> {
+    await this.#clearIf(() => true, signal)
   }
 
   /** Null unless the manager was built with a pinned issuance binding. */
@@ -124,29 +145,28 @@ export class HostedTokenManager {
    * Deletes the stored credential only when it is still exactly the snapshot
    * the caller acted on. Returns false when a concurrent actor rotated or
    * replaced it — the caller must not destroy newer material. The comparison
-   * and deletion run as one critical section under the cross-process refresh
+   * and deletion run as one critical section under the cross-process state
    * gate, so no other process can replace the credential in between.
    */
-  clearIfToken(token: string): Promise<boolean> {
-    return this.#clearIf((current) => current.accessToken === token)
+  clearIfToken(token: string, signal?: AbortSignal): Promise<boolean> {
+    return this.#clearIf((current) => current.accessToken === token, signal)
   }
 
   /**
    * Deletes the stored credential only when it still matches the full snapshot
    * used by a failed rotation, preserving anything a concurrent process wrote
    * in the meantime. The comparison and deletion run as one critical section
-   * under the cross-process refresh gate.
+   * under the cross-process state gate.
    */
-  clearIfCredential(snapshot: HostedOAuthCredential): Promise<boolean> {
-    return this.#clearIf((current) => sameCredential(current, snapshot))
+  clearIfCredential(snapshot: HostedOAuthCredential, signal?: AbortSignal): Promise<boolean> {
+    return this.#clearIf((current) => sameCredential(current, snapshot), signal)
   }
 
-  async getValidCredential(signal?: AbortSignal): Promise<HostedOAuthCredential> {
-    await this.#assertBinding(signal)
-    const credential = await this.#options.store.get(this.#options.key)
-    if (credential === null) throw new LoginRequiredError()
-    this.#assertScopes(credential)
-    return this.#isExpiring(credential) ? this.refresh({ signal }) : credential
+  getValidCredential(signal?: AbortSignal): Promise<HostedOAuthCredential> {
+    // Even a fresh read must share the auth-state gate with login/logout and
+    // refresh. Otherwise metadata can describe one generation while the
+    // credential store concurrently exposes another.
+    return this.refresh({ signal })
   }
 
   /**
@@ -160,15 +180,31 @@ export class HostedTokenManager {
    */
   refresh(request: RefreshRequest | AbortSignal = {}): Promise<HostedOAuthCredential> {
     const options: RefreshRequest = request instanceof AbortSignal ? { signal: request } : request
+    if (options.signal?.aborted === true) return Promise.reject(cancelledError())
     const forced = options.rejectedAccessToken !== undefined
     const previous = this.#inflight
     // Only proactive callers may adopt an in-flight rotation's result, and
     // only when it is itself proactive: a forced (401-triggered) caller must
     // re-evaluate the store inside the gate instead of inheriting a decision
     // that may have been "no rotation needed".
-    if (previous !== null && !forced && !previous.forced) return previous.promise
+    if (previous !== null && !forced && !previous.forced) {
+      return this.#waitFor(previous.promise, options.signal).catch((error: unknown) => {
+        // A coalesced refresh belongs to its initiating caller. If only that
+        // caller cancelled, a still-live waiter must re-evaluate the store
+        // rather than inheriting an unrelated cancellation.
+        if (isCancelled(error) && options.signal?.aborted !== true) return this.refresh(options)
+        throw error
+      })
+    }
     const operation = (async () => {
-      if (previous !== null) await previous.promise.catch(() => undefined)
+      if (previous !== null) {
+        // Keep the internal chain intact even when this caller cancels. If the
+        // cancelled operation replaced #inflight and abandoned this wait, a
+        // later caller could start beside `previous` when no file gate was
+        // configured and present the same refresh token twice.
+        await previous.promise.catch(() => undefined)
+        if (options.signal?.aborted === true) throw cancelledError()
+      }
       const gate: RefreshGate = (action) =>
         this.#options.refreshGate === undefined
           ? action()
@@ -181,19 +217,14 @@ export class HostedTokenManager {
     this.#inflight = { promise: registered, forced }
     // Callers await the registered promise so its settlement is always
     // observed even when no later operation chains behind it.
-    return registered
+    return this.#waitFor(registered, options.signal)
   }
 
-  async #assertBinding(signal?: AbortSignal): Promise<void> {
+  async #loadBinding(signal?: AbortSignal): Promise<AuthMetadata | null> {
     const binding = this.#options.binding
-    if (binding === undefined) return
+    if (binding === undefined) return null
     const metadata = await binding.metadataRepository.load(signal)
-    if (metadata === null) {
-      throw new AuthBindingError(
-        undefined,
-        'No login metadata attests this credential; run `ocbox auth login`',
-      )
-    }
+    if (metadata === null) return null
     if (
       !sameIdentity(metadata.identity, this.#options.key) ||
       metadata.clientId !== binding.expectedClientId ||
@@ -217,11 +248,25 @@ export class HostedTokenManager {
         )
       }
     }
+    return metadata
   }
 
-  #assertScopes(credential: HostedOAuthCredential): void {
+  #assertCredentialBinding(credential: HostedOAuthCredential, metadata: AuthMetadata | null): void {
     for (const scope of this.#options.requiredScopes ?? []) {
       if (!credential.scopes.includes(scope)) throw new AuthBindingError()
+    }
+    if (this.#options.binding !== undefined && metadata === null) {
+      throw new AuthBindingError(
+        undefined,
+        'No login metadata attests this credential; run `ocbox auth login`',
+      )
+    }
+    if (metadata !== null && !sameScopes(metadata.scopes, credential.scopes)) {
+      throw new AuthBindingError(
+        undefined,
+        'The stored credential scopes do not match the login metadata; ' +
+          'run `ocbox auth logout` then `ocbox auth login`',
+      )
     }
   }
 
@@ -251,31 +296,38 @@ export class HostedTokenManager {
    * then the cross-process gate makes the get/delete pair atomic against
    * every other gate-respecting process.
    */
-  async #clearIf(matches: (current: HostedOAuthCredential) => boolean): Promise<boolean> {
+  async #clearIf(
+    matches: (current: HostedOAuthCredential) => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     const previous = this.#inflight
-    if (previous !== null) await previous.promise.catch(() => undefined)
+    if (previous !== null) {
+      await this.#waitFor(
+        previous.promise.catch(() => undefined),
+        signal,
+      )
+    }
     const gate = this.#options.refreshGate
     if (gate === undefined) return this.#compareAndDelete(matches)
-    return gate(() => this.#compareAndDelete(matches))
+    return gate(() => this.#compareAndDelete(matches), signal)
   }
 
   async #performRefresh(options: RefreshRequest): Promise<HostedOAuthCredential> {
-    await this.#assertBinding(options.signal)
+    const metadata = await this.#loadBinding(options.signal)
     // Re-read inside the gate so a concurrent coordinator can never be handed
     // a snapshot another process has already rotated.
     const current = await this.#options.store.get(this.#options.key)
     if (current === null) throw new LoginRequiredError()
+    this.#assertCredentialBinding(current, metadata)
     if (options.rejectedAccessToken === undefined) {
       // Snapshot-aware proactive path: a concurrent process may have already
       // rotated to a fresh generation while this caller waited for the gate.
       if (!this.#isExpiring(current)) {
-        this.#assertScopes(current)
         return current
       }
     } else if (current.accessToken !== options.rejectedAccessToken) {
       // The 401 was for a token this store no longer holds; adopt the newer
       // generation instead of burning its refresh family.
-      this.#assertScopes(current)
       return current
     }
     if (current.refreshToken === undefined) {
@@ -306,15 +358,42 @@ export class HostedTokenManager {
     // response.
     const latest = await this.#options.store.get(this.#options.key)
     if (latest !== null && latest.refreshToken !== current.refreshToken) {
-      this.#assertScopes(latest)
+      this.#assertCredentialBinding(latest, metadata)
       return latest
     }
     const next = credentialFromTokenPair(pair, this.#options.clock.now())
     // Commit before the scope check: the family has already rotated, so the
     // new refresh token must be preserved even when the grant is unusable.
     await this.#options.store.set(this.#options.key, next)
-    this.#assertScopes(next)
+    this.#assertCredentialBinding(next, metadata)
     await this.#options.onRefreshed?.(next)
     return next
+  }
+
+  /**
+   * Lets each caller cancel its own wait without cancelling a coalesced
+   * refresh that another caller still depends on. Operations started for this
+   * caller also receive the same signal at the gate and network boundaries.
+   */
+  #waitFor<Result>(promise: Promise<Result>, signal?: AbortSignal): Promise<Result> {
+    if (signal === undefined) return promise
+    if (signal.aborted) return Promise.reject(cancelledError())
+    return new Promise<Result>((resolve, reject) => {
+      const onAbort = (): void => {
+        signal.removeEventListener('abort', onAbort)
+        reject(cancelledError())
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      void promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(value)
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(error)
+        },
+      )
+    })
   }
 }

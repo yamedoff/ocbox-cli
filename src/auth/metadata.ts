@@ -25,7 +25,7 @@ export type AuthMetadata = z.infer<typeof AuthMetadataSchema>
 export interface AuthMetadataRepository {
   load(signal?: AbortSignal): Promise<AuthMetadata | null>
   save(metadata: AuthMetadata, signal?: AbortSignal): Promise<void>
-  clear(): Promise<void>
+  clear(signal?: AbortSignal): Promise<void>
 }
 
 export class UnsafeAuthMetadataError extends Error {
@@ -63,7 +63,7 @@ export class AuthMetadataStore implements AuthMetadataRepository {
   }
 
   /** Locked, verified removal through the shared atomic-store contract. */
-  async clear(): Promise<void> {
-    await this.#store.delete()
+  async clear(signal?: AbortSignal): Promise<void> {
+    await this.#store.delete(signal)
   }
 }

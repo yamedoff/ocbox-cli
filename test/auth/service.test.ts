@@ -211,6 +211,36 @@ describe('auth session service', () => {
     expect(JSON.stringify(status)).not.toContain('a'.repeat(48))
   })
 
+  it('fails status closed when a credential exists without matching metadata', async () => {
+    const h = harness()
+    await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+
+    await expect(h.service.status()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    // Status is read-only for an orphaned secret; explicit logout owns cleanup.
+    await expect(h.credentials.get(TEST_KEY)).resolves.toMatchObject({
+      accessToken: 'a'.repeat(48),
+    })
+  })
+
+  it('fails status closed when metadata names a different credential generation', async () => {
+    const h = harness()
+    await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    h.metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://api.example.test',
+      schemaVersion: 1,
+      scopes: ['different:scope'],
+      updatedAt: new Date(TEST_NOW).toISOString(),
+    })
+
+    await expect(h.service.status()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    expect(h.metadata.value?.scopes).toEqual(['different:scope'])
+    await expect(h.credentials.get(TEST_KEY)).resolves.not.toBeNull()
+  })
+
   it('clears stale metadata when the credential is missing and reports logout on expiry', async () => {
     const h = harness()
     h.metadata.value = AuthMetadataSchema.parse({
@@ -280,6 +310,47 @@ describe('auth session service', () => {
     const result = await h.service.logout()
     expect(result.revoked).toBe(true)
     expect(h.revokeCalls[0]?.token).toBe('A'.repeat(48))
+  })
+
+  it('clears local material without sending it to an invalid stored issuer', async () => {
+    const credentials = new MemoryCredentialStore()
+    const metadata = new MemoryMetadataRepository()
+    await credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'not-an-absolute-url',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW).toISOString(),
+    })
+    let oauthBuilt = false
+    const service = new AuthSessionService({
+      browser: { open: () => Promise.resolve(false) },
+      clock: fixedClock(TEST_NOW),
+      credentialKey: TEST_KEY,
+      credentialStore: credentials,
+      endpoints: null,
+      entropy: new CountingEntropy(),
+      listenerFactory: startLoopbackListener,
+      loginTimeoutMilliseconds: 5_000,
+      metadataStore: metadata,
+      oauth: () => {
+        oauthBuilt = true
+        throw new Error('invalid endpoint must not yield a protocol client')
+      },
+    })
+
+    await expect(service.logout()).resolves.toEqual({
+      loggedOut: true,
+      revocationAttempted: false,
+      revoked: false,
+    })
+    expect(oauthBuilt).toBe(false)
+    expect(credentials.values.size).toBe(0)
+    expect(metadata.value).toBeNull()
   })
 })
 
@@ -400,6 +471,44 @@ describe('auth session service failure legs', () => {
     expect(metadata.value).toBeNull()
   })
 
+  it('reports INVALID_STATE when a failed login commit cannot be rolled back', async () => {
+    const credentials = new FailingDeleteCredentialStore()
+    const metadata = new FailingMetadataRepository()
+    metadata.failSaveOn(1)
+    credentials.failDeletes = true
+    const service = new AuthSessionService({
+      browser: { open: () => Promise.resolve(false) },
+      clock: fixedClock(TEST_NOW),
+      credentialKey: TEST_KEY,
+      credentialStore: credentials,
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
+      entropy: new CountingEntropy(),
+      listenerFactory: startLoopbackListener,
+      loginTimeoutMilliseconds: 5_000,
+      metadataStore: metadata,
+      oauth: () => ({
+        exchangeAuthorizationCode: () => Promise.resolve(tokenPair('b')),
+        refresh: () => Promise.resolve(tokenPair('b')),
+        revoke: () => Promise.resolve(),
+      }),
+    })
+
+    await expect(
+      service.login({
+        openBrowser: false,
+        onAuthorizationUrl: (url) => {
+          const redirectUri = new URL(url).searchParams.get('redirect_uri') ?? ''
+          const state = new URL(url).searchParams.get('state') ?? ''
+          setTimeout(() => void sendCallback(redirectUri, CODE, state), 10)
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    expect(credentials.values.size).toBe(1)
+    expect(metadata.value).toBeNull()
+  })
+
   it('surfaces a typed failure and still clears everything when local cleanup fails on logout', async () => {
     const credentials = new FailingDeleteCredentialStore()
     credentials.failDeletes = true
@@ -468,7 +577,9 @@ describe('auth session gate wiring', () => {
       clock: fixedClock(TEST_NOW),
       credentialKey: TEST_KEY,
       credentialStore: proxy,
-      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
       entropy: new CountingEntropy(),
       listenerFactory: startLoopbackListener,
       loginTimeoutMilliseconds: 5_000,
@@ -498,6 +609,16 @@ describe('auth session gate wiring', () => {
     const gate = concurrencyTrackingGate()
     const h = harness()
     await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    h.metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://api.example.test',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW).toISOString(),
+    })
     const service = new AuthSessionService({
       browser: { open: () => Promise.resolve(false) },
       clock: fixedClock(TEST_NOW),
@@ -590,6 +711,7 @@ describe('auth session gate wiring', () => {
   it('does not revoke or delete a credential generation it did not read', async () => {
     const credentials = new MemoryCredentialStore()
     const metadata = new MemoryMetadataRepository()
+    const gate = concurrencyTrackingGate()
     const generationOne = credentialFromTokenPair(tokenPair('a'), TEST_NOW)
     const generationTwo = credentialFromTokenPair(tokenPair('b'), TEST_NOW)
     await credentials.set(TEST_KEY, generationOne)
@@ -604,14 +726,27 @@ describe('auth session gate wiring', () => {
       updatedAt: new Date(TEST_NOW).toISOString(),
     })
     const revokeCalls: Array<{ token: string }> = []
+    let writer: Promise<void> | null = null
     const oauthPort = {
       exchangeAuthorizationCode: () => Promise.resolve(tokenPair('b')),
       refresh: () => Promise.resolve(tokenPair('b')),
       revoke: async (input: { token: string }) => {
         revokeCalls.push({ token: input.token })
-        // Simulate a concurrent actor rotating the credential after logout
-        // read generation one but before revocation returns.
-        await credentials.set(TEST_KEY, generationTwo)
+        // A gate-respecting login/refresh queues its whole state generation
+        // while logout still holds the shared outer lock.
+        writer = gate(async () => {
+          await credentials.set(TEST_KEY, generationTwo)
+          metadata.value = AuthMetadataSchema.parse({
+            audience: 'cli',
+            clientId: 'ocb_cli',
+            expiresAt: generationTwo.expiresAt,
+            identity: TEST_KEY,
+            issuer: 'https://api.example.test',
+            schemaVersion: 1,
+            scopes: generationTwo.scopes,
+            updatedAt: new Date(TEST_NOW + 1).toISOString(),
+          })
+        })
       },
     }
     const service = new AuthSessionService({
@@ -619,19 +754,27 @@ describe('auth session gate wiring', () => {
       clock: fixedClock(TEST_NOW),
       credentialKey: TEST_KEY,
       credentialStore: credentials,
-      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
       entropy: new CountingEntropy(),
       listenerFactory: startLoopbackListener,
       loginTimeoutMilliseconds: 5_000,
       metadataStore: metadata,
+      sessionGate: gate,
       oauth: () => oauthPort,
     })
     const result = await service.logout()
-    // Revocation targeted exactly the generation that was read: the refresh
-    // token of generation one, never generation two's material.
+    await writer
+    // Revocation and cleanup targeted generation one. The queued writer then
+    // committed generation two after logout released the shared lock.
     expect(result.revoked).toBe(true)
     expect(revokeCalls).toEqual([{ token: 'A'.repeat(48) }])
     expect(revokeCalls).toHaveLength(1)
+    await expect(credentials.get(TEST_KEY)).resolves.toMatchObject({
+      accessToken: 'b'.repeat(48),
+    })
+    expect(metadata.value?.updatedAt).toBe(new Date(TEST_NOW + 1).toISOString())
   })
 
   it('preserves local cleanup even when revocation fails mid-logout', async () => {
@@ -653,7 +796,9 @@ describe('auth session gate wiring', () => {
       clock: fixedClock(TEST_NOW),
       credentialKey: TEST_KEY,
       credentialStore: credentials,
-      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
       entropy: new CountingEntropy(),
       listenerFactory: startLoopbackListener,
       loginTimeoutMilliseconds: 5_000,

@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AuthenticatedHttpClient } from '../../src/auth/authenticated-client.js'
 import { AuthBindingError, LoginRequiredError } from '../../src/auth/errors.js'
+import { AuthMetadataSchema } from '../../src/auth/metadata.js'
 import type { FetchPort } from '../../src/auth/ports.js'
 import { credentialFromTokenPair, HostedTokenManager } from '../../src/auth/token-manager.js'
-import { fixedClock, MemoryCredentialStore, TEST_KEY, TEST_NOW, tokenPair } from './doubles.js'
+import {
+  fixedClock,
+  MemoryCredentialStore,
+  MemoryMetadataRepository,
+  TEST_KEY,
+  TEST_NOW,
+  tokenPair,
+} from './doubles.js'
 
 const ACCESS_A = 'a'.repeat(48)
 const ACCESS_B = 'b'.repeat(48)
@@ -225,6 +233,59 @@ describe('authenticated HTTP client', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('revalidates binding before adopting a generation replaced after a 401', async () => {
+    const store = new MemoryCredentialStore()
+    const metadata = new MemoryMetadataRepository()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://api.test',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW).toISOString(),
+    })
+    const refresh = vi.fn(() => Promise.resolve(tokenPair('c')))
+    const tokens = new HostedTokenManager({
+      binding: {
+        expectedClientId: 'ocb_cli',
+        expectedIssuer: 'https://api.test',
+        metadataRepository: metadata,
+      },
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+    let calls = 0
+    const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: async () => {
+        calls += 1
+        if (calls === 1) {
+          await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('b'), TEST_NOW))
+          metadata.value = AuthMetadataSchema.parse({
+            ...metadata.value,
+            clientId: 'foreign_client',
+          })
+        }
+        return new Response('unauthorized', { status: 401 })
+      },
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+
+    await expect(
+      client.request({ method: 'GET', url: 'https://api.test/v1/projects' }),
+    ).rejects.toBeInstanceOf(AuthBindingError)
+    expect(calls).toBe(1)
+    expect(refresh).not.toHaveBeenCalled()
+    await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: ACCESS_B })
+  })
+
   it('exposes bounded retry hints and rejects scope-mismatched credentials before sending', async () => {
     const store = new MemoryCredentialStore()
     await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
@@ -416,6 +477,14 @@ describe('authenticated HTTP client', () => {
       store,
     })
     const fetchImpl: FetchPort = () => Promise.resolve(new Response('ok', { status: 200 }))
+    expect(
+      () =>
+        new AuthenticatedHttpClient({
+          fetch: fetchImpl,
+          timeoutMilliseconds: 1_000,
+          tokens,
+        }),
+    ).toThrow(/certified API base/)
     for (const apiOrigin of [
       'not-a-url',
       'ftp://api.test',
@@ -503,6 +572,27 @@ describe('authenticated HTTP client', () => {
     })
     cancelling.abort()
     await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+
+    let preCancelledFetchRan = false
+    const preCancelled = new AbortController()
+    preCancelled.abort()
+    const ignoringClient = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: () => {
+        preCancelledFetchRan = true
+        return Promise.resolve(new Response('ignored'))
+      },
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+    await expect(
+      ignoringClient.request({
+        method: 'GET',
+        signal: preCancelled.signal,
+        url: 'https://api.test/v1/projects',
+      }),
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(preCancelledFetchRan).toBe(false)
 
     const timeoutClient = new AuthenticatedHttpClient({
       apiOrigin: 'https://api.test',

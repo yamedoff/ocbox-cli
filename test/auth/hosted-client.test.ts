@@ -43,6 +43,11 @@ function jsonResponse(body: unknown, status = 200, requestId = 'req_1'): Respons
 }
 
 describe('hosted API client adapter', () => {
+  it('requires an explicit or credential-bound API base before building transport', () => {
+    const h = tokensWith()
+    expect(() => createAuthenticatedTransport(h.tokens)).toThrow(/explicit API base/i)
+  })
+
   it('drives the generated client with bearer credentials over one API base', async () => {
     const h = await seeded()
     const seen: string[] = []
@@ -99,7 +104,10 @@ describe('hosted API client adapter', () => {
     }
     // createProject is a mutating operation; without an idempotency key the
     // 401 must surface without rotating the refresh family.
-    const transport = createAuthenticatedTransport(h.tokens, { fetch: fetchImpl })
+    const transport = createAuthenticatedTransport(h.tokens, {
+      apiOrigin: 'https://api.test',
+      fetch: fetchImpl,
+    })
     const response = await transport.fetch('https://api.test/v1/projects', {
       body: '{}',
       headers: { 'content-type': 'application/json' },
@@ -125,7 +133,10 @@ describe('hosted API client adapter', () => {
           : jsonResponse({ id: 'project-id' }),
       )
     }
-    const transport = createAuthenticatedTransport(h.tokens, { fetch: fetchImpl })
+    const transport = createAuthenticatedTransport(h.tokens, {
+      apiOrigin: 'https://api.test',
+      fetch: fetchImpl,
+    })
     const response = await transport.fetch('https://api.test/v1/projects', {
       body: '{}',
       headers: { 'IDEMPOTENCY-KEY': 'key-123' },
@@ -175,5 +186,125 @@ describe('hosted API client adapter', () => {
     await expect(transport.fetch('https://api.test/other/v1/projects')).rejects.toBeInstanceOf(
       AuthBindingError,
     )
+  })
+
+  it('keeps generated-client managed headers under the authenticated transport ownership', async () => {
+    const h = await seeded()
+    const captured: Array<{
+      auth: string | null
+      idempotency: string | null
+      tenant: string | null
+    }> = []
+    const client = createHostedApiClient({
+      fetch: (_input, init) => {
+        const headers = new Headers(init?.headers)
+        captured.push({
+          auth: headers.get('authorization'),
+          idempotency: headers.get('idempotency-key'),
+          tenant: headers.get('x-tenant'),
+        })
+        return Promise.resolve(jsonResponse({ id: 'project-id' }))
+      },
+      headers: {
+        Authorization: 'Bearer caller-controlled',
+        'IDEMPOTENCY-KEY': 'stale-default',
+        'x-tenant': 'tenant-1',
+      },
+      protocol: protocolEndpointsFromIssuer('https://api.test'),
+      tokens: h.tokens,
+    })
+
+    await client.createProject({
+      body: { name: 'demo' },
+      idempotencyKey: 'fresh-operation-key',
+    })
+    expect(captured).toEqual([
+      {
+        auth: `Bearer ${ACCESS_A}`,
+        idempotency: 'fresh-operation-key',
+        tenant: 'tenant-1',
+      },
+    ])
+  })
+
+  it('rejects ambiguous duplicate idempotency keys before reading credentials', async () => {
+    const h = await seeded()
+    let called = false
+    const transport = createAuthenticatedTransport(h.tokens, {
+      apiOrigin: 'https://api.test',
+      fetch: () => {
+        called = true
+        return Promise.resolve(jsonResponse({}))
+      },
+    })
+
+    await expect(
+      transport.fetch('https://api.test/v1/projects', {
+        headers: [
+          ['Idempotency-Key', 'first'],
+          ['idempotency-key', 'second'],
+        ],
+        method: 'POST',
+      }),
+    ).rejects.toBeInstanceOf(TypeError)
+    expect(called).toBe(false)
+  })
+
+  it('honors explicit RequestInit clearing of a Request body and signal', async () => {
+    const h = await seeded()
+    const requestController = new AbortController()
+    const seen: Array<{
+      body: RequestInit['body']
+      signal: RequestInit['signal']
+    }> = []
+    const transport = createAuthenticatedTransport(h.tokens, {
+      apiOrigin: 'https://api.test',
+      fetch: (_input, init) => {
+        seen.push({ body: init?.body, signal: init?.signal })
+        return Promise.resolve(jsonResponse({ data: [] }))
+      },
+    })
+    const request = new Request('https://api.test/v1/projects', {
+      body: '{}',
+      method: 'POST',
+      signal: requestController.signal,
+    })
+
+    const response = await transport.fetch(request, { body: null, signal: null })
+
+    expect(response.status).toBe(200)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.body).toBeUndefined()
+    expect(seen[0]?.signal).toBeInstanceOf(AbortSignal)
+    expect(seen[0]?.signal).not.toBe(requestController.signal)
+  })
+
+  it('bounds and times out generated-client response-body reads', async () => {
+    const oversizedHarness = await seeded()
+    const oversized = createHostedApiClient({
+      fetch: () => Promise.resolve(jsonResponse({ data: 'x'.repeat(128) })),
+      maxResponseBytes: 32,
+      protocol: protocolEndpointsFromIssuer('https://api.test'),
+      tokens: oversizedHarness.tokens,
+    })
+    await expect(oversized.listProjects()).rejects.toMatchObject({ code: 'PROVIDER_AUTH' })
+
+    const hangingHarness = await seeded()
+    const hanging = createHostedApiClient({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start() {
+                // Intentionally produce neither a chunk nor EOF.
+              },
+            }),
+          ),
+        ),
+      protocol: protocolEndpointsFromIssuer('https://api.test'),
+      timeoutMilliseconds: 20,
+      tokens: hangingHarness.tokens,
+    })
+    await expect(hanging.listProjects()).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' })
   })
 })

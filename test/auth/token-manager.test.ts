@@ -2,16 +2,21 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AuthBindingError, LoginRequiredError } from '../../src/auth/errors.js'
+import { AuthBindingError, LoginRequiredError, newRequestId } from '../../src/auth/errors.js'
 import { type AuthMetadata, AuthMetadataSchema } from '../../src/auth/metadata.js'
 import { createRefreshGate } from '../../src/auth/runtime.js'
-import { credentialFromTokenPair, HostedTokenManager } from '../../src/auth/token-manager.js'
+import {
+  credentialFromTokenPair,
+  HostedTokenManager,
+  type TokenRefreshInput,
+} from '../../src/auth/token-manager.js'
 import {
   type HostedOAuthCredential,
   type HostedOAuthCredentialKey,
   ProtectedFileCredentialStore,
   type WindowsAclProtector,
 } from '../../src/credentials/index.js'
+import { OcboxError } from '../../src/errors/index.js'
 import {
   deferred,
   fixedClock,
@@ -104,6 +109,107 @@ describe('hosted token manager', () => {
     await expect(first).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
     await expect(second).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
     expect(store.values.size).toBe(1)
+  })
+
+  it('lets a coalesced caller cancel its wait without cancelling the shared refresh', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    const pending = deferred<import('../../src/auth/oauth-client.js').CliTokenPair>()
+    const refresh = vi.fn(() => pending.promise)
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+
+    const first = manager.getValidCredential()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    const controller = new AbortController()
+    const cancelled = manager.getValidCredential(controller.signal)
+    controller.abort()
+    await expect(cancelled).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+
+    pending.resolve(tokenPair('b'))
+    await expect(first).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries for a live waiter when only the refresh initiator is cancelled', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    let callCount = 0
+    const refresh = vi.fn(({ signal }: TokenRefreshInput) => {
+      callCount += 1
+      if (callCount > 1) return Promise.resolve(tokenPair('b'))
+      return new Promise<ReturnType<typeof tokenPair>>((_resolve, reject) => {
+        const cancel = (): void =>
+          reject(
+            new OcboxError({
+              code: 'OPERATION_CANCELLED',
+              message: 'cancelled',
+              requestId: newRequestId(),
+            }),
+          )
+        if (signal?.aborted === true) cancel()
+        else signal?.addEventListener('abort', cancel, { once: true })
+      })
+    })
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+
+    const initiator = new AbortController()
+    const cancelled = manager.getValidCredential(initiator.signal)
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    const liveWaiter = manager.getValidCredential()
+    initiator.abort()
+
+    await expect(cancelled).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(liveWaiter).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the local refresh chain intact when a queued forced caller cancels', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    const pending = deferred<import('../../src/auth/oauth-client.js').CliTokenPair>()
+    const refresh = vi
+      .fn<() => Promise<import('../../src/auth/oauth-client.js').CliTokenPair>>()
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValue(tokenPair('c'))
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+
+    const first = manager.getValidCredential()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    const controller = new AbortController()
+    const queued = manager.refresh({
+      rejectedAccessToken: 'a'.repeat(48),
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(queued).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+
+    const later = manager.getValidCredential()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(refresh).toHaveBeenCalledTimes(1)
+    pending.resolve(tokenPair('b'))
+
+    await expect(first).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    await expect(later).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    expect(refresh).toHaveBeenCalledTimes(1)
   })
 
   it('adopts a fresh stored generation instead of rotating a second time', async () => {
@@ -258,6 +364,13 @@ describe('hosted token manager', () => {
     await expect(
       managerFor('ocb_cli', ['sandboxes:write']).getValidCredential(),
     ).resolves.toMatchObject({ accessToken: 'a'.repeat(48) })
+
+    // Required-scope containment is insufficient: metadata and the stored
+    // token must describe exactly one grant generation.
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await expect(
+      managerFor('ocb_cli', ['source:read']).getValidCredential(),
+    ).rejects.toBeInstanceOf(AuthBindingError)
     expect(store.values.size).toBe(1)
   })
 
@@ -367,6 +480,32 @@ describe('hosted token manager', () => {
 
     await manager.refresh({ signal: controller.signal })
     expect(observed).toEqual([controller.signal])
+  })
+
+  it('does not start a credential read or rotation for an already-cancelled caller', async () => {
+    const store = new HookedCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    let reads = 0
+    store.onGet = () => {
+      reads += 1
+      return Promise.resolve()
+    }
+    const refresh = vi.fn(() => Promise.resolve(tokenPair('b')))
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(manager.getValidCredential(controller.signal)).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+    })
+    expect(reads).toBe(0)
+    expect(refresh).not.toHaveBeenCalled()
   })
 
   it('does not delete newer credential material when refresh reuse fails after a concurrent rotation', async () => {

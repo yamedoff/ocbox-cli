@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { CliTokenPair } from '../api/generated/client.js'
 import { OcboxError } from '../errors/index.js'
+import { normalizeIssuer, validateEndpointOverride } from './config.js'
 import { newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
 
@@ -77,25 +78,41 @@ function unsafeMessage(message: string): OcboxError {
  * and cancels the body beyond that, so an oversized stream cannot buffer
  * unboundedly in the CLI process or be mistaken for a valid payload.
  */
-async function readBoundedResponseText(response: Response): Promise<string> {
+async function readBoundedResponseText(response: Response, signal: AbortSignal): Promise<string> {
   const body = response.body
   if (body === null) return ''
   const reader = body.getReader()
   const decoder = new TextDecoder('utf8', { fatal: false })
   let bytes = 0
   let text = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    bytes += value.byteLength
-    if (bytes > MAX_RESPONSE_BYTES) {
-      await reader.cancel().catch(() => undefined)
-      throw new OversizedResponseError()
-    }
-    text += decoder.decode(value, { stream: true })
+  let aborted = signal.aborted
+  const onAbort = (): void => {
+    aborted = true
+    void reader.cancel().catch(() => undefined)
   }
-  text += decoder.decode()
-  return text
+  if (aborted) {
+    await reader.cancel().catch(() => undefined)
+    throw new Error('Authentication response read was cancelled')
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (aborted || signal.aborted) throw new Error('Authentication response read was cancelled')
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        throw new OversizedResponseError()
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+    if (aborted || signal.aborted) throw new Error('Authentication response read was cancelled')
+    text += decoder.decode()
+    return text
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 class OversizedResponseError extends Error {
@@ -124,6 +141,8 @@ export function withRedirectDisabled(init: RequestInit): RequestInit {
  */
 /** Endpoints, client id, transport, and bound timeout for the protocol client. */
 export interface CliOAuthClientOptions {
+  /** Configured hosted API base used to bind both credential-bearing endpoints. */
+  readonly apiBase?: string | undefined
   readonly tokenEndpoint: string
   readonly revocationEndpoint: string
   readonly clientId: string
@@ -211,7 +230,25 @@ export class CliOAuthClient implements CliOAuthClientPort {
   readonly #options: CliOAuthClientOptions
 
   constructor(options: CliOAuthClientOptions) {
-    this.#options = options
+    if (!Number.isFinite(options.timeoutMilliseconds) || options.timeoutMilliseconds <= 0) {
+      throw new TypeError('The authentication timeout must be a positive number')
+    }
+    const expectedApiBase =
+      options.apiBase === undefined ? undefined : normalizeIssuer(options.apiBase)
+    validateEndpointOverride('tokenEndpoint', options.tokenEndpoint, { expectedApiBase })
+    validateEndpointOverride('revocationEndpoint', options.revocationEndpoint, { expectedApiBase })
+    if (
+      expectedApiBase === undefined &&
+      new URL(options.tokenEndpoint.trim()).origin !==
+        new URL(options.revocationEndpoint.trim()).origin
+    ) {
+      throw new TypeError('The token and revocation endpoints must share one hosted API origin')
+    }
+    this.#options = {
+      ...options,
+      revocationEndpoint: options.revocationEndpoint.trim(),
+      tokenEndpoint: options.tokenEndpoint.trim(),
+    }
   }
 
   async exchangeAuthorizationCode(input: ExchangeAuthorizationCodeInput): Promise<CliTokenPair> {
@@ -241,6 +278,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
   async revoke(input: RevokeInput): Promise<void> {
     const timeout = withTimeout(input.signal, this.#options.timeoutMilliseconds)
     try {
+      if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
       const response = await this.#options.fetch(
         this.#options.revocationEndpoint,
         withRedirectDisabled({
@@ -253,7 +291,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
       let text = ''
       let readFailed = false
       try {
-        text = await readBoundedResponseText(response)
+        text = await readBoundedResponseText(response, timeout.signal)
       } catch {
         readFailed = true
       }
@@ -277,6 +315,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
   ): Promise<CliTokenPair> {
     const timeout = withTimeout(signal, this.#options.timeoutMilliseconds)
     try {
+      if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
       const response = await this.#options.fetch(
         this.#options.tokenEndpoint,
         withRedirectDisabled({
@@ -289,7 +328,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
       let text = ''
       let readFailed = false
       try {
-        text = await readBoundedResponseText(response)
+        text = await readBoundedResponseText(response, timeout.signal)
       } catch {
         // The bounded read shield (response size/tearing) is not diagnostic;
         // the payload can never be trusted or echoed.
@@ -324,8 +363,11 @@ export class CliOAuthClient implements CliOAuthClientPort {
     const headerRequestId = response.headers.get('x-request-id')
     const retryAfter = retryAfterSeconds(response)
     const details: Record<string, string | number> = {}
+    // Index-signature access is required by TS4111 for this redacted details map.
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     if (retryAfter !== undefined) details['retryAfterSeconds'] = retryAfter
     if (headerRequestId !== null && /^[A-Za-z0-9._:-]{1,128}$/.test(headerRequestId)) {
+      // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
       details['providerRequestId'] = headerRequestId
     }
     const base = {

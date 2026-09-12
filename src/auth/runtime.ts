@@ -10,11 +10,6 @@ import {
   ProtectedFileCredentialStore,
 } from '../credentials/index.js'
 import { OcboxError } from '../errors/index.js'
-import {
-  AtomicStoreCancelledError,
-  AtomicStoreConflictError,
-} from '../lifecycle/atomic-json-store.js'
-import { ExclusiveFileLock } from '../state/exclusive-file-lock.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
 import { AuthenticatedHttpClient } from './authenticated-client.js'
 import { PlatformBrowserOpener } from './browser.js'
@@ -132,7 +127,7 @@ export function resolveAuthEndpoints(
 /**
  * Resolves the state directory shared by login and the hosted token manager.
  * An explicit directory wins, then command flags/environment, then the
- * platform default — so T14 resolves exactly the metadata and refresh-lock
+ * platform default — so T14 resolves exactly the metadata and auth-state lock
  * location that `ocbox auth login` wrote. Bearer material itself still follows
  * the T3 platform credential directory, never the state directory.
  */
@@ -199,6 +194,7 @@ export function createAuthSessionService(
     sessionGate: createSessionGate(stateDirectory),
     oauth: (endpoints) =>
       new CliOAuthClient({
+        apiBase: endpoints.issuer,
         clientId: endpoints.clientId,
         fetch: fetchPort,
         revocationEndpoint: endpoints.revocationEndpoint,
@@ -235,34 +231,12 @@ export interface CreateHostedTokenManagerOptions {
  * (which the server classifies as refresh reuse), and serializes the
  * read/rotate/write critical section. The bounded wait maps contention to a
  * typed conflict error instead of an unbounded stall, and caller cancellation
- * to a typed cancelled error; status and logout are unaffected.
+ * to a typed cancelled error. It is the same outer gate used by session
+ * status, login commits, and logout cleanup.
  */
 export function createRefreshGate(stateDirectory: string): RefreshGate {
-  const lock = new ExclusiveFileLock({
-    createCancelledError: () => new AtomicStoreCancelledError(),
-    createTimeoutError: () => new AtomicStoreConflictError(),
-  })
-  return async (action, signal) => {
-    try {
-      return await lock.withLock(join(stateDirectory, 'auth.refresh.lock'), signal, action)
-    } catch (error) {
-      if (error instanceof AtomicStoreCancelledError) {
-        throw new OcboxError({
-          code: 'OPERATION_CANCELLED',
-          message: 'The wait for another CLI process rotating the credential was cancelled',
-          requestId: newRequestId(),
-        })
-      }
-      if (error instanceof AtomicStoreConflictError) {
-        throw new OcboxError({
-          code: 'OPERATION_CONFLICT',
-          message: 'Another CLI process is rotating the stored credential; try again shortly',
-          requestId: newRequestId(),
-        })
-      }
-      throw error
-    }
-  }
+  const gate = createSessionGate(stateDirectory)
+  return (action, signal) => gate(action, signal)
 }
 
 /**
@@ -282,6 +256,7 @@ export function createHostedTokenManager(
   }
   const fetchPort = options.fetch ?? defaultFetch
   const oauth = new CliOAuthClient({
+    apiBase: options.endpoints.issuer,
     clientId: options.endpoints.clientId,
     fetch: fetchPort,
     revocationEndpoint: options.endpoints.revocationEndpoint,
