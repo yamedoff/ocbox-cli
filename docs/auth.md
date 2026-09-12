@@ -76,13 +76,20 @@ replay-safe (idempotent/safe methods, or any method carrying a contract
 idempotency key); POST/PATCH without a key is surfaced as-is without burning a
 refresh family. Concurrent readers collapse into one serialized refresh —
 in-process and across separate CLI processes through the state-directory file
-lock — and a terminal second 401 clears local material only when no concurrent
-actor already stored newer material. Refresh reuse or revocation clears local
+lock — and a caller that finds a fresher generation already rotated by another
+process adopts it instead of presenting the same refresh token again. A
+401-triggered rotation is forced only while the store still holds exactly the
+token the server rejected. Waiting for that lock is cancellable and surfaces
+`OPERATION_CANCELLED` when the caller's signal aborts. A terminal second 401
+clears local material only when no concurrent actor already stored newer
+material — the comparison and deletion run as one critical section under the
+same lock. Refresh reuse or revocation clears local
 material and returns a typed login-required error (`AUTH_REQUIRED`). Requests
 are bounded by a timeout and expose the server request ID and `Retry-After`
-hints. Issuer, audience, client, and required scopes are bound before a
-credential is used: the machine-level metadata must attest that the stored
-credential was minted by the configured issuer, or use fails with `AUTH_FORBIDDEN`.
+hints. Issuer, client, credential identity, audience, and required scopes are
+bound before a credential is used: the machine-level metadata must attest that
+the stored credential was minted by the configured issuer and client for this
+credential identity, or use fails with `AUTH_FORBIDDEN`.
 
 ## Concurrency
 

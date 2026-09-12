@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { RuntimeFlags } from '../cli/runtime.js'
 import { resolveStateDirectory } from '../cli/runtime.js'
 import {
@@ -205,6 +205,15 @@ export function createAuthSessionService(
 
 export interface CreateHostedTokenManagerOptions {
   readonly endpoints: HostedProtocolEndpoints
+  /**
+   * The exact resolved state directory — `resolveStateDirectory(flags,
+   * environment)` — shared with `auth login`. The binding metadata repository
+   * and the cross-process refresh gate are both derived from it, so they can
+   * never disagree; a manager pointed at a directory other than the one login
+   * used fails closed with a binding error instead of trusting foreign
+   * metadata.
+   */
+  readonly stateDirectory: string
   readonly credentialStore: CredentialStore
   readonly credentialKey?: HostedOAuthCredentialKey
   readonly clock?: ClockPort
@@ -212,11 +221,6 @@ export interface CreateHostedTokenManagerOptions {
   readonly expirySkewMilliseconds?: number
   readonly requiredScopes?: readonly string[]
   readonly onRefreshed?: (credential: HostedOAuthCredential) => Promise<void> | void
-  readonly environment?: NodeJS.ProcessEnv
-  /** Command flags carrying `--state-dir`; ignored when `stateDirectory` is set. */
-  readonly flags?: AuthCommandFlags | undefined
-  /** Explicit state directory; wins over flags/environment/platform default. */
-  readonly stateDirectory?: string | undefined
 }
 
 /**
@@ -225,19 +229,26 @@ export interface CreateHostedTokenManagerOptions {
  * processes can never present the same rotating refresh token concurrently
  * (which the server classifies as refresh reuse), and serializes the
  * read/rotate/write critical section. The bounded wait maps contention to a
- * typed conflict error instead of an unbounded stall; status and logout are
- * unaffected.
+ * typed conflict error instead of an unbounded stall, and caller cancellation
+ * to a typed cancelled error; status and logout are unaffected.
  */
 export function createRefreshGate(stateDirectory: string): RefreshGate {
   const lock = new ExclusiveFileLock({
     createCancelledError: () => new AtomicStoreCancelledError(),
     createTimeoutError: () => new AtomicStoreConflictError(),
   })
-  return async (action) => {
+  return async (action, signal) => {
     try {
-      return await lock.withLock(join(stateDirectory, 'auth.refresh.lock'), undefined, action)
+      return await lock.withLock(join(stateDirectory, 'auth.refresh.lock'), signal, action)
     } catch (error) {
-      if (error instanceof AtomicStoreConflictError || error instanceof AtomicStoreCancelledError) {
+      if (error instanceof AtomicStoreCancelledError) {
+        throw new OcboxError({
+          code: 'OPERATION_CANCELLED',
+          message: 'The wait for another CLI process rotating the credential was cancelled',
+          requestId: newRequestId(),
+        })
+      }
+      if (error instanceof AtomicStoreConflictError) {
         throw new OcboxError({
           code: 'OPERATION_CONFLICT',
           message: 'Another CLI process is rotating the stored credential; try again shortly',
@@ -252,14 +263,19 @@ export function createRefreshGate(stateDirectory: string): RefreshGate {
 /**
  * Public token/authenticated-client ports for the hosted provider (T14).
  * Tokens are read and rotated only through the T3 credential store, behind the
- * cross-process refresh gate, and bound to the configured issuer through the
- * machine-level auth metadata.
+ * cross-process refresh gate, and bound to the configured issuer, client, and
+ * credential identity through the machine-level auth metadata.
  */
 export function createHostedTokenManager(
   options: CreateHostedTokenManagerOptions,
 ): HostedTokenManager {
+  if (!isAbsolute(options.stateDirectory)) {
+    throw configError(
+      'Pass the absolute resolved state directory (resolveStateDirectory(flags)) so the ' +
+        'credential refresh gate and the binding metadata share one location',
+    )
+  }
   const fetchPort = options.fetch ?? defaultFetch
-  const environment = options.environment ?? process.env
   const oauth = new CliOAuthClient({
     clientId: options.endpoints.clientId,
     fetch: fetchPort,
@@ -267,22 +283,18 @@ export function createHostedTokenManager(
     timeoutMilliseconds: DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
     tokenEndpoint: options.endpoints.tokenEndpoint,
   })
-  const stateDirectory = resolveAuthStateDirectory({
-    environment,
-    flags: options.flags,
-    stateDirectory: options.stateDirectory,
-  })
-  const metadataRepository = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+  const metadataRepository = new AuthMetadataStore(join(options.stateDirectory, 'auth.json'))
   return new HostedTokenManager({
     clock: options.clock ?? systemClock,
     key: options.credentialKey ?? defaultCredentialKey(),
     store: options.credentialStore,
     binding: {
+      expectedClientId: options.endpoints.clientId,
       expectedIssuer: options.endpoints.issuer,
       metadataRepository,
     },
     expirySkewMilliseconds: options.expirySkewMilliseconds ?? DEFAULT_EXPIRY_SKEW_MILLISECONDS,
-    refreshGate: createRefreshGate(stateDirectory),
+    refreshGate: createRefreshGate(options.stateDirectory),
     ...(options.onRefreshed === undefined ? {} : { onRefreshed: options.onRefreshed }),
     requiredScopes: options.requiredScopes ?? [...DEFAULT_SCOPES],
     refresh: (input) => oauth.refresh(input),

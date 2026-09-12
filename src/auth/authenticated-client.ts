@@ -182,7 +182,12 @@ export class AuthenticatedHttpClient {
     // Another concurrent 401 may already have rotated the token; reuse it
     // rather than starting a second refresh.
     if (current.accessToken !== usedToken) return current.accessToken
-    const refreshed = await this.#options.tokens.refresh(signal)
+    // The rotation is forced only while the store still holds the rejected
+    // token; a generation another process already rotated to is adopted as-is.
+    const refreshed = await this.#options.tokens.refresh({
+      rejectedAccessToken: usedToken,
+      ...(signal === undefined ? {} : { signal }),
+    })
     return refreshed.accessToken
   }
 

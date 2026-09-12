@@ -1,7 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthBindingError, LoginRequiredError } from '../../src/auth/errors.js'
-import { AuthMetadataSchema } from '../../src/auth/metadata.js'
+import { type AuthMetadata, AuthMetadataSchema } from '../../src/auth/metadata.js'
+import { createRefreshGate } from '../../src/auth/runtime.js'
 import { credentialFromTokenPair, HostedTokenManager } from '../../src/auth/token-manager.js'
+import {
+  type HostedOAuthCredential,
+  type HostedOAuthCredentialKey,
+  ProtectedFileCredentialStore,
+  type WindowsAclProtector,
+} from '../../src/credentials/index.js'
 import {
   deferred,
   fixedClock,
@@ -11,6 +21,44 @@ import {
   TEST_NOW,
   tokenPair,
 } from './doubles.js'
+
+const directories: string[] = []
+async function temporaryStateDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'ocbox-auth-gate-'))
+  directories.push(directory)
+  return directory
+}
+afterEach(async () => {
+  await Promise.all(
+    directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+  )
+})
+
+/** Per-operation hooks so tests can hold the store mid-operation deterministically. */
+class HookedCredentialStore extends MemoryCredentialStore {
+  onGet: (() => Promise<void>) | null = null
+  onSet: (() => Promise<void>) | null = null
+  onDelete: (() => Promise<void>) | null = null
+
+  override async get(key: HostedOAuthCredentialKey): Promise<HostedOAuthCredential | null> {
+    const credential = await super.get(key)
+    if (this.onGet !== null) await this.onGet()
+    return credential
+  }
+
+  override async set(
+    key: HostedOAuthCredentialKey,
+    credential: HostedOAuthCredential,
+  ): Promise<void> {
+    if (this.onSet !== null) await this.onSet()
+    await super.set(key, credential)
+  }
+
+  override async delete(key: HostedOAuthCredentialKey): Promise<void> {
+    if (this.onDelete !== null) await this.onDelete()
+    await super.delete(key)
+  }
+}
 
 describe('hosted token manager', () => {
   it('refreshes only when the credential is inside the expiry skew', async () => {
@@ -58,6 +106,24 @@ describe('hosted token manager', () => {
     expect(store.values.size).toBe(1)
   })
 
+  it('adopts a fresh stored generation instead of rotating a second time', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    const refresh = vi.fn(() => Promise.resolve(tokenPair('b')))
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+
+    // A concurrent actor rotated while this caller was waiting to refresh.
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('z'), TEST_NOW))
+    await expect(manager.refresh()).resolves.toMatchObject({ accessToken: 'z'.repeat(48) })
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
   it('clears material and reports login-required on refresh reuse or revocation', async () => {
     const store = new MemoryCredentialStore()
     await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
@@ -98,7 +164,11 @@ describe('hosted token manager', () => {
         key: TEST_KEY,
         refresh: () => Promise.resolve(tokenPair('b')),
         store,
-        binding: { expectedIssuer: issuer, metadataRepository: metadata },
+        binding: {
+          expectedClientId: 'ocb_cli',
+          expectedIssuer: issuer,
+          metadataRepository: metadata,
+        },
       })
 
     // No metadata: an unbound credential from an unknown origin is refused.
@@ -128,9 +198,72 @@ describe('hosted token manager', () => {
     })
   })
 
-  it('serializes refresh across separate manager instances through the shared gate, never presenting a reused refresh token', async () => {
+  it('binds client id, credential identity, and metadata scopes, refusing stale metadata', async () => {
+    const store = new MemoryCredentialStore()
+    const metadata = new MemoryMetadataRepository()
+    const saveMetadata = async (overrides: Partial<AuthMetadata> = {}) => {
+      metadata.value = AuthMetadataSchema.parse({
+        audience: 'cli',
+        clientId: 'ocb_cli',
+        expiresAt: new Date(TEST_NOW + 900_000).toISOString(),
+        identity: TEST_KEY,
+        issuer: 'https://api.test',
+        schemaVersion: 1,
+        scopes: ['source:read'],
+        updatedAt: new Date(TEST_NOW).toISOString(),
+        ...overrides,
+      })
+    }
+    const managerFor = (clientId = 'ocb_cli', requiredScopes?: readonly string[]) =>
+      new HostedTokenManager({
+        clock: fixedClock(TEST_NOW),
+        expirySkewMilliseconds: 30_000,
+        key: TEST_KEY,
+        refresh: () => Promise.resolve(tokenPair('b')),
+        ...(requiredScopes === undefined ? {} : { requiredScopes }),
+        store,
+        binding: {
+          expectedClientId: clientId,
+          expectedIssuer: 'https://api.test',
+          metadataRepository: metadata,
+        },
+      })
+
+    await saveMetadata()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await expect(managerFor().getValidCredential()).resolves.toMatchObject({
+      accessToken: 'a'.repeat(48),
+    })
+
+    // Metadata minted for another OAuth client cannot vouch for this one.
+    await expect(managerFor('other_client').getValidCredential()).rejects.toBeInstanceOf(
+      AuthBindingError,
+    )
+    // Metadata pointing at a different credential identity does not attest ours.
+    await saveMetadata({
+      identity: { accountId: 'other', kind: 'hosted-oauth', provider: 'ocbox' },
+    })
+    await expect(managerFor().getValidCredential()).rejects.toBeInstanceOf(AuthBindingError)
+    await saveMetadata()
+
+    // The credential carries the scope, but stale metadata does not attest it.
+    await store.set(TEST_KEY, {
+      ...credentialFromTokenPair(tokenPair('a'), TEST_NOW),
+      scopes: ['source:read', 'sandboxes:write'],
+    })
+    await expect(
+      managerFor('ocb_cli', ['sandboxes:write']).getValidCredential(),
+    ).rejects.toBeInstanceOf(AuthBindingError)
+    await saveMetadata({ scopes: ['source:read', 'sandboxes:write'] })
+    await expect(
+      managerFor('ocb_cli', ['sandboxes:write']).getValidCredential(),
+    ).resolves.toMatchObject({ accessToken: 'a'.repeat(48) })
+    expect(store.values.size).toBe(1)
+  })
+
+  it('a second manager adopting through the shared gate never presents a reused refresh token', async () => {
     // Server-side single-use family semantics: two calls presenting the same
-    // already-supersede refresh token are reuse — the second revokes everything.
+    // already-superseded refresh token are reuse — the second revokes everything.
     const sharedStore = new MemoryCredentialStore()
     await sharedStore.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
     const presented = new Set<string>()
@@ -146,7 +279,8 @@ describe('hosted token manager', () => {
     // A faithful (serializing) stand-in for the file-lock coordinator shared by
     // both "processes".
     let chain: Promise<unknown> = Promise.resolve()
-    const stats = { value: 0, active: 0 }
+    let active = 0
+    let maxActive = 0
     const use = async <R>(action: () => Promise<R>): Promise<R> => {
       const previous = chain
       let release!: () => void
@@ -154,12 +288,12 @@ describe('hosted token manager', () => {
         release = resolve
       })
       await previous
-      stats.active += 1
-      stats.value = Math.max(stats.value, stats.active)
+      active += 1
+      maxActive = Math.max(maxActive, active)
       try {
         return await action()
       } finally {
-        stats.active -= 1
+        active -= 1
         release()
       }
     }
@@ -177,13 +311,62 @@ describe('hosted token manager', () => {
 
     const firstPromise = managerA.refresh()
     const secondPromise = managerB.refresh()
-    // With the shared gate, the sibling re-reads inside the critical section and
-    // presents the *rotated* token, so no reuse ever reaches the server.
+    // The sibling re-reads inside the critical section and adopts the rotated
+    // generation instead of presenting the same refresh token again.
     await expect(firstPromise).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
-    await expect(secondPromise).resolves.toMatchObject({ accessToken: 'c'.repeat(48) })
-    expect(refreshAgainstServer).toHaveBeenCalledTimes(2)
+    await expect(secondPromise).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+    expect(refreshAgainstServer).toHaveBeenCalledTimes(1)
     expect(reuseStruck).toBe(0)
-    expect(stats.value).toBe(1)
+    expect(maxActive).toBe(1)
+  })
+
+  it('a 401-triggered refresh forces rotation only while acting on the current access token', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    const refresh = vi.fn(() => Promise.resolve(tokenPair('c')))
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+
+    // Another process already rotated away from the rejected token: adopt its
+    // generation instead of burning the current family.
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('b'), TEST_NOW))
+    await expect(manager.refresh({ rejectedAccessToken: 'a'.repeat(48) })).resolves.toMatchObject({
+      accessToken: 'b'.repeat(48),
+    })
+    expect(refresh).not.toHaveBeenCalled()
+
+    // The rejected token is still the stored one: rotation is forced even
+    // though the credential is not yet time-expiring.
+    await expect(manager.refresh({ rejectedAccessToken: 'b'.repeat(48) })).resolves.toMatchObject({
+      accessToken: 'c'.repeat(48),
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards the caller signal to the refresh gate', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+    const observed: Array<AbortSignal | undefined> = []
+    const controller = new AbortController()
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      refreshGate: (action, signal) => {
+        observed.push(signal)
+        return action()
+      },
+      store,
+    })
+
+    await manager.refresh({ signal: controller.signal })
+    expect(observed).toEqual([controller.signal])
   })
 
   it('does not delete newer credential material when refresh reuse fails after a concurrent rotation', async () => {
@@ -226,5 +409,90 @@ describe('hosted token manager', () => {
       manager.clearIfCredential(credentialFromTokenPair(tokenPair('z'), TEST_NOW)),
     ).resolves.toBe(true)
     await expect(store.get(TEST_KEY)).resolves.toBeNull()
+  })
+
+  it('coordinates two independent managers and file-backed stores through the real exclusive file lock', async () => {
+    const stateDirectory = await temporaryStateDirectory()
+    const credentialDirectory = join(stateDirectory, 'credentials')
+    // Permission hardening is covered by the credential-store tests; the lock
+    // coordination under audit here only needs real shared file state.
+    const aclStub: WindowsAclProtector = { protectAndVerify: () => Promise.resolve(true) }
+    const presented: string[] = []
+    const refreshAgainstServer = vi.fn(async ({ refreshToken }: { refreshToken: string }) => {
+      presented.push(refreshToken)
+      return tokenPair(refreshToken === 'A'.repeat(48) ? 'b' : 'c')
+    })
+    const buildManager = () =>
+      new HostedTokenManager({
+        clock: fixedClock(TEST_NOW),
+        expirySkewMilliseconds: 30_000,
+        key: TEST_KEY,
+        refresh: refreshAgainstServer,
+        refreshGate: createRefreshGate(stateDirectory),
+        store: new ProtectedFileCredentialStore(credentialDirectory, {
+          windowsAclProtector: aclStub,
+        }),
+      })
+    const seedStore = new ProtectedFileCredentialStore(credentialDirectory, {
+      windowsAclProtector: aclStub,
+    })
+    await seedStore.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', 10), TEST_NOW))
+
+    const [first, second] = await Promise.all([buildManager().refresh(), buildManager().refresh()])
+    // Exactly one process rotated; the loser observed the real file lock,
+    // re-read the rotated generation inside the gate, and adopted it.
+    expect(presented).toEqual(['A'.repeat(48)])
+    expect(first.accessToken).toBe('b'.repeat(48))
+    expect(second.accessToken).toBe('b'.repeat(48))
+    await expect(buildManager().read()).resolves.toMatchObject({ accessToken: 'b'.repeat(48) })
+  })
+
+  it('holds the real refresh gate across compare-and-delete so a concurrent rotation is never destroyed', async () => {
+    const stateDirectory = await temporaryStateDirectory()
+    const store = new HookedCredentialStore()
+    const initial = credentialFromTokenPair(tokenPair('a'), TEST_NOW)
+    await store.set(TEST_KEY, initial)
+    const manager = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      refreshGate: createRefreshGate(stateDirectory),
+      store,
+    })
+    const operations: string[] = []
+    const blockedGet = deferred<void>()
+    store.onGet = async () => {
+      operations.push('get')
+      await blockedGet.promise
+    }
+    store.onDelete = async () => {
+      operations.push('delete')
+    }
+    store.onSet = async () => {
+      operations.push('set')
+    }
+
+    // The compare-and-delete acquires the real state-directory lock and blocks
+    // inside its read, holding the critical section open.
+    const clearPromise = manager.clearIfCredential(initial)
+    await vi.waitFor(() => expect(operations).toContain('get'))
+
+    // A gate-respecting writer (a second "process") must stay blocked for the
+    // whole section; it can never slip between the comparison and the delete.
+    const writer = createRefreshGate(stateDirectory)(async () => {
+      operations.push('writer:set')
+      await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('z'), TEST_NOW))
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(operations).not.toContain('writer:set')
+
+    blockedGet.resolve()
+    await expect(clearPromise).resolves.toBe(true)
+    await writer
+    expect(operations.indexOf('delete')).toBeLessThan(operations.indexOf('writer:set'))
+    // The concurrent writer's material survives; only the matched snapshot was
+    // deleted.
+    await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'z'.repeat(48) })
   })
 })
