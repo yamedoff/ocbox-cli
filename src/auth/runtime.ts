@@ -76,13 +76,11 @@ function configError(message: string): OcboxError {
 /**
  * Resolves the hosted API endpoints from flags/environment, or fails closed.
  *
- * An explicit browser authorization endpoint is always mandatory: the pinned
- * hosted OpenAPI artifact (`96ea2292…`, servers `/v1`) defines
- * `/auth/cli/authorize` only as an *authenticated POST* web-consent route and
- * publishes no browser-facing GET authorization page that a CLI could open.
- * Deriving one would fabricate a URL that cannot work; until the hosted
- * contract publishes the browser page (T16 wiring), login fails closed unless
- * `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) supplies the documented URL.
+ * The browser authorization page defaults to the canonical T16 consent
+ * surface under the configured deployment base
+ * (`/v1/auth/cli/authorize`, preserving subpaths). An explicit
+ * `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) may still name a separate
+ * browser origin; protocol endpoints always stay under the API base.
  */
 export function resolveAuthEndpoints(
   flags: AuthCommandFlags,
@@ -102,16 +100,11 @@ export function resolveAuthEndpoints(
     // Environment is an index signature; bracket access is required by TypeScript.
     // biome-ignore lint/complexity/useLiteralKeys: see explanation above
     environment['OCBOX_AUTHORIZE_URL']
-  if (typeof authorizeEndpoint !== 'string' || authorizeEndpoint.trim().length === 0) {
-    throw configError(
-      'The pinned hosted contract does not yet publish a browser authorization page; ' +
-        'pass --authorize-url (or OCBOX_AUTHORIZE_URL) with the documented hosted ' +
-        'authorization URL, or see docs/auth.md for the integration blocker',
-    )
-  }
   try {
     return authEndpointsFromIssuer(issuer, {
-      authorizationEndpoint: authorizeEndpoint,
+      ...(typeof authorizeEndpoint === 'string' && authorizeEndpoint.trim().length > 0
+        ? { authorizationEndpoint: authorizeEndpoint }
+        : {}),
       revocationEndpoint: flags['revoke-url'],
       tokenEndpoint: flags['token-url'],
     })

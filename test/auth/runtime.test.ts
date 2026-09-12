@@ -55,16 +55,9 @@ function metadataInput(overrides: { issuer?: string; clientId?: string } = {}) {
 }
 
 describe('auth runtime resolution', () => {
-  it('fails login closed without an explicit browser authorization page', () => {
-    let error: unknown = null
-    try {
-      resolveAuthEndpoints({ 'api-url': 'https://api.example.test' }, {})
-    } catch (caught) {
-      error = caught
-    }
-    expect(error).toBeInstanceOf(OcboxError)
-    expect((error as OcboxError).code).toBe('CONFIG_INVALID')
-    expect((error as Error).message).toContain('browser authorization page')
+  it('defaults login to the canonical consent page under the API base', () => {
+    const resolved = resolveAuthEndpoints({ 'api-url': 'https://api.example.test' }, {})
+    expect(resolved.authorizationEndpoint).toBe('https://api.example.test/v1/auth/cli/authorize')
   })
 
   it('keeps validator detail when the API base URL shape is rejected', () => {

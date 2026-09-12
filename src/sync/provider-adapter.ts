@@ -5,12 +5,16 @@ import { LocalTransferAdapter } from './local-transfer-adapter.js'
 import type { TransferAdapter } from './transfer.js'
 
 /**
- * Provider seam for the sync transport. The v0.1 fake provider (and the
- * repository's local/fake test target) uses the journaled local adapter. T8 can
- * register real adapters here without changing the CLI or planner contracts.
+ * Provider seam for the sync transport. Local staging is provider-independent
+ * and keeps the T6 secret/path guarantees for every provider; the hosted
+ * `ocbox` provider uploads the staged, scanned manifest through the
+ * manifest/chunk/checksum protocol (`uploadPreparedSource`) instead of a
+ * secret-file bypass. T8 can register real adapters here without changing the
+ * CLI or planner contracts.
  */
 export function createTransferAdapter(providerName: string, targetRoot: string): TransferAdapter {
-  if (providerName === 'fake') return new LocalTransferAdapter(targetRoot)
+  if (providerName === 'fake' || providerName === 'ocbox')
+    return new LocalTransferAdapter(targetRoot)
   throw new OcboxError({
     code: 'CAPABILITY_UNSUPPORTED',
     message: `Provider ${providerName} does not implement a sync transfer adapter yet`,

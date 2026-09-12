@@ -6,6 +6,7 @@ import { OutputWriter, type OutputMode } from '../output/index.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
 import { FakeSandboxProvider } from '../providers/fake/index.js'
 import { ProviderRegistry } from '../providers/index.js'
+import { createOcboxProvider } from '../providers/ocbox/factory.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
 
@@ -93,11 +94,17 @@ export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectCon
   return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
 }
 
-export function createRegistry(stateDirectory: string, signal?: AbortSignal): ProviderRegistry {
-  return new ProviderRegistry().register(
-    'fake',
-    () => new FakeSandboxProvider(stateDirectory, signal === undefined ? {} : { signal }),
-  )
+export function createRegistry(
+  stateDirectory: string,
+  signal?: AbortSignal,
+  environment: NodeJS.ProcessEnv = process.env,
+): ProviderRegistry {
+  return new ProviderRegistry()
+    .register(
+      'fake',
+      () => new FakeSandboxProvider(stateDirectory, signal === undefined ? {} : { signal }),
+    )
+    .register('ocbox', () => createOcboxProvider({ environment, stateDirectory }))
 }
 
 export async function createLifecycleService(

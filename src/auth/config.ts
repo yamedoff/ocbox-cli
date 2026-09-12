@@ -29,11 +29,10 @@ export interface HostedProtocolEndpoints {
 }
 
 /**
- * Full login endpoints: the protocol surface plus the operator-supplied
- * browser authorization page. There is no default page to derive: the pinned
- * contract defines `/auth/cli/authorize` only as an authenticated POST
- * web-consent route, so deriving a GET page from it would fabricate a URL
- * that cannot complete a browser flow.
+ * Full login endpoints: the protocol surface plus the browser authorization
+ * page. The page defaults to the canonical T16 consent surface under the
+ * configured deployment base; an explicit override may name a separate
+ * browser origin.
  */
 export interface AuthEndpoints extends HostedProtocolEndpoints {
   readonly authorizationEndpoint: string
@@ -143,8 +142,27 @@ export function validateEndpointOverride(
  */
 export const HOSTED_API_VERSION_SEGMENT = 'v1'
 
+/**
+ * Canonical browser consent surface path (T16). The HTML consent page shares
+ * the `POST /v1/auth/cli/authorize` JSON route path via method/content-type
+ * dispatch and stays outside the JSON OpenAPI contract, so no YAML/client
+ * drift is possible. `apps/web` owns the same subpath-preserving builder.
+ */
+export const BROWSER_AUTHORIZE_PATH = '/v1/auth/cli/authorize' as const
+
 function versionedApiBase(normalizedIssuer: string): string {
   return `${normalizedIssuer.replace(/\/v1\/?$/, '')}/${HOSTED_API_VERSION_SEGMENT}`
+}
+
+/**
+ * Derives the canonical browser authorization page under a deployment base.
+ * Accepts the bare origin, the canonical `/v1` server base, or an origin plus
+ * deployment subpath, mirroring the generated API client, so the consent page
+ * never escapes the configured subpath.
+ */
+export function defaultBrowserAuthorizeEndpoint(issuer: string): string {
+  const normalized = normalizeIssuer(issuer)
+  return `${normalized.replace(/\/v1\/?$/, '')}${BROWSER_AUTHORIZE_PATH}`
 }
 
 /** Derives the documented protocol endpoints from a single hosted API base URL. */
@@ -176,27 +194,24 @@ export function protocolEndpointsFromIssuer(
 }
 
 /**
- * Resolves the full login endpoints. The browser authorization page is always
- * explicit: no default is derived from the contract POST route, so a missing
- * page fails closed instead of producing an unopenable URL.
+ * Resolves the full login endpoints. The browser authorization page defaults
+ * to the canonical T16 consent surface under the configured deployment base
+ * (`/v1/auth/cli/authorize`, preserving subpaths); an explicit override may
+ * name a separate browser origin because only public parameters travel there.
  */
 export function authEndpointsFromIssuer(
   issuer: string,
-  overrides: (AuthEndpointOverrides & BrowserAuthorizationEndpointOverride) | undefined,
+  overrides: AuthEndpointOverrides & Partial<BrowserAuthorizationEndpointOverride> = {},
 ): AuthEndpoints {
-  if (
-    overrides === undefined ||
-    typeof overrides.authorizationEndpoint !== 'string' ||
-    overrides.authorizationEndpoint.trim().length === 0
-  ) {
-    throw new TypeError(
-      'A hosted browser authorization URL is required; the pinned contract publishes no default page',
-    )
-  }
-  validateEndpointOverride('authorizationEndpoint', overrides.authorizationEndpoint)
+  const authorizationEndpoint =
+    typeof overrides.authorizationEndpoint === 'string' &&
+    overrides.authorizationEndpoint.trim().length > 0
+      ? overrides.authorizationEndpoint
+      : defaultBrowserAuthorizeEndpoint(issuer)
+  validateEndpointOverride('authorizationEndpoint', authorizationEndpoint)
   return {
     ...protocolEndpointsFromIssuer(issuer, overrides),
-    authorizationEndpoint: overrides.authorizationEndpoint,
+    authorizationEndpoint,
   }
 }
 

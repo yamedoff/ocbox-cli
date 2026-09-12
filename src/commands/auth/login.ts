@@ -13,8 +13,8 @@ export default class AuthLogin extends OcboxCommand {
     }),
     'authorize-url': Flags.string({
       description:
-        'Hosted browser authorization URL; required because the pinned contract does not ' +
-        'yet publish one (defaults to OCBOX_AUTHORIZE_URL)',
+        'Hosted browser authorization URL; defaults to the canonical consent page ' +
+        'under the API base (/v1/auth/cli/authorize, defaults to OCBOX_AUTHORIZE_URL)',
     }),
     'no-browser': Flags.boolean({
       description: 'Print the authorization URL instead of opening a browser',

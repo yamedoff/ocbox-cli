@@ -28,9 +28,15 @@ describe('auth endpoint configuration', () => {
     )
   })
 
-  it('never defaults the browser authorization page from the contract POST route', () => {
-    expect(() => authEndpointsFromIssuer('https://api.example.test', {} as never)).toThrow(
-      /browser authorization/i,
+  it('defaults the browser page to the canonical T16 consent surface preserving subpaths', () => {
+    expect(authEndpointsFromIssuer('https://api.example.test').authorizationEndpoint).toBe(
+      'https://api.example.test/v1/auth/cli/authorize',
+    )
+    expect(authEndpointsFromIssuer('https://api.example.test/deploy').authorizationEndpoint).toBe(
+      'https://api.example.test/deploy/v1/auth/cli/authorize',
+    )
+    expect(authEndpointsFromIssuer('https://api.example.test/v1/').authorizationEndpoint).toBe(
+      'https://api.example.test/v1/auth/cli/authorize',
     )
   })
 

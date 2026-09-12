@@ -310,21 +310,33 @@ let mock
 try {
   mock = await startMockAuthApi()
 
-  // 0. Login fails closed without an explicit browser authorization endpoint:
-  // the pinned hosted contract publishes no browser GET authorization page.
-  const blocked = await run(
-    ['auth', 'login', '--api-url', mock.url, '--json', '--state-dir', stateRoot],
-    { timeout: 60_000 },
+  // 0. Login defaults to the canonical T16 consent page under the API base
+  // (`/v1/auth/cli/authorize`, preserving subpaths) when no explicit browser
+  // page is supplied.
+  const derivedAuthorizeUrl = `${mock.url}/v1/auth/cli/authorize`
+  const derived = await run(
+    ['auth', 'login', '--api-url', mock.url, '--no-browser', '--json', '--state-dir', stateRoot],
+    {
+      timeout: 60_000,
+      onEvent: (envelope) => {
+        if (envelope.kind !== 'event' || envelope.name !== 'auth.authorization_url') return
+        const authorizationUrl = new URL(envelope.data.url)
+        assert.equal(authorizationUrl.origin + authorizationUrl.pathname, derivedAuthorizeUrl)
+        const redirectUri = authorizationUrl.searchParams.get('redirect_uri')
+        const state = authorizationUrl.searchParams.get('state')
+        const challenge = authorizationUrl.searchParams.get('code_challenge')
+        const code = `mocked_code_default_${Date.now()}`.padEnd(56, 'k')
+        mock.issueCode(code, challenge, redirectUri)
+        void sendCallback(redirectUri, code, state).catch(() => undefined)
+      },
+    },
   )
-  assert.equal(blocked.code, 1)
-  const blockedOutput = `${blocked.stdout.toString('utf8')}
-${blocked.stderr.toString('utf8')}`
-  assert.equal(blockedOutput.includes('"code": "CONFIG_INVALID"'), true)
-  assert.equal(
-    blockedOutput.includes('browser authorization page'),
-    true,
-    'the failure must name the integration blocker',
-  )
+  assert.equal(derived.code, 0, derived.stderr.toString('utf8'))
+  const derivedResult = parseResultEnvelope(derived, 'auth.logged_in')
+  assert.equal(derivedResult.data.loggedIn, true)
+  assert.equal(derivedResult.data.issuer, mock.url)
+  const derivedLogout = await run(['auth', 'logout', '--json', '--state-dir', stateRoot])
+  assert.equal(derivedLogout.code, 0)
 
   // 1. Successful manual-open login completed by a mock-loopback callback.
   // The mock token server doubles as the browser page here (harness-only);
@@ -368,7 +380,7 @@ ${blocked.stderr.toString('utf8')}`
   assert.equal(loginResult.data.issuer, mock.url)
   assert.equal(loginResult.data.audience, 'cli')
   assert.deepEqual(loginResult.data.scopes, ['source:read'])
-  assert.equal(mock.calls.exchange, 1)
+  assert.equal(mock.calls.exchange, 2)
   const issued = mock.lastPair()
   assertPurity(login, [loginCode, issued.accessToken, issued.refreshToken])
   assert.equal(existsSync(join(stateRoot, 'auth.json')), true)
@@ -400,7 +412,7 @@ ${blocked.stderr.toString('utf8')}`
     revocationAttempted: true,
     revoked: true,
   })
-  assert.equal(mock.calls.revoke, 1)
+  assert.equal(mock.calls.revoke, 2)
   assert.equal(hasCredentialFile(), false)
   assert.equal(existsSync(join(stateRoot, 'auth.json')), false)
   const loggedOutStatus = await run(['auth', 'status', '--json', '--state-dir', stateRoot])

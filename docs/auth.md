@@ -28,20 +28,19 @@ challenge) travel to the browser page. The registered public client is `ocb_cli`
 `source:read` scope and the `cli` audience; the authorized redirect is exactly
 `http://127.0.0.1:{randomPort}/callback`.
 
-**Integration blocker (fail closed).** The pinned hosted contract (`/v1`,
-private commit `96ea2292…`) publishes `/auth/cli/authorize` only as an
-*authenticated POST* web-consent route and does not yet expose a browser-facing
-GET authorization page that the CLI could open. `login` therefore *requires* an
-explicit `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) naming the hosted
-browser authorization URL, validated to be an absolute, uncredentialed,
-query/fragment-free http(s) (https off-loopback) endpoint. No default page is
-derived: the protocol-only endpoint factory (`protocolEndpointsFromIssuer`)
-carries no browser URL at all, so an unopenable URL is unrepresentable. The
-canonical page and its query contract must land with the T16 web wiring before
-a default can exist; until then the OAuth-style query the CLI appends
-(`response_type`, `client_id`, `redirect_uri`, `scope`, `audience`, `state`,
-`code_challenge`) is a provisional CLI-side shape the T16 page must confirm,
-and the CLI never pretends the API POST route is a browser page.
+**Browser page (T16 canonical).** The private T16 wiring (`f2aa4d4`) serves the
+user-facing consent page on the same `/v1/auth/cli/authorize` path via
+method/content-type dispatch (GET renders HTML, form POST carries the
+approve/deny gesture, JSON POST keeps the T15 contract), outside the JSON
+OpenAPI so no YAML/client drift is possible. `login` therefore defaults
+`--authorize-url` (or `OCBOX_AUTHORIZE_URL`) to that canonical page under the
+configured deployment base, preserving subpaths exactly like the generated
+client (`{base}/v1/auth/cli/authorize`); an explicit override may still name a
+separate browser origin and is validated to be an absolute, uncredentialed,
+query/fragment-free http(s) (https off-loopback) endpoint. The CLI appends the
+OAuth-style query (`response_type`, `client_id`, `redirect_uri`, `scope`,
+`audience`, `state`, `code_challenge`, `code_challenge_method=S256`) matching
+the T16 `apps/web` builder.
 
 `login` prints/opens the authorization URL and waits for the loopback callback.
 `--no-browser` forces the manual-open path, which prints the same safe
