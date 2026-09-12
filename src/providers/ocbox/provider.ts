@@ -5,45 +5,60 @@ import type {
   Operation as HostedOperation,
   Session as HostedSession,
 } from '../../api/generated/client.js'
+import { type Sandbox, SandboxSchema } from '../../domain/entities.js'
+import type {
+  ExecEvent,
+  ExecHandle,
+  ExecRequest,
+  ExecResult,
+  Execution,
+} from '../../domain/execution.js'
 import {
-  OperationSchema,
+  type ExecutionId,
+  ExecutionIdSchema,
+  ProviderSandboxIdSchema,
+  type RequestId,
+  SandboxIdSchema,
+} from '../../domain/ids.js'
+import { ProviderLifecycleObservationSchema } from '../../domain/lifecycle.js'
+import {
   type Operation,
   type OperationAction,
   type OperationContext,
+  OperationSchema,
   type RequestContext,
 } from '../../domain/operation.js'
-import { SandboxSchema, type Sandbox } from '../../domain/entities.js'
-import { ProviderLifecycleObservationSchema } from '../../domain/lifecycle.js'
-import { SandboxIdSchema, type RequestId } from '../../domain/ids.js'
-import { ProviderSandboxIdSchema } from '../../domain/ids.js'
-import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import type { SandboxSpec } from '../../domain/spec.js'
+import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { OcboxError } from '../../errors/index.js'
-import type { ApplySourceRequest, ApplySourceResult } from '../contract/source.js'
+import type { ProviderCapabilities } from '../contract/capabilities.js'
+import type { ProviderFiles } from '../contract/files.js'
+import type {
+  CreatePreviewRequest,
+  Preview,
+  ProviderPreviews,
+  RevokePreviewRequest,
+} from '../contract/preview.js'
 import type {
   CancelExecutionRequest,
   CreateSandboxRequest,
   GetSandboxRequest,
   LifecycleMutationRequest,
   ListSandboxesRequest,
+  ProviderExecution,
   SandboxMutationResult,
   SandboxProvider,
 } from '../contract/provider.js'
-import type { ProviderCapabilities } from '../contract/capabilities.js'
-import type { ProviderFiles } from '../contract/files.js'
-import type {
-  ProviderPreviews,
-  CreatePreviewRequest,
-  RevokePreviewRequest,
-  Preview,
-} from '../contract/preview.js'
-import type { ProviderSource } from '../contract/source.js'
-import type { ProviderExecution } from '../contract/provider.js'
-import type { ExecRequest, ExecHandle, ExecResult, Execution } from '../../domain/execution.js'
-import { ExecutionIdSchema } from '../../domain/ids.js'
+import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
+import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
-import { waitForHostedOperation } from './operations.js'
-import { collectExecutionEvents, toExecEvents, toExecResult } from './executions.js'
+import {
+  MemoryOperationCheckpointStore,
+  waitForHostedOperation,
+  type OperationCheckpointDurability,
+  type OperationCheckpointStore,
+} from './operations.js'
+import type { HostedExecutionEvent } from './wire.js'
 
 const HOSTED_CAPABILITIES: ProviderCapabilities = {
   runtimeClasses: ['container'],
@@ -79,6 +94,27 @@ const HOSTED_CAPABILITIES: ProviderCapabilities = {
   },
 }
 
+const DEFAULT_EXECUTION_WAIT_MILLISECONDS = 5 * 60_000
+const EXECUTION_DEADLINE_GRACE_MILLISECONDS = 30_000
+
+/**
+ * Binds the local event-collection deadline to the caller's requested timeout
+ * (plus a bounded grace) instead of a fixed ceiling, falling back to the
+ * provider's advertised maximum when no timeout was requested. The grace
+ * covers provider-side scheduling and result propagation so a legitimately
+ * long command is never cut off while it is still running.
+ */
+export function executionWaitDeadlineMilliseconds(
+  requestedTimeoutMilliseconds: number | null,
+  advertisedMaximumMilliseconds: number | null,
+): number {
+  const base =
+    requestedTimeoutMilliseconds ??
+    advertisedMaximumMilliseconds ??
+    DEFAULT_EXECUTION_WAIT_MILLISECONDS
+  return base + EXECUTION_DEADLINE_GRACE_MILLISECONDS
+}
+
 interface SandboxRecord {
   localId: string
   localSessionId: string
@@ -95,6 +131,14 @@ export interface OcboxProviderOptions {
   readonly hostedProjectId: string
   readonly now?: (() => string) | undefined
   readonly createId?: (() => string) | undefined
+  /**
+   * Durable operation checkpoint store used by lifecycle waits. Supplying one
+   * alone does not claim restart recovery; a caller must also declare
+   * `checkpointDurability: 'durable'`. When omitted the provider uses a
+   * process-local in-memory store and reports `ephemeral`.
+   */
+  readonly checkpointStore?: OperationCheckpointStore | undefined
+  readonly checkpointDurability?: OperationCheckpointDurability | undefined
 }
 
 function notFoundSandbox(requestId: RequestId): OcboxError {
@@ -123,6 +167,61 @@ function commandString(request: ExecRequest): string {
   return request.command.argv.map(shellQuote).join(' ')
 }
 
+/**
+ * Minimal single-consumer async channel. The hosted provider returns an
+ * `ExecHandle` before the command completes, so event collection runs in the
+ * background and streams each renumbered event to the awaiting consumer. A
+ * cancellation or collection failure is surfaced to the consumer as a throw.
+ */
+class ExecEventQueue {
+  readonly #items: ExecEvent[] = []
+  readonly #waiters: Array<() => void> = []
+  #closed = false
+  #failed = false
+  #failure: unknown
+
+  push(event: ExecEvent): void {
+    if (this.#closed) return
+    this.#items.push(event)
+    this.#wake()
+  }
+
+  close(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#wake()
+  }
+
+  fail(error: unknown): void {
+    if (this.#closed) return
+    this.#failed = true
+    this.#failure = error
+    this.#closed = true
+    this.#wake()
+  }
+
+  async *drain(): AsyncGenerator<ExecEvent> {
+    for (;;) {
+      while (this.#items.length > 0) {
+        yield this.#items.shift() as ExecEvent
+      }
+      if (this.#closed) {
+        if (this.#failed) throw this.#failure
+        return
+      }
+      await new Promise<void>((resolve) => {
+        this.#waiters.push(resolve)
+      })
+    }
+  }
+
+  #wake(): void {
+    while (this.#waiters.length > 0) {
+      this.#waiters.shift()?.()
+    }
+  }
+}
+
 /** Hosted `ocbox` provider over the pinned `/v1` contract. */
 export class OcboxSandboxProvider implements SandboxProvider {
   readonly name = 'ocbox'
@@ -130,10 +229,17 @@ export class OcboxSandboxProvider implements SandboxProvider {
   readonly #hostedProjectId: string
   readonly #now: () => string
   readonly #createId: () => string
+  readonly #checkpointStore: OperationCheckpointStore
+  readonly checkpointDurability: OperationCheckpointDurability
   readonly #sandboxes = new Map<string, SandboxRecord>()
   readonly #executions = new Map<
     string,
-    { hostedId: string; localSessionId: string; localSandboxId: string }
+    {
+      controller: AbortController
+      hostedId: string
+      localSessionId: string
+      localSandboxId: string
+    }
   >()
   readonly #previews = new Map<string, string>()
 
@@ -141,10 +247,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (options.hostedProjectId.trim().length === 0) {
       throw new TypeError('The hosted project ID must be a non-empty string')
     }
+    const checkpointDurability = options.checkpointDurability ?? 'ephemeral'
+    if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
+      throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
+    }
     this.#api = options.api
     this.#hostedProjectId = options.hostedProjectId
     this.#now = options.now ?? (() => new Date().toISOString())
     this.#createId = options.createId ?? randomUUID
+    this.#checkpointStore = options.checkpointStore ?? new MemoryOperationCheckpointStore()
+    this.checkpointDurability = checkpointDurability
   }
 
   /** Test seam: seed a sandbox mapping without a network round-trip. */
@@ -216,7 +328,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
     })
     const started = this.#api.assertSuccess('createSession', created, [200, 202])
     const hostedOp = started.body as HostedOperation
-    const waited = await waitForHostedOperation(this.#api, hostedOp.id)
+    const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+      store: this.#checkpointStore,
+    })
     const hostedSessionId = waited.operation.sessionId ?? (hostedOp.sessionId as string | null)
     if (hostedSessionId === null || hostedSessionId === undefined) {
       throw new OcboxError({
@@ -373,6 +487,14 @@ export class OcboxSandboxProvider implements SandboxProvider {
     return session
   }
 
+  async #confirmDeleted(hostedSessionId: string): Promise<void> {
+    try {
+      await this.#getOwnedSession(hostedSessionId)
+    } catch (error) {
+      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+    }
+  }
+
   async #mutate(
     context: OperationContext,
     request: LifecycleMutationRequest,
@@ -412,11 +534,13 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const initiated = await invoke()
     const started = this.#api.assertSuccess(`${action}Session`, initiated, [200, 202])
     const hostedOp = started.body as HostedOperation
-    const waited = await waitForHostedOperation(this.#api, hostedOp.id)
-    const session = await this.#getOwnedSession(record.hostedSessionId)
+    const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+      store: this.#checkpointStore,
+    })
     const now = this.#now()
     record.updatedAt = now
     if (expected === 'deleted') {
+      await this.#confirmDeleted(record.hostedSessionId)
       const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, 'deleted')
       const operation = this.#operationOf(context, {
         action,
@@ -427,6 +551,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       })
       return { operation, sandbox }
     }
+    const session = await this.#getOwnedSession(record.hostedSessionId)
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -567,47 +692,83 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
-    const localExecutionId = ExecutionIdSchema.parse(this.#createId())
+    const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
+    const controller = new AbortController()
     this.#executions.set(localExecutionId, {
+      controller,
       hostedId: hosted.id,
       localSandboxId: request.sandboxId,
       localSessionId: record.localSessionId,
     })
-    const collected = await collectExecutionEvents(this.#api, hosted.id)
-    const latest = collected.events[collected.events.length - 1]
-    const completedAt = latest?.at ?? this.#now()
-    const createdRecord = await this.#api.generated.getExecution({
-      path: { executionId: hosted.id },
+    const startedAt = UtcTimestampSchema.parse(hosted.createdAt)
+    const renumberer = new ExecEventRenumberer(localExecutionId, startedAt)
+    const queue = new ExecEventQueue()
+    let resolveResult!: (result: ExecResult) => void
+    let rejectResult!: (error: unknown) => void
+    const resultPromise = new Promise<ExecResult>((resolve, reject) => {
+      resolveResult = resolve
+      rejectResult = reject
     })
-    const current = this.#api.assertSuccess('getExecution', createdRecord, [200])
-    const hostedExecution = current.body as { createdAt: string }
-    const result: ExecResult = toExecResult(collected.result, {
-      completedAt: UtcTimestampSchema.parse(completedAt),
-      startedAt: UtcTimestampSchema.parse(hostedExecution.createdAt),
-    })
+    // Cancellation can reject the result before a consumer awaits it; observe
+    // that rejection here so it never surfaces as an unhandled rejection while
+    // `handle.result` still rejects for callers that await it.
+    void resultPromise.catch(() => undefined)
+
+    void collectExecutionEvents(this.#api, hosted.id, {
+      deadlineMilliseconds: executionWaitDeadlineMilliseconds(
+        request.timeoutMilliseconds,
+        HOSTED_CAPABILITIES.limits.maxExecutionMilliseconds,
+      ),
+      signal: controller.signal,
+      onEvent: (event: HostedExecutionEvent) => {
+        for (const mapped of renumberer.push(event)) queue.push(mapped)
+      },
+    }).then(
+      async (collected) => {
+        try {
+          const latest = collected.events[collected.events.length - 1]
+          const completedAt = latest?.at ?? this.#now()
+          const result = toExecResult(collected.result, {
+            completedAt: UtcTimestampSchema.parse(completedAt),
+            startedAt,
+          })
+          for (const mapped of renumberer.finish()) queue.push(mapped)
+          resolveResult(result)
+          queue.push({
+            executionId: localExecutionId,
+            result,
+            sequence: renumberer.sequence,
+            timestamp: result.completedAt,
+            type: 'completed',
+          })
+        } catch (error) {
+          rejectResult(error)
+          queue.fail(error)
+          return
+        }
+        queue.close()
+      },
+      (error: unknown) => {
+        rejectResult(error)
+        queue.fail(error)
+      },
+    )
+
     const execution: Execution = {
       command: request.command,
-      completedAt: result.completedAt,
-      createdAt: UtcTimestampSchema.parse(hosted.createdAt ?? hostedExecution.createdAt),
+      completedAt: null,
+      createdAt: startedAt,
       id: localExecutionId,
       operationId: context.operationId,
-      result,
+      result: null,
       sandboxId: request.sandboxId,
-      startedAt: result.startedAt,
-      status: 'completed',
+      startedAt,
+      status: 'running',
     }
-    const events = toExecEvents(localExecutionId, collected.events, { startedAt: result.startedAt })
-    async function* stream(): AsyncGenerator<(typeof events)[number]> {
-      for (const event of events) yield event
-      yield {
-        executionId: localExecutionId,
-        result,
-        sequence: events.length,
-        timestamp: result.completedAt,
-        type: 'completed',
-      }
+    async function* stream(): AsyncGenerator<ExecEvent> {
+      yield* queue.drain()
     }
-    return { events: stream(), execution, result: Promise.resolve(result) }
+    return { events: stream(), execution, result: resultPromise }
   }
 
   async #cancelExecution(
@@ -622,6 +783,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
+    // Stop the local event wait immediately so an in-flight command's polling
+    // does not outlive the cancel; the remote request still confirms it.
+    tracked.controller.abort()
     const result = await this.#api.generated.cancelExecution({
       path: { executionId: tracked.hostedId },
       idempotencyKey: context.idempotencyKey,

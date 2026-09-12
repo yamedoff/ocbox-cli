@@ -1,14 +1,14 @@
+import type { OcboxApiClient } from '../../api/client/client.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type {
   ExecutionEvent as HostedEvent,
   ExecutionResult as HostedResult,
 } from '../../api/generated/client.js'
-import type { OcboxApiClient } from '../../api/client/client.js'
-import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
-import type { ExecEvent, ExecResult, Execution } from '../../domain/execution.js'
-import { ExecutionIdSchema, type ExecutionId } from '../../domain/ids.js'
-import { UtcTimestampSchema } from '../../domain/timestamps.js'
-import { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
+import type { ExecEvent, ExecResult, Execution } from '../../domain/execution.js'
+import { type ExecutionId, ExecutionIdSchema } from '../../domain/ids.js'
+import { type UtcTimestamp, UtcTimestampSchema } from '../../domain/timestamps.js'
+import { OcboxError } from '../../errors/index.js'
 import {
   DEFAULT_RETRY_POLICY,
   Deadline,
@@ -17,11 +17,11 @@ import {
   sleepWithSignal,
 } from './retry.js'
 import {
+  type HostedExecutionEvent,
   HostedExecutionEventPageSchema,
   HostedExecutionResultSchema,
   HostedExecutionSchema,
   isTerminalExecutionState,
-  type HostedExecutionEvent,
 } from './wire.js'
 
 export interface CollectedExecution {
@@ -63,6 +63,17 @@ export interface PollExecutionOptions {
   readonly checkpoint?: HostedExecutionCheckpoint | undefined
   readonly onCheckpoint?: ((checkpoint: HostedExecutionCheckpoint) => void) | undefined
   readonly onProgress?: ((event: HostedExecutionEvent) => void) | undefined
+  readonly onEvent?: ((event: HostedExecutionEvent) => void) | undefined
+}
+
+/**
+ * A stale cursor is a normal reconnect outcome for a restarted CLI: the server
+ * no longer recognizes a previously issued cursor. It must reset the cursor to
+ * the start and let the `lastSequence` dedup drop already-seen output instead
+ * of failing the wait.
+ */
+function isInvalidCursorError(error: unknown): boolean {
+  return error instanceof OcboxError && error.providerCode === 'INVALID_CURSOR'
 }
 
 function retryAfterOf(body: unknown): number | null {
@@ -243,6 +254,90 @@ export async function collectExecutionEvents(
     }
   }
 
+  const fetchEventPage = async (): Promise<{
+    data: readonly HostedExecutionEvent[]
+    nextCursor: string | null
+  }> => {
+    const result = await api.generated.listExecutionEvents({
+      path: { executionId },
+      query: { limit: eventLimit, ...(cursor === null ? {} : { cursor }) },
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+    if (result.status < 200 || result.status >= 300) {
+      const envelope = envelopeOf(result.body)
+      throw mapApiFailureToOcboxError({
+        notFoundCode: 'SANDBOX_NOT_FOUND',
+        operation: 'listExecutionEvents',
+        requestId: result.requestId ?? envelope.requestId ?? null,
+        responseRequestId: envelope.requestId ?? result.requestId ?? null,
+        retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        status: result.status,
+      })
+    }
+    const parsed = HostedExecutionEventPageSchema.safeParse(result.body)
+    if (!parsed.success) {
+      throw new OcboxError({
+        code: 'INTERNAL',
+        message: 'The hosted service returned an unexpected Execution event page representation',
+        requestId: newRequestId(),
+      })
+    }
+    return parsed.data
+  }
+
+  const ingestPage = (page: {
+    data: readonly HostedExecutionEvent[]
+    nextCursor: string | null
+  }): { sawTerminal: boolean } => {
+    failures = 0
+    let sawTerminal = false
+    const ordered = [...page.data].sort((a, b) => a.sequence - b.sequence)
+    for (const event of ordered) {
+      if (event.sequence <= lastSequence) continue
+      lastSequence = event.sequence
+      if (event.kind === 'progress') {
+        options.onProgress?.(event)
+        continue
+      }
+      seen.push(event as unknown as HostedEvent)
+      options.onEvent?.(event)
+      if (event.kind !== 'started' && event.kind !== 'stdout' && event.kind !== 'stderr') {
+        sawTerminal = true
+      }
+    }
+    cursor = page.nextCursor
+    options.onCheckpoint?.({ cursor, executionId, lastSequence })
+    return { sawTerminal }
+  }
+
+  /**
+   * Drains any events the live stream never delivered before honoring the
+   * terminal result. Best-effort by design: a still-broken stream must not
+   * block completion, but a single transient failure must not silently drop
+   * the tail.
+   */
+  const drainRemainingEvents = async (): Promise<void> => {
+    for (;;) {
+      throwIfCancelled(options.signal)
+      if (deadline.exceeded()) return
+      let page: { data: readonly HostedExecutionEvent[]; nextCursor: string | null }
+      try {
+        page = await fetchEventPage()
+      } catch (error) {
+        if (options.signal?.aborted === true) throwIfCancelled(options.signal)
+        if (isInvalidCursorError(error) && cursor !== null) {
+          cursor = null
+          continue
+        }
+        return
+      }
+      const { sawTerminal } = ingestPage(page)
+      if (sawTerminal || page.nextCursor === null) return
+    }
+  }
+
   const pollFallback = async (): Promise<CollectedExecution> => {
     for (;;) {
       throwIfCancelled(options.signal)
@@ -259,6 +354,7 @@ export async function collectExecutionEvents(
         current.state === 'cancelled' ||
         current.state === 'failed'
       ) {
+        await drainRemainingEvents()
         return { events: seen, executionId, result: await readResult() }
       }
       await pause(pollMs)
@@ -276,74 +372,41 @@ export async function collectExecutionEvents(
     }
     let page: { data: readonly HostedExecutionEvent[]; nextCursor: string | null }
     try {
-      const result = await api.generated.listExecutionEvents({
-        path: { executionId },
-        query: { limit: eventLimit, ...(cursor === null ? {} : { cursor }) },
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      })
-      if (result.status < 200 || result.status >= 300) {
-        const envelope = envelopeOf(result.body)
-        throw mapApiFailureToOcboxError({
-          notFoundCode: 'SANDBOX_NOT_FOUND',
-          operation: 'listExecutionEvents',
-          requestId: result.requestId ?? envelope.requestId ?? null,
-          responseRequestId: envelope.requestId ?? result.requestId ?? null,
-          retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
-          serverCode: envelope.code,
-          serverMessage: envelope.message,
-          status: result.status,
-        })
-      }
-      const parsed = HostedExecutionEventPageSchema.safeParse(result.body)
-      if (!parsed.success) {
-        throw new OcboxError({
-          code: 'INTERNAL',
-          message: 'The hosted service returned an unexpected Execution event page representation',
-          requestId: newRequestId(),
-        })
-      }
-      page = parsed.data
+      page = await fetchEventPage()
     } catch (error) {
       if (options.signal?.aborted === true) throwIfCancelled(options.signal)
+      if (isInvalidCursorError(error) && cursor !== null) {
+        cursor = null
+        continue
+      }
       if (error instanceof OcboxError && !error.retryable) throw error
       failures += 1
       attempt += 1
       if (failures > maxFailures) {
         return await pollFallback()
       }
+      const remaining = deadline.remainingMilliseconds()
+      if (remaining <= 0) {
+        throw new OcboxError({
+          code: 'OPERATION_TIMEOUT',
+          message: 'The hosted execution did not complete in time',
+          requestId: newRequestId(),
+        })
+      }
       await pause(
-        resolvePollDelayMilliseconds({
-          attempt,
-          policy,
-          random,
-          retryAfterSeconds: retryAfterOfError(error),
-        }),
+        Math.min(
+          resolvePollDelayMilliseconds({
+            attempt,
+            policy,
+            random,
+            retryAfterSeconds: retryAfterOfError(error),
+          }),
+          remaining,
+        ),
       )
       continue
     }
-    failures = 0
-    let sawTerminal = false
-    const ordered = [...page.data].sort((a, b) => a.sequence - b.sequence)
-    for (const event of ordered) {
-      if (event.sequence <= lastSequence) continue
-      lastSequence = event.sequence
-      if (event.kind === 'progress') {
-        options.onProgress?.(event)
-        continue
-      }
-      if (event.kind === 'started') {
-        seen.push(event as unknown as HostedEvent)
-        continue
-      }
-      if (event.kind === 'stdout' || event.kind === 'stderr') {
-        seen.push(event as unknown as HostedEvent)
-        continue
-      }
-      seen.push(event as unknown as HostedEvent)
-      sawTerminal = true
-    }
-    cursor = page.nextCursor
-    options.onCheckpoint?.({ cursor, executionId, lastSequence })
+    const { sawTerminal } = ingestPage(page)
     if (sawTerminal) {
       return { events: seen, executionId, result: await readResult() }
     }
@@ -412,6 +475,74 @@ export function toExecResult(
     stderr: new Uint8Array(),
     stdout: new Uint8Array(),
     timedOut: false,
+  }
+}
+
+/**
+ * Incrementally renumbers hosted events into dense, strictly increasing
+ * `ExecEvent`s. This is the streaming counterpart to `toExecEvents`: progress
+ * and terminal events yield nothing, a `started` event is synthesized on
+ * demand when the server omits one, and timestamps stay monotonic.
+ */
+export class ExecEventRenumberer {
+  readonly #executionId: ExecutionId
+  readonly #startedAt: UtcTimestamp
+  readonly #encoder = new TextEncoder()
+  #sequence = 0
+  #lastTimestamp: UtcTimestamp
+  #sawStarted = false
+
+  constructor(executionId: ExecutionId, startedAt: string) {
+    this.#executionId = ExecutionIdSchema.parse(executionId)
+    this.#startedAt = UtcTimestampSchema.parse(startedAt)
+    this.#lastTimestamp = this.#startedAt
+  }
+
+  get sequence(): number {
+    return this.#sequence
+  }
+
+  push(event: HostedExecutionEvent): readonly ExecEvent[] {
+    if (event.kind === 'started') {
+      this.#sawStarted = true
+      return [this.#startedEvent(this.#monotonic(event.at))]
+    }
+    if (event.kind !== 'stdout' && event.kind !== 'stderr') return []
+    const out: ExecEvent[] = []
+    if (!this.#sawStarted) {
+      this.#sawStarted = true
+      out.push(this.#startedEvent(this.#startedAt))
+    }
+    out.push({
+      data: this.#encoder.encode(event.message),
+      executionId: this.#executionId,
+      sequence: this.#sequence++,
+      timestamp: this.#monotonic(event.at),
+      type: event.kind,
+    })
+    return out
+  }
+
+  finish(): readonly ExecEvent[] {
+    if (this.#sawStarted) return []
+    this.#sawStarted = true
+    return [this.#startedEvent(this.#startedAt)]
+  }
+
+  #startedEvent(timestamp: UtcTimestamp): ExecEvent {
+    return {
+      executionId: this.#executionId,
+      sequence: this.#sequence++,
+      timestamp,
+      type: 'started',
+    }
+  }
+
+  #monotonic(at: string): UtcTimestamp {
+    const raw = UtcTimestampSchema.parse(at)
+    const timestamp = (raw < this.#lastTimestamp ? this.#lastTimestamp : raw) as UtcTimestamp
+    this.#lastTimestamp = timestamp
+    return timestamp
   }
 }
 

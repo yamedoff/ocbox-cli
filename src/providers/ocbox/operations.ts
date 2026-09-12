@@ -53,6 +53,13 @@ export interface OperationCheckpointStore {
   save(checkpoint: OperationCheckpoint): Promise<void>
 }
 
+/**
+ * Explicit durability contract for a checkpoint store. `ephemeral` keeps
+ * checkpoints process-local, so a CLI restart re-polls from scratch; `durable`
+ * is only claimed when a restart-surviving store is explicitly supplied.
+ */
+export type OperationCheckpointDurability = 'durable' | 'ephemeral'
+
 /** Deterministic in-memory store used by tests and ephemeral CLI invocations. */
 export class MemoryOperationCheckpointStore implements OperationCheckpointStore {
   readonly #entries = new Map<string, OperationCheckpoint>()
@@ -126,6 +133,57 @@ function retryAfterOf(body: unknown): number | null {
 }
 
 /**
+ * Transient gateway/server statuses that a long poll should ride out even
+ * though the generic mapping classifies a bare 500 as a non-retryable
+ * `INTERNAL`. Bounds are enforced by the poll deadline, not by these statuses.
+ */
+const TRANSIENT_POLL_STATUSES: ReadonlySet<number> = new Set([500, 502])
+
+function pollFailureRetryable(mapped: OcboxError, status: number): boolean {
+  return mapped.retryable || TRANSIENT_POLL_STATUSES.has(status)
+}
+
+const NON_CANCELLABLE_SERVER_CODES: ReadonlySet<string> = new Set([
+  'OPERATION_NOT_CANCELLABLE',
+  'EXECUTION_NOT_CANCELLABLE',
+])
+
+function normalizedServerCode(code: string | undefined): string {
+  return (code ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+}
+
+/**
+ * Maps a terminal Operation state to the same error the live poll path throws,
+ * so a checkpoint replay of `failed`/`cancelled` can never be reported as a
+ * success. Returns null for `succeeded` (and any non-terminal state).
+ */
+function terminalFailureOf(operation: HostedOperation): OcboxError | null {
+  if (operation.state === 'cancelled') {
+    return new OcboxError({
+      code: 'OPERATION_CANCELLED',
+      message: 'The hosted operation was cancelled',
+      requestId: toRequestId(operation.requestId),
+      ...(operation.error === null ? {} : { providerCode: operation.error.code.slice(0, 128) }),
+    })
+  }
+  if (operation.state === 'failed') {
+    return mapApiFailureToOcboxError({
+      operation: `operation:${operation.kind}`,
+      requestId: operation.requestId,
+      responseRequestId: operation.requestId,
+      retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
+      serverCode: operation.error?.code ?? undefined,
+      serverMessage: operation.error?.message ?? undefined,
+      status: 422,
+    })
+  }
+  return null
+}
+
+/**
  * Durable operation waiter. Polling is stateless by operation ID, so a CLI
  * restart can resume with the same ID, and a checkpoint store lets a restart
  * return a terminal result without any network call. It obeys server retry
@@ -166,6 +224,8 @@ export async function waitForHostedOperation(
     checkpoint.state !== null &&
     isTerminalOperationState(checkpoint.state)
   ) {
+    const failure = terminalFailureOf(checkpoint.operation)
+    if (failure !== null) throw failure
     return {
       fromCheckpoint: true,
       operation: checkpoint.operation,
@@ -175,13 +235,22 @@ export async function waitForHostedOperation(
   }
   const deadline = new Deadline(deadlineMs, now)
   let attempt = checkpoint?.attempt ?? 0
-  const save = async (
-    state: HostedOperationState | null,
-    progress: number,
-    requestId: string | null,
-    operation: HostedOperation | null,
-  ): Promise<void> => {
-    await options.store?.save({ attempt, operation, operationId, progress, requestId, state })
+  // Carry the latest known Operation forward so a retryable poll failure
+  // persists real progress instead of clobbering the checkpoint with the
+  // load-time snapshot (which may be null).
+  let latestState: HostedOperationState | null = checkpoint?.state ?? null
+  let latestProgress = checkpoint?.progress ?? 0
+  let latestRequestId: string | null = checkpoint?.requestId ?? null
+  let latestOperation: HostedOperation | null = checkpoint?.operation ?? null
+  const save = async (): Promise<void> => {
+    await options.store?.save({
+      attempt,
+      operation: latestOperation,
+      operationId,
+      progress: latestProgress,
+      requestId: latestRequestId,
+      state: latestState,
+    })
   }
 
   for (;;) {
@@ -216,13 +285,8 @@ export async function waitForHostedOperation(
         serverMessage: envelope.message,
         status: result.status,
       })
-      if (mapped.retryable) {
-        await save(
-          checkpoint?.state ?? null,
-          checkpoint?.progress ?? 0,
-          result.requestId,
-          checkpoint?.operation ?? null,
-        )
+      if (pollFailureRetryable(mapped, result.status)) {
+        await save()
         const delay = Math.min(
           resolvePollDelayMilliseconds({
             attempt,
@@ -255,7 +319,11 @@ export async function waitForHostedOperation(
     }
     const operation = parsed.data as unknown as HostedOperation
     throwIfCancelled(options.signal, createId)
-    await save(operation.state, operation.progress, result.requestId, operation)
+    latestState = operation.state
+    latestProgress = operation.progress
+    latestRequestId = result.requestId
+    latestOperation = operation
+    await save()
     if (operation.state === 'succeeded') {
       return {
         fromCheckpoint: false,
@@ -264,25 +332,8 @@ export async function waitForHostedOperation(
         requestId: result.requestId,
       }
     }
-    if (operation.state === 'cancelled') {
-      throw new OcboxError({
-        code: 'OPERATION_CANCELLED',
-        message: 'The hosted operation was cancelled',
-        requestId: toRequestId(operation.requestId),
-        ...(operation.error === null ? {} : { providerCode: operation.error.code.slice(0, 128) }),
-      })
-    }
-    if (operation.state === 'failed') {
-      throw mapApiFailureToOcboxError({
-        operation: `operation:${operation.kind}`,
-        requestId: operation.requestId,
-        responseRequestId: operation.requestId,
-        retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
-        serverCode: operation.error?.code ?? undefined,
-        serverMessage: operation.error?.message ?? undefined,
-        status: 422,
-      })
-    }
+    const failure = terminalFailureOf(operation)
+    if (failure !== null) throw failure
     const remaining = deadline.remainingMilliseconds()
     if (remaining <= 0) {
       throw new OcboxError({
@@ -338,6 +389,17 @@ export async function cancelHostedOperation(
     })
     if (result.status < 200 || result.status >= 300) {
       const envelope = envelopeOf(result.body)
+      const serverCode = normalizedServerCode(envelope.code)
+      // A non-cancellable Operation/Execution is a terminal state conflict, not
+      // a transient one: fail fast instead of retrying until the deadline.
+      if (NON_CANCELLABLE_SERVER_CODES.has(serverCode)) {
+        throw new OcboxError({
+          code: 'INVALID_STATE',
+          message: 'The hosted operation cannot be cancelled in its current state',
+          requestId: toRequestId(result.requestId ?? envelope.requestId ?? null),
+          providerCode: serverCode,
+        })
+      }
       const mapped = mapApiFailureToOcboxError({
         operation: 'cancelOperation',
         requestId: result.requestId ?? envelope.requestId ?? null,

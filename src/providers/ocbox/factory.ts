@@ -7,6 +7,7 @@ import {
 } from '../../auth/runtime.js'
 import { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
+import { FileOperationCheckpointStore } from './checkpoints.js'
 import { OcboxSandboxProvider } from './provider.js'
 
 function requiredEnv(
@@ -46,5 +47,13 @@ export function createOcboxProvider(options: {
     stateDirectory,
   })
   const api = createOcboxApiClient({ protocol, tokens })
-  return new OcboxSandboxProvider({ api, hostedProjectId })
+  // The CLI lifecycle path is restartable: persist a checkpoint per hosted
+  // Operation under the resolved state directory and explicitly claim
+  // durability so a restarted process resumes instead of re-polling.
+  return new OcboxSandboxProvider({
+    api,
+    checkpointDurability: 'durable',
+    checkpointStore: new FileOperationCheckpointStore(stateDirectory),
+    hostedProjectId,
+  })
 }

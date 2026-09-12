@@ -3,6 +3,12 @@ import type { OcboxApiClient } from '../../api/client/client.js'
 import { toRequestId } from '../../api/client/errors.js'
 import { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
+import {
+  DEFAULT_RETRY_POLICY,
+  resolvePollDelayMilliseconds,
+  sleepWithSignal,
+  type RetryPolicy,
+} from './retry.js'
 
 export interface SourceChunk {
   readonly index: number
@@ -59,6 +65,9 @@ export interface UploadSourceOptions {
   readonly signal?: AbortSignal | undefined
   readonly idempotencyKeyFor?: ((scope: string) => string) | undefined
   readonly maxAttempts?: number | undefined
+  readonly policy?: RetryPolicy | undefined
+  readonly random?: (() => number) | undefined
+  readonly sleep?: ((milliseconds: number) => Promise<void>) | undefined
 }
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
@@ -69,6 +78,16 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
       requestId: newRequestId(),
     })
   }
+}
+
+function retryableUploadError(error: unknown): error is OcboxError {
+  return error instanceof OcboxError && error.retryable
+}
+
+function retryAfterSecondsOf(error: OcboxError): number | null {
+  // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+  const value = error.details?.['retryAfterSeconds']
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
 
 /**
@@ -98,39 +117,49 @@ export async function uploadPreparedSource(
   const created = api.assertSuccess('createSourceManifest', manifest, [200, 201])
   const manifestId = (created.body as { id: string }).id
   const maxAttempts = options.maxAttempts ?? 3
+  const policy = options.policy ?? DEFAULT_RETRY_POLICY
+  const random = options.random ?? Math.random
+  const sleep =
+    options.sleep ?? ((milliseconds: number) => sleepWithSignal(milliseconds, options.signal))
   for (const chunk of prepared.chunks) {
     let attempt = 0
     for (;;) {
       throwIfCancelled(options.signal)
       attempt += 1
-      const uploaded = await api.generated.uploadSourceChunk({
-        path: { chunkIndex: chunk.index, manifestId },
-        body: { checksum: chunk.checksum, data: Buffer.from(chunk.bytes).toString('base64') },
-        idempotencyKey: keyFor(`chunk-${chunk.index}`),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      })
-      if (uploaded.status === 409) {
-        const receipt = uploaded.body as { chunkChecksum?: unknown }
-        if (receipt.chunkChecksum === chunk.checksum) break
-        throw api.assertSuccess('uploadSourceChunk', uploaded, [200]).body as never
-      }
-      api.assertSuccess('uploadSourceChunk', uploaded, [200, 201])
-      const receipt = uploaded.body as { chunkChecksum: string }
-      if (receipt.chunkChecksum !== chunk.checksum) {
-        throw new OcboxError({
-          code: 'SYNC_INTEGRITY',
-          message: 'The hosted source chunk checksum did not match',
-          requestId: toRequestId(uploaded.requestId),
+      try {
+        const uploaded = await api.generated.uploadSourceChunk({
+          path: { chunkIndex: chunk.index, manifestId },
+          body: { checksum: chunk.checksum, data: Buffer.from(chunk.bytes).toString('base64') },
+          idempotencyKey: keyFor(`chunk-${chunk.index}`),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
         })
+        if (uploaded.status === 409) {
+          const receipt = uploaded.body as { chunkChecksum?: unknown }
+          if (receipt.chunkChecksum === chunk.checksum) break
+          throw api.assertSuccess('uploadSourceChunk', uploaded, [200]).body as never
+        }
+        api.assertSuccess('uploadSourceChunk', uploaded, [200, 201])
+        const receipt = uploaded.body as { chunkChecksum: string }
+        if (receipt.chunkChecksum !== chunk.checksum) {
+          throw new OcboxError({
+            code: 'SYNC_INTEGRITY',
+            message: 'The hosted source chunk checksum did not match',
+            requestId: toRequestId(uploaded.requestId),
+          })
+        }
+        break
+      } catch (error) {
+        if (options.signal?.aborted === true) throwIfCancelled(options.signal)
+        if (!retryableUploadError(error) || attempt >= maxAttempts) throw error
+        await sleep(
+          resolvePollDelayMilliseconds({
+            attempt,
+            policy,
+            random,
+            retryAfterSeconds: retryAfterSecondsOf(error),
+          }),
+        )
       }
-      break
-    }
-    if (attempt > maxAttempts) {
-      throw new OcboxError({
-        code: 'SYNC_FAILED',
-        message: 'The hosted source chunk upload did not complete',
-        requestId: newRequestId(),
-      })
     }
   }
   throwIfCancelled(options.signal)
