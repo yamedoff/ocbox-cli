@@ -1,0 +1,94 @@
+import { readFile } from 'node:fs/promises'
+import { describe, expect, it } from 'vitest'
+import { planMerge, planRemove } from '../../../src/agents/claude-code/merge.js'
+import {
+  collectDenyAskRules,
+  hasManagedHookLock,
+  hookEntryOwned,
+  parseSettingsJson,
+} from '../../../src/agents/claude-code/settings-model.js'
+
+describe('claude-code settings model and merge', () => {
+  it('rejects array matchers as schema errors instead of matching silently', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/corrupt-settings.json', import.meta.url),
+      'utf8',
+    )
+    const parsed = parseSettingsJson('/tmp/settings.json', raw)
+    expect(parsed.issues.length).toBeGreaterThan(0)
+    expect(parsed.issues.some((issue) => issue.message.includes('single string'))).toBe(true)
+  })
+
+  it('rejects invalid JSON and non-object roots fail-closed', () => {
+    expect(parseSettingsJson('/p', 'not json').issues.length).toBeGreaterThan(0)
+    expect(parseSettingsJson('/p', '[]').issues.length).toBeGreaterThan(0)
+  })
+
+  it('preserves unrelated keys and arrays while adding owned entries', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/base-settings.json', import.meta.url),
+      'utf8',
+    )
+    const parsed = parseSettingsJson('/tmp/settings.json', raw)
+    expect(parsed.issues).toEqual([])
+    const merged = planMerge(parsed.document, 'sess-1')
+    expect(merged.addedHook).toBe(true)
+    expect(merged.addedPermission).toBe(true)
+    const document = merged.document as Record<string, unknown>
+    expect(document['alwaysThinkingEnabled']).toBe(true)
+    expect(document['statusLine']).toBeDefined()
+    const permissions = document['permissions'] as Record<string, unknown>
+    expect(permissions['deny']).toContain('Bash(rm -rf *)')
+    expect(permissions['ask']).toContain('Read(./secrets/**)')
+    expect(permissions['allow']).toContain('Bash(npm test *)')
+    expect(permissions['allow']).toContain('Bash(ocbox exec *)')
+    const hooks = document['hooks'] as Record<string, unknown[]>
+    expect(Array.isArray(hooks['PreToolUse'])).toBe(true)
+    expect(hooks['PreToolUse']?.some(hookEntryOwned)).toBe(true)
+  })
+
+  it('keeps merge idempotent on repeat runs', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/base-settings.json', import.meta.url),
+      'utf8',
+    )
+    const first = planMerge(parseSettingsJson('/tmp/s.json', raw).document, 'sess-1')
+    const second = planMerge(first.document, 'sess-1')
+    expect(second.alreadyApplied).toBe(true)
+    expect(JSON.stringify(second.document)).toBe(JSON.stringify(first.document))
+  })
+
+  it('removes only owned matches and preserves user edits', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/base-settings.json', import.meta.url),
+      'utf8',
+    )
+    const merged = planMerge(parseSettingsJson('/tmp/s.json', raw).document, 'sess-1')
+    const editable = JSON.parse(JSON.stringify(merged.document)) as Record<string, unknown>
+    editable['myCustomKey'] = 'user-edit'
+    const removed = planRemove(editable)
+    expect(removed.removedHooks).toBe(1)
+    expect(removed.removedPermissions).toBe(1)
+    const document = removed.document as Record<string, unknown>
+    expect(document['myCustomKey']).toBe('user-edit')
+    expect(document['alwaysThinkingEnabled']).toBe(true)
+    const hooks = document['hooks'] as Record<string, unknown[]>
+    expect(hooks['PreToolUse']?.some(hookEntryOwned)).toBe(false)
+  })
+
+  it('preserves deny and ask rules and detects managed locks', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/managed-settings.json', import.meta.url),
+      'utf8',
+    )
+    const managed = parseSettingsJson('/etc/managed.json', raw)
+    expect(managed.issues).toEqual([])
+    const { deny } = collectDenyAskRules(managed.document)
+    expect(deny).toContain('Read(./.env)')
+    expect(hasManagedHookLock({ allowManagedHooksOnly: true })).toBe(true)
+    expect(hasManagedHookLock({ permissions: { allowManagedPermissionRulesOnly: true } })).toBe(
+      true,
+    )
+    expect(hasManagedHookLock(managed.document)).toBe(false)
+  })
+})

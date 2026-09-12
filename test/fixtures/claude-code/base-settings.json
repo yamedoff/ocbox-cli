@@ -1,0 +1,9 @@
+{
+  "alwaysThinkingEnabled": true,
+  "permissions": {
+    "allow": ["Bash(npm test *)"],
+    "deny": ["Bash(rm -rf *)"],
+    "ask": ["Read(./secrets/**)"]
+  },
+  "statusLine": { "type": "command", "command": "bash ~/.claude/statusline.sh" }
+}
