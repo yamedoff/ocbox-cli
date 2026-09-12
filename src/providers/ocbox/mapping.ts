@@ -15,12 +15,14 @@ function orderedBindings(session: HostedSession): SandboxBinding[] {
  * Resolves the single active primary binding. Ordering is by ascending
  * ordinal; at most one active primary is valid in v0.1. Multiple active
  * bindings are a typed incompatible-server error, never silently ignored.
- * Provider IDs are never trusted for authorization: callers must verify the
- * owned parent (project/session) before invoking this helper.
+ * An active binding must also carry a null `releasedAt`; a released binding
+ * is never an execution target. Provider IDs are never trusted for
+ * authorization: callers must verify the owned parent (project/session)
+ * before invoking this helper.
  */
 export function resolvePrimaryBinding(session: HostedSession): SandboxBinding | null {
   const ordered = orderedBindings(session)
-  const active = ordered.filter((binding) => binding.active)
+  const active = ordered.filter((binding) => binding.active && binding.releasedAt === null)
   if (active.length > 1) {
     throw new OcboxError({
       code: 'INVALID_STATE',

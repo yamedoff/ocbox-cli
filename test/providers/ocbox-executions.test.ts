@@ -72,7 +72,8 @@ describe('hosted execution streaming', () => {
     expect(eventsCalls).toBeGreaterThanOrEqual(2)
     const result = toExecResult(collected.result, { completedAt: EVENT_AT, startedAt: STARTED_AT })
     expect(result.exitCode).toBe(3)
-    expect(new TextDecoder().decode(result.stdout)).toBe('hello')
+    expect(result.stdout.byteLength).toBe(0)
+    expect(result.stderr.byteLength).toBe(0)
   })
 
   it('keeps nonzero exits as command results instead of transport failures', () => {

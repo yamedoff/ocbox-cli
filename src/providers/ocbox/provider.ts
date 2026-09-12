@@ -527,6 +527,15 @@ export class OcboxSandboxProvider implements SandboxProvider {
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
     const record = this.#sandboxes.get(request.sandboxId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
+    const owned = await this.#getOwnedSession(record.hostedSessionId)
+    const primary = resolvePrimaryBinding(owned)
+    if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted Session primary Sandbox binding does not match the requested Sandbox',
+        requestId: context.requestId,
+      })
+    }
     const timeoutSeconds =
       request.timeoutMilliseconds === null
         ? undefined
@@ -540,7 +549,24 @@ export class OcboxSandboxProvider implements SandboxProvider {
       idempotencyKey: context.idempotencyKey,
     })
     const created = this.#api.assertSuccess('createExecution', started, [200, 202])
-    const hosted = created.body as { id: string; createdAt: string }
+    const hosted = created.body as {
+      id: string
+      createdAt: string
+      sessionId?: unknown
+      sandboxId?: unknown
+    }
+    if (
+      (typeof hosted.sessionId === 'string' && hosted.sessionId !== record.hostedSessionId) ||
+      (typeof hosted.sandboxId === 'string' &&
+        hosted.sandboxId !== record.hostedSandboxId &&
+        hosted.sandboxId !== null)
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted Execution does not belong to the requested Session and Sandbox',
+        requestId: context.requestId,
+      })
+    }
     const localExecutionId = ExecutionIdSchema.parse(this.#createId())
     this.#executions.set(localExecutionId, {
       hostedId: hosted.id,

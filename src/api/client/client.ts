@@ -99,7 +99,10 @@ export class OcboxApiClient {
     throw mapApiFailureToOcboxError({
       operation,
       requestId: result.requestId ?? envelope.requestId ?? null,
+      responseRequestId: envelope.requestId ?? result.requestId ?? null,
+      retryAfterSeconds: envelope.retryAfterSeconds ?? null,
       serverCode: envelope.code,
+      serverMessage: envelope.message,
       status: result.status,
     })
   }
