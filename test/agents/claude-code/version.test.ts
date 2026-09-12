@@ -1,9 +1,14 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import {
+  CLAUDE_CODE_PINNED_VERSION,
+  CLAUDE_CODE_SETTINGS_SCHEMA_REVISION,
+  detectClaudeCodeVersion,
   gateClaudeVersion,
+  parseClaudeCodeVersion,
   PINNED_CLAUDE_CODE_VERSION,
   parseClaudeVersionOutput,
+  settingsSchemaRevisionFor,
 } from '../../../src/agents/claude-code/version.js'
 
 describe('claude-code version gate', () => {
@@ -40,5 +45,14 @@ describe('claude-code version gate', () => {
     const parsed = JSON.parse(raw) as Record<string, unknown>
     expect(parsed['alwaysThinkingEnabled']).toBe(true)
     expect(Array.isArray((parsed['permissions'] as Record<string, unknown>)['deny'])).toBe(true)
+  })
+
+  it('exposes a throwing detector over the same pin', () => {
+    expect(CLAUDE_CODE_PINNED_VERSION).toBe(PINNED_CLAUDE_CODE_VERSION)
+    expect(parseClaudeCodeVersion('2.0.51 (Claude Code)')).toBe('2.0.51')
+    expect(detectClaudeCodeVersion('2.0.51 (Claude Code)').version).toBe('2.0.51')
+    expect(settingsSchemaRevisionFor('2.0.51')).toBe(CLAUDE_CODE_SETTINGS_SCHEMA_REVISION)
+    expect(() => parseClaudeCodeVersion('garbage')).toThrow()
+    expect(() => detectClaudeCodeVersion('2.0.52 (Claude Code)')).toThrow()
   })
 })

@@ -14,7 +14,7 @@ import {
   MANIFEST_FILENAME,
   manifestPathForTarget,
   type OwnedManifest,
-  readManifest,
+  parseManifestContent,
   readTextIfPresent,
   writeFileAtomic,
 } from './store.js'
@@ -23,6 +23,7 @@ import { gateClaudeVersion, PINNED_CLAUDE_CODE_VERSION } from './version.js'
 export interface PlannerFileAccess {
   readonly readText: (path: string) => Promise<string | null>
   readonly writeText: (path: string, content: string) => Promise<void>
+  readonly removePath?: (path: string) => Promise<void>
   readonly now?: () => Date
 }
 
@@ -41,6 +42,7 @@ export interface SetupResult {
   readonly manifestPath: string
   readonly sessionId: string | null
   readonly pinnedVersion: typeof PINNED_CLAUDE_CODE_VERSION
+  readonly protectedRules: readonly string[]
 }
 
 export interface DoctorFinding {
@@ -61,10 +63,23 @@ export interface RemoveResult {
   readonly status: 'removed' | 'not-installed'
   readonly targetPath: string
   readonly repairPlan: readonly string[]
+  readonly conflicts: readonly string[]
 }
 
 function stableStringify(document: ClaudeSettingsDocument): string {
   return `${JSON.stringify(document, null, 2)}\n`
+}
+
+async function rollbackTarget(
+  files: PlannerFileAccess,
+  targetPath: string,
+  baseRaw: string | null,
+): Promise<void> {
+  if (baseRaw === null) {
+    if (files.removePath !== undefined) await files.removePath(targetPath).catch(() => undefined)
+    return
+  }
+  await files.writeText(targetPath, baseRaw).catch(() => undefined)
 }
 
 async function loadDocument(
@@ -80,36 +95,64 @@ async function loadDocument(
   return { raw, document: parsed.document, issues: parsed.issues.map((issue) => issue.message) }
 }
 
-export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
-  const gate = gateClaudeVersion(options.claudeVersionRaw)
-  if (!gate.supported) throw new Error(gate.remediation)
-  const targetPath = targetPathForScope(options.layout, options.scope)
-  const managedRaw =
-    options.layout.managedSettingsPath === null
-      ? null
-      : await options.files.readText(options.layout.managedSettingsPath)
-  if (managedRaw !== null) {
-    const managed = parseSettingsJson(options.layout.managedSettingsPath ?? 'managed', managedRaw)
-    if (hasManagedHookLock(managed.document)) {
+function higherPolicyGuard(
+  paths: readonly { readonly label: string; readonly raw: string | null }[],
+): {
+  readonly deny: string[]
+  readonly ask: string[]
+} {
+  const deny: string[] = []
+  const ask: string[] = []
+  for (const entry of paths) {
+    if (entry.raw === null) continue
+    const parsed = parseSettingsJson(entry.label, entry.raw)
+    if (parsed.issues.length > 0) continue
+    if (hasManagedHookLock(parsed.document)) {
       throw new Error(
         'Managed policy locks hooks or permission rules (allowManagedHooksOnly / allowManagedPermissionRulesOnly). Setup refuses to weaken higher policy; ask the workspace administrator.',
       )
     }
-    const { deny } = collectDenyAskRules(managed.document)
-    if (deny.some((rule) => rule.startsWith('Bash('))) {
+    const rules = collectDenyAskRules(parsed.document)
+    if (rules.deny.some((rule) => rule.startsWith('Bash('))) {
       throw new Error(
         'Managed policy denies Bash rules that overlap the owned router. Setup fails closed rather than fighting higher policy.',
       )
     }
+    deny.push(...rules.deny)
+    ask.push(...rules.ask)
   }
+  return { deny, ask }
+}
+
+export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
+  const gate = gateClaudeVersion(options.claudeVersionRaw)
+  if (!gate.supported) throw new Error(gate.remediation)
+  const targetPath = targetPathForScope(options.layout, options.scope)
+  const higherPaths: { readonly label: string; readonly raw: string | null }[] = []
+  if (options.layout.managedSettingsPath !== null) {
+    higherPaths.push({
+      label: options.layout.managedSettingsPath,
+      raw: await options.files.readText(options.layout.managedSettingsPath),
+    })
+  }
+  for (const explicit of options.layout.explicitSettingsPaths) {
+    higherPaths.push({ label: explicit, raw: await options.files.readText(explicit) })
+  }
+  const higher = higherPolicyGuard(higherPaths)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     throw new Error(`Target settings failed validation: ${current.issues.join('; ')}`)
   }
   const manifestPath = manifestPathForTarget(targetPath)
-  const manifest = await readManifest(manifestPath).catch(() => null)
-  void manifest
-  const merged = planMerge(current.document, options.sessionId)
+  const merged = planMerge(current.document, options.sessionId, {
+    higherDeny: higher.deny,
+    higherAsk: higher.ask,
+  })
+  if (merged.protectedRules.length > 0) {
+    throw new Error(
+      `Higher-precedence policy shadows the owned router (${merged.protectedRules.join(', ')}). Setup fails closed rather than weakening ${higherPaths.length > 0 ? 'managed/explicit' : 'higher'} policy.`,
+    )
+  }
   if (merged.alreadyApplied) {
     return {
       status: 'already-applied',
@@ -118,6 +161,7 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
       manifestPath,
       sessionId: options.sessionId,
       pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
+      protectedRules: merged.protectedRules,
     }
   }
   let backupPath: string | null = null
@@ -125,17 +169,26 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     backupPath = backupPathForTarget(targetPath, options.files.now?.() ?? new Date())
     await options.files.writeText(backupPath, current.raw)
   }
-  await options.files.writeText(targetPath, stableStringify(merged.document))
   const nextManifest: OwnedManifest = {
     adapter: 'claude-code',
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
     targetPath,
     baseHash: sha256Json(current.document),
     appliedHash: hashDocument(merged.document),
+    desiredHash: hashDocument(merged.document),
     sessionId: options.sessionId,
     updatedAt: (options.files.now?.() ?? new Date()).toISOString(),
+    backupPath,
+    createdPointers: merged.createdPointers,
+    protectedRules: merged.protectedRules,
   }
-  await options.files.writeText(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`)
+  try {
+    await options.files.writeText(targetPath, stableStringify(merged.document))
+    await options.files.writeText(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`)
+  } catch (error) {
+    await rollbackTarget(options.files, targetPath, current.raw)
+    throw error
+  }
   return {
     status: 'applied',
     targetPath,
@@ -143,6 +196,7 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     manifestPath,
     sessionId: options.sessionId,
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
+    protectedRules: merged.protectedRules,
   }
 }
 
@@ -159,6 +213,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
   const targetPath = targetPathForScope(options.layout, options.scope)
   const ordered: Array<{ readonly source: string; readonly path: string | null }> = [
     { source: 'managed', path: options.layout.managedSettingsPath },
+    ...options.layout.explicitSettingsPaths.map((path) => ({ source: 'explicit', path })),
     { source: 'local-project', path: options.layout.localProjectSettingsPath },
     { source: 'shared-project', path: options.layout.sharedProjectSettingsPath },
     { source: 'user', path: options.layout.userSettingsPath },
@@ -310,19 +365,22 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
         `target ${targetPath} is invalid: ${current.issues.join('; ')}`,
         'restore the newest .ocbox-backup-*.json by hand, then re-run doctor; owned entries were not touched',
       ],
+      conflicts: [],
     }
-  }
-  const removed = planRemoveEntries(current.document)
-  if (removed.removedHooks === 0 && removed.removedPermissions === 0) {
-    return { status: 'not-installed', targetPath, repairPlan: [] }
   }
   const manifestPath = manifestPathForTarget(targetPath)
   const manifestRaw = await options.files.readText(manifestPath)
+  const manifest = parseManifestContent(manifestRaw)
+  const removed = planRemoveEntries(current.document, manifest?.createdPointers ?? [])
+  if (removed.removedHooks === 0 && removed.removedPermissions === 0 && !removed.changed) {
+    return { status: 'not-installed', targetPath, repairPlan: [], conflicts: [] }
+  }
+  const conflicts = removed.conflicts.map((conflict) => conflict.pointer)
   const repairPlan: string[] = []
   if (manifestRaw !== null) {
     try {
-      const manifest = JSON.parse(manifestRaw) as OwnedManifest
-      if (manifest.appliedHash !== hashDocument(current.document)) {
+      const parsed = JSON.parse(manifestRaw) as OwnedManifest
+      if (parsed.appliedHash !== hashDocument(current.document)) {
         repairPlan.push(
           'three-way repair: base=manifest baseHash, current=target file, desired=current minus owned entries',
           'user edits around owned entries are preserved; only exact owned hook and permission matches were removed',
@@ -335,8 +393,18 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
       )
     }
   }
-  await options.files.writeText(targetPath, stableStringify(removed.document))
-  return { status: 'removed', targetPath, repairPlan }
+  if (conflicts.length > 0) {
+    repairPlan.push(
+      `container-invalid at ${conflicts.join(', ')}: user replaced an owned container with a different type; left untouched for manual review`,
+    )
+  }
+  try {
+    await options.files.writeText(targetPath, stableStringify(removed.document))
+  } catch (error) {
+    await rollbackTarget(options.files, targetPath, current.raw)
+    throw error
+  }
+  return { status: 'removed', targetPath, repairPlan, conflicts }
 }
 
 export function liveFileAccess(): PlannerFileAccess {

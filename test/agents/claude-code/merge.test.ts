@@ -91,4 +91,50 @@ describe('claude-code settings model and merge', () => {
     )
     expect(hasManagedHookLock(managed.document)).toBe(false)
   })
+
+  it('never weakens higher-precedence deny rules (protected, not written)', async () => {
+    const raw = await readFile(
+      new URL('../../fixtures/claude-code/base-settings.json', import.meta.url),
+      'utf8',
+    )
+    const parsed = parseSettingsJson('/tmp/s.json', raw)
+    const merged = planMerge(parsed.document, 'sess-1', {
+      higherDeny: ['Bash(ocbox exec *)'],
+    })
+    expect(merged.addedPermission).toBe(false)
+    expect(merged.protectedRules).toContain('Bash(ocbox exec *)')
+    const permissions = merged.document.permissions as Record<string, unknown>
+    expect(permissions['deny']).toContain('Bash(rm -rf *)')
+  })
+
+  it('treats read-only sources as protected without mutating', () => {
+    const merged = planMerge({}, 'sess-1', { readOnlySource: true })
+    expect(merged.changed).toBe(false)
+    expect(merged.alreadyApplied).toBe(true)
+    expect(merged.protectedRules.length).toBeGreaterThan(0)
+    expect(merged.document).toEqual({})
+  })
+
+  it('tracks created pointers and prunes them on remove', () => {
+    const merged = planMerge({}, 'sess-1')
+    expect(merged.createdPointers).toContain('/hooks')
+    expect(merged.createdPointers).toContain('/permissions')
+    const removed = planRemove(merged.document, merged.createdPointers)
+    expect(removed.removedHooks).toBe(1)
+    expect(removed.removedPermissions).toBe(1)
+    expect(removed.document).toEqual({ permissions: { deny: [], ask: [] } })
+  })
+
+  it('reports container-invalid conflicts instead of overwriting user types', () => {
+    const document = {
+      hooks: { PreToolUse: 'not-an-array' },
+      permissions: { allow: 'not-an-array' },
+    }
+    const merged = planMerge(document, 'sess-1')
+    expect(merged.protectedRules).toContain('/hooks/PreToolUse')
+    expect(merged.protectedRules).toContain('/permissions/allow')
+    const removed = planRemove(document)
+    expect(removed.conflicts.map((conflict) => conflict.pointer)).toContain('/hooks/PreToolUse')
+    expect(removed.conflicts.map((conflict) => conflict.pointer)).toContain('/permissions/allow')
+  })
 })

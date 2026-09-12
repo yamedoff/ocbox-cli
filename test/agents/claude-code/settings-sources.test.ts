@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CLAUDE_SETTINGS_PRECEDENCE,
+  higherPrecedenceSources,
+  precedenceRank,
   resolveClaudeSettingsLayout,
+  resolveClaudeSettingsSources,
   targetPathForScope,
 } from '../../../src/agents/claude-code/settings-sources.js'
 
@@ -61,5 +65,52 @@ describe('claude-code settings sources', () => {
     expect(mac.managedSettingsPath).toBe(
       '/Library/Application Support/ClaudeCode/managed-settings.json',
     )
+  })
+
+  it('inserts the explicit overlay between managed and local-project', () => {
+    const layout = resolveClaudeSettingsLayout({
+      homeDirectory: '/h',
+      projectDirectory: '/p',
+      platformOverride: 'linux',
+      explicitPaths: ['/tmp/explicit.json'],
+    })
+    expect([...layout.precedenceHighToLow]).toEqual([
+      'managed',
+      'explicit',
+      'local-project',
+      'shared-project',
+      'user',
+    ])
+    expect([...CLAUDE_SETTINGS_PRECEDENCE]).toEqual([...layout.precedenceHighToLow])
+    const sources = resolveClaudeSettingsSources(layout)
+    expect(sources.map((source) => source.kind)).toEqual([
+      'managed',
+      'explicit',
+      'local-project',
+      'shared-project',
+      'user',
+    ])
+    const explicit = sources.find((source) => source.kind === 'explicit')
+    expect(explicit?.writableByAdapter).toBe(false)
+    expect(precedenceRank('managed')).toBeLessThan(precedenceRank('explicit'))
+    expect(precedenceRank('explicit')).toBeLessThan(precedenceRank('local-project'))
+  })
+
+  it('never lets a lower source weaken higher policy', () => {
+    const layout = resolveClaudeSettingsLayout({
+      homeDirectory: '/h',
+      projectDirectory: '/p',
+      platformOverride: 'linux',
+      explicitPaths: ['/tmp/explicit.json'],
+    })
+    const sources = resolveClaudeSettingsSources(layout)
+    const higher = higherPrecedenceSources(sources, 'shared-project')
+    expect(higher.map((source) => source.kind)).toEqual(['managed', 'explicit', 'local-project'])
+    const writable = sources.filter((source) => source.writableByAdapter)
+    expect(writable.map((source) => source.kind)).toEqual([
+      'local-project',
+      'shared-project',
+      'user',
+    ])
   })
 })

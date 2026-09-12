@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { replaceFileAtomically } from '../../state/exclusive-file-lock.js'
+import { hashBytes } from './json.js'
 import type { ClaudeSettingsDocument } from './settings-model.js'
 import type { PINNED_CLAUDE_CODE_VERSION } from './version.js'
 
@@ -12,8 +14,12 @@ export interface OwnedManifest {
   readonly targetPath: string
   readonly baseHash: string
   readonly appliedHash: string
+  readonly desiredHash: string
   readonly sessionId: string | null
   readonly updatedAt: string
+  readonly backupPath: string | null
+  readonly createdPointers: readonly string[]
+  readonly protectedRules: readonly string[]
 }
 
 export function hashDocument(document: ClaudeSettingsDocument): string {
@@ -44,18 +50,68 @@ export async function readTextIfPresent(path: string): Promise<string | null> {
 export async function writeFileAtomic(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${randomUUID()}`
-  await writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 })
-  await rename(temporary, path)
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(temporary, 'wx', 0o600)
+    await handle.writeFile(content, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    try {
+      await replaceFileAtomically(temporary, path)
+    } catch {
+      await rename(temporary, path)
+    }
+  } catch (error) {
+    await handle?.close()
+    await rm(temporary, { force: true })
+    throw error
+  }
+}
+
+export async function rollbackWrite(path: string, backupContent: string | null): Promise<void> {
+  if (backupContent === null) {
+    await rm(path, { force: true })
+    return
+  }
+  await writeFileAtomic(path, backupContent)
 }
 
 export async function readManifest(path: string): Promise<OwnedManifest | null> {
   const raw = await readTextIfPresent(path)
+  return parseManifestContent(raw)
+}
+
+export function parseManifestContent(raw: string | null): OwnedManifest | null {
   if (raw === null) return null
   try {
-    const parsed = JSON.parse(raw) as OwnedManifest
+    const parsed = JSON.parse(raw) as Partial<OwnedManifest>
     if (parsed.adapter !== 'claude-code') return null
-    return parsed
+    if (typeof parsed.targetPath !== 'string') return null
+    if (typeof parsed.baseHash !== 'string') return null
+    if (typeof parsed.appliedHash !== 'string') return null
+    return {
+      adapter: 'claude-code',
+      pinnedVersion: parsed.pinnedVersion ?? ('2.0.51' as OwnedManifest['pinnedVersion']),
+      targetPath: parsed.targetPath,
+      baseHash: parsed.baseHash,
+      appliedHash: parsed.appliedHash,
+      desiredHash: typeof parsed.desiredHash === 'string' ? parsed.desiredHash : parsed.appliedHash,
+      sessionId: parsed.sessionId ?? null,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      backupPath: typeof parsed.backupPath === 'string' ? parsed.backupPath : null,
+      createdPointers: Array.isArray(parsed.createdPointers)
+        ? parsed.createdPointers.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+      protectedRules: Array.isArray(parsed.protectedRules)
+        ? parsed.protectedRules.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+    }
   } catch {
     return null
   }
+}
+
+export function hashBackupContent(content: string): string {
+  return hashBytes(content)
 }

@@ -200,4 +200,83 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     expect(backup).toContain('permissions')
     await readFile(new URL('../../../package.json', import.meta.url), 'utf8')
   })
+
+  it('fails closed when an explicit overlay denies the owned router', async () => {
+    const explicitPath = join('fake-root', 'explicit.json')
+    const layout = resolveClaudeSettingsLayout({
+      homeDirectory: join('fake-root', 'h'),
+      projectDirectory: join('fake-root', 'p'),
+      platformOverride: 'linux',
+      managedPathOverride: null,
+      explicitPaths: [explicitPath],
+    })
+    const files = memoryFiles({
+      [explicitPath]: '{"permissions": {"deny": ["Bash(ocbox exec *)"]}}',
+    })
+    await expect(
+      planSetup({ layout, scope: 'project', sessionId: 's', claudeVersionRaw: PINNED, files }),
+    ).rejects.toThrow(/Higher-precedence policy|Managed policy/)
+    expect(files.store.has(targetPathForScope(layout, 'project'))).toBe(false)
+  })
+
+  it('rolls back the target when the manifest write fails', async () => {
+    const layout = resolveClaudeSettingsLayout({
+      homeDirectory: join('fake-root', 'h'),
+      projectDirectory: join('fake-root', 'p'),
+      platformOverride: 'linux',
+      managedPathOverride: null,
+    })
+    const target = targetPathForScope(layout, 'project')
+    const before = '{"permissions": {"allow": []}}'
+    const files = memoryFiles({ [target]: before })
+    let calls = 0
+    const failing = {
+      ...files,
+      writeText: async (path: string, content: string) => {
+        calls += 1
+        if (path.endsWith('ocbox-claude-code-manifest.json')) throw new Error('disk full')
+        await files.writeText(path, content)
+      },
+    }
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: 's',
+        claudeVersionRaw: PINNED,
+        files: failing,
+      }),
+    ).rejects.toThrow(/disk full/)
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(files.store.get(target)).toBe(before)
+  })
+
+  it('prunes adapter-created empty containers on remove', async () => {
+    const files = memoryFiles()
+    const layout = resolveClaudeSettingsLayout({
+      homeDirectory: join('fake-root', 'h'),
+      projectDirectory: join('fake-root', 'p'),
+      platformOverride: 'linux',
+      managedPathOverride: null,
+    })
+    await planSetup({
+      layout,
+      scope: 'user',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const target = targetPathForScope(layout, 'user')
+    const removed = await planRemove({
+      layout,
+      scope: 'user',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    const restored = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
+    expect(restored['permissions']).toEqual({ deny: [], ask: [] })
+    expect(restored['hooks']).toBeUndefined()
+  })
 })
