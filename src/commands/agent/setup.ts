@@ -1,11 +1,12 @@
 import { Args, Flags } from '@oclif/core'
 import {
-  backupFileTo,
-  backupTimestamp,
-  detectCodexExecutable,
+  applyCodexChangePlan,
+  assertAdapterOwnedPath,
+  determineProjectTrust,
   layerTargetFiles,
-  manifestBackupDirectory,
+  manifestPathForLayer,
   manifestFile,
+  nodeCodexFileSystem,
   parseCodexToml,
   planCodexSetup,
   projectTrustLevel,
@@ -14,7 +15,7 @@ import {
   resolveAgentCodexPaths,
   resolveSessionSelection,
   runCodexVersion,
-  writeFileAtomic,
+  detectCodexExecutable,
   type CodexLayer,
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
@@ -45,7 +46,7 @@ export default class AgentSetup extends OcboxCommand {
     'project-dir': Flags.string({ description: 'Project directory for the project layer' }),
     'allow-unverified-schema': Flags.boolean({
       description:
-        'Apply the documented fixture representation while the hook schema is unverified',
+        'Deprecated no-op: the pinned schema gate now proves the hooks shape, so setup proceeds without it',
     }),
     yes: Flags.boolean({ description: 'Apply the plan; without it only the plan is printed' }),
     'ocbox-bin': Flags.string({ description: 'ocbox binary invoked by the owned hook' }),
@@ -62,9 +63,11 @@ export default class AgentSetup extends OcboxCommand {
       'agent.codex.setup',
       (result: unknown) => JSON.stringify(result),
       async () => {
+        const stateDirectory = resolveStateDirectory(flags)
         const paths = resolveAgentCodexPaths({
           ...(flags['codex-home'] === undefined ? {} : { codexHome: flags['codex-home'] }),
           ...(flags['project-dir'] === undefined ? {} : { projectDir: flags['project-dir'] }),
+          stateDirectory,
         })
         const targets = layerTargetFiles(paths, layer)
         const codexExecutable = detectCodexExecutable() ?? 'codex'
@@ -72,19 +75,32 @@ export default class AgentSetup extends OcboxCommand {
         const baseTomlText = await readTextOrNull(targets.configFile)
         const baseHooksText = await readTextOrNull(targets.hooksFile)
         const projectDirectory = paths.projectDirectory ?? process.cwd()
-        const trustLevel =
-          layer === 'project'
-            ? projectTrustLevel(baseTomlText, [projectDirectory], (text: string) =>
-                parseCodexToml(text),
-              )
-            : null
-        const stateDirectory = resolveStateDirectory(flags)
+        let trustLevel: string | null = null
+        if (layer === 'project') {
+          const userToml = await readTextOrNull(paths.userConfigFile)
+          const determined = determineProjectTrust(userToml, projectDirectory)
+          trustLevel =
+            determined === 'trusted'
+              ? 'trusted'
+              : (projectTrustLevel(baseTomlText, [projectDirectory], (text: string) =>
+                  parseCodexToml(text),
+                ) ?? determined)
+        }
         const selection = await resolveSessionSelection(
           stateDirectory,
           projectDirectory,
           flags['session'],
         )
-        const { manifest, warning } = await readManifestSafe(manifestFile(stateDirectory))
+        const layeredManifestPath = manifestPathForLayer(stateDirectory, layer)
+        const { manifest, warning: layeredWarning } = await readManifestSafe(layeredManifestPath)
+        let warning = layeredWarning
+        if (manifest === null && warning === null) {
+          const legacy = await readTextOrNull(manifestFile(stateDirectory))
+          if (legacy !== null) {
+            warning =
+              'A legacy single-layer manifest exists; it is ignored by this adapter version. Re-run setup to record per-layer ownership.'
+          }
+        }
         const plan = planCodexSetup(
           {
             versionText,
@@ -135,43 +151,19 @@ export default class AgentSetup extends OcboxCommand {
             liveBlocker: plan.liveBlocker,
           }
         }
-        const timestamp = backupTimestamp()
-        const backupDirectory = manifestBackupDirectory(stateDirectory)
-        let backupConfigPath: string | null = null
-        let backupHooksPath: string | null = null
         for (const change of plan.changes) {
-          const backup = await backupFileTo(change.file, backupDirectory, timestamp)
-          if (change.kind === 'toml-merge') backupConfigPath = backup
-          else backupHooksPath = backup
-          await writeFileAtomic(change.file, change.after)
+          if (change.kind === 'manifest') continue
+          const root =
+            change.file === plan.configFile || change.file === plan.hooksFile
+              ? paths.codexHome
+              : (paths.projectRoot ?? paths.codexHome)
+          assertAdapterOwnedPath(change.file, root, paths.platform)
         }
-        const appliedAt = new Date().toISOString()
-        const tomlChange = plan.changes.find((change) => change.kind === 'toml-merge')
-        const hooksChange = plan.changes.find((change) => change.kind === 'hooks-write')
-        const manifestText = JSON.stringify(
-          {
-            schemaVersion: 1,
-            adapter: 'codex',
-            adapterVersion: 'ocbox-codex-adapter-v1',
-            codexVersion: plan.detectedVersion ?? 'unknown',
-            layer: plan.layer,
-            codexHome: paths.codexHome,
-            projectDirectory: paths.projectDirectory,
-            configFile: plan.configFile,
-            hooksFile: plan.hooksFile,
-            hookRepresentation: 'hooks-json',
-            sessionId: selection.sessionId ?? '',
-            ownedTomlText: tomlChange?.after ?? manifest?.ownedTomlText ?? '',
-            ownedHooksText: hooksChange?.after ?? manifest?.ownedHooksText ?? '',
-            backupConfigPath,
-            backupHooksPath,
-            createdAt: manifest?.createdAt ?? appliedAt,
-            updatedAt: appliedAt,
-          },
-          null,
-          2,
-        )
-        await writeFileAtomic(manifestFile(stateDirectory), `${manifestText}\n`)
+        await applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem)
+        const backupConfigPath =
+          plan.changes.find((change) => change.kind === 'toml-merge')?.backupPath ?? null
+        const backupHooksPath =
+          plan.changes.find((change) => change.kind === 'hooks-write')?.backupPath ?? null
         return {
           ok: true,
           applied: true,

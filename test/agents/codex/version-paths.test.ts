@@ -3,13 +3,19 @@ import {
   LIVE_E2E_BLOCKER,
   PINNED_CODEX_VERSION,
   SUPPORTED_CODEX_VERSIONS,
+  assertSupportedCodexVersion,
   checkCodexVersion,
+  parseCodexVersion,
   parseCodexVersionText,
 } from '../../../src/agents/codex/version.js'
-import { layerTargetFiles, resolveCodexPaths } from '../../../src/agents/codex/paths.js'
+import {
+  assertAdapterOwnedPath,
+  layerTargetFiles,
+  resolveCodexPaths,
+} from '../../../src/agents/codex/paths.js'
 
 describe('codex version gate', () => {
-  it('pins the locally installed version', () => {
+  it('pins the shell codex-cli release', () => {
     expect(PINNED_CODEX_VERSION).toBe('0.153.4')
     expect(SUPPORTED_CODEX_VERSIONS).toEqual(['0.153.4'])
   })
@@ -22,15 +28,19 @@ describe('codex version gate', () => {
     expect(parseCodexVersionText('codex-cli')).toBeNull()
   })
 
-  it('accepts the pinned version', () => {
+  it('accepts the pinned shell version', () => {
     expect(checkCodexVersion('codex-cli 0.153.4')).toMatchObject({
       detected: '0.153.4',
       status: 'supported',
       remediation: null,
+      channel: 'shell',
     })
+    expect(assertSupportedCodexVersion(parseCodexVersion('codex-cli 0.153.4')).codexVersion).toBe(
+      '0.153.4',
+    )
   })
 
-  it('refuses unsupported versions with remediation instead of guessing', () => {
+  it('refuses unsupported shell versions with remediation instead of guessing', () => {
     const check = checkCodexVersion('codex-cli 0.200.0')
     expect(check.status).toBe('unsupported')
     expect(check.detected).toBe('0.200.0')
@@ -44,9 +54,19 @@ describe('codex version gate', () => {
     expect(check.remediation).toMatch(/codex --version/)
   })
 
-  it('refuses a pre-release outside the pin instead of guessing', () => {
-    expect(parseCodexVersionText('codex-cli 0.154.0-alpha.6.2')).toBe('0.154.0')
-    expect(checkCodexVersion('codex-cli 0.154.0-alpha.6.2').status).toBe('unsupported')
+  it('refuses a Desktop pre-release explicitly instead of truncating it to the base version', () => {
+    const desktop = checkCodexVersion('codex-desktop 0.154.0-alpha.6.2')
+    expect(desktop.status).toBe('unsupported')
+    expect(desktop.channel).toBe('desktop')
+    expect(desktop.remediation).toMatch(/Desktop pre-release/)
+    expect(desktop.remediation).toMatch(/codex-cli 0\.153\.4/)
+  })
+
+  it('refuses a shell pre-release outside the pin instead of guessing', () => {
+    const check = checkCodexVersion('codex-cli 0.154.0-alpha.6.2')
+    expect(check.status).toBe('unsupported')
+    expect(check.prerelease).toBe('alpha.6.2')
+    expect(check.remediation).toMatch(/pre-release/)
   })
 
   it('names the live E2E blocker', () => {
@@ -60,6 +80,7 @@ describe('codex path resolution', () => {
     expect(paths.codexHome).toBe('C:\\Users\\Ada\\.codex')
     expect(paths.userConfigFile).toBe('C:\\Users\\Ada\\.codex\\config.toml')
     expect(paths.userHooksFile).toBe('C:\\Users\\Ada\\.codex\\hooks.json')
+    expect(paths.userConfigPath).toBe(paths.userConfigFile)
     expect(paths.hostKind).toBe('windows')
   })
 
@@ -114,5 +135,27 @@ describe('codex path resolution', () => {
     expect(() => resolveCodexPaths({ platform: 'linux', homeDirectory: '' })).toThrow(
       /home directory/,
     )
+  })
+
+  it('derives per-layer manifest and backup paths from the state directory', () => {
+    const paths = resolveCodexPaths({
+      platform: 'linux',
+      homeDirectory: '/home/ada',
+      environment: {},
+      stateDirectory: '/state',
+    })
+    expect(paths.manifestPath('user')).toBe('/state/agents/codex/user/manifest.json')
+    expect(paths.backupPath('/home/ada/.codex/hooks.json', '2026-09-12T00:00:00.000Z')).toBe(
+      '/home/ada/.codex/hooks.json.2026-09-12T00-00-00-000Z.ocbox-backup',
+    )
+  })
+
+  it('refuses adapter writes that escape the Codex root', () => {
+    expect(() =>
+      assertAdapterOwnedPath('/home/ada/.codex/../../etc/passwd', '/home/ada/.codex', 'linux'),
+    ).toThrow()
+    expect(() =>
+      assertAdapterOwnedPath('/home/ada/.codex/hooks.json', '/home/ada/.codex', 'linux'),
+    ).not.toThrow()
   })
 })

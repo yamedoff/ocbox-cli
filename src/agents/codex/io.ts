@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
 import { resolve } from 'node:path'
 import { projectIdForPath } from '../../lifecycle/index.js'
-import { CodexManifestSchema, type CodexManifest } from './manifest.js'
+import { CodexAdapterManifestSchema, type CodexAdapterManifest } from './manifest.js'
 import { resolveCodexPaths, type CodexHostPlatform, type CodexPaths } from './paths.js'
 
 export interface SessionSelection {
@@ -29,16 +29,20 @@ function currentPlatform(): CodexHostPlatform {
 export interface AgentPathOptions {
   readonly codexHome?: string | undefined
   readonly projectDir?: string | undefined
+  readonly stateDirectory?: string | undefined
 }
 
 export function resolveAgentCodexPaths(options: AgentPathOptions): CodexPaths {
+  const host = currentPlatform()
   const codexHomeEnv = options.codexHome ?? process.env['CODEX_HOME']
   return resolveCodexPaths({
-    platform: currentPlatform(),
+    platform: host,
     homeDirectory: homedir(),
     ...(codexHomeEnv === undefined ? {} : { codexHomeEnv }),
     projectDirectory: resolve(options.projectDir ?? process.cwd()),
-    isWsl: currentPlatform() === 'linux' && process.env['WSL_DISTRO_NAME'] !== undefined,
+    isWsl: host === 'linux' && process.env['WSL_DISTRO_NAME'] !== undefined,
+    environment: process.env,
+    ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }),
   })
 }
 
@@ -77,18 +81,25 @@ export async function readTextOrNull(path: string): Promise<string | null> {
 
 export async function readManifestSafe(
   path: string,
-): Promise<{ readonly manifest: CodexManifest | null; readonly warning: string | null }> {
+): Promise<{ readonly manifest: CodexAdapterManifest | null; readonly warning: string | null }> {
   const text = await readTextOrNull(path)
   if (text === null) return { manifest: null, warning: null }
-  try {
-    const parsed: unknown = JSON.parse(text)
-    return { manifest: CodexManifestSchema.parse(parsed), warning: null }
-  } catch {
+  const result = CodexAdapterManifestSchema.safeParse(
+    (() => {
+      try {
+        return JSON.parse(text) as unknown
+      } catch {
+        return undefined
+      }
+    })(),
+  )
+  if (!result.success) {
     return {
       manifest: null,
       warning: 'Adapter manifest is corrupted; treating setup as not applied.',
     }
   }
+  return { manifest: result.data, warning: null }
 }
 
 export async function resolveSessionSelection(

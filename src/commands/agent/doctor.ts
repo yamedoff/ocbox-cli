@@ -2,8 +2,10 @@ import { Args, Flags } from '@oclif/core'
 import {
   codexDoctor,
   detectCodexExecutable,
+  determineProjectTrust,
   layerTargetFiles,
   manifestFile,
+  manifestPathForLayer,
   parseCodexToml,
   projectTrustLevel,
   readManifestSafe,
@@ -45,9 +47,11 @@ export default class AgentDoctor extends OcboxCommand {
       'agent.codex.doctor',
       (result: unknown) => JSON.stringify(result),
       async () => {
+        const stateDirectory = resolveStateDirectory(flags)
         const paths = resolveAgentCodexPaths({
           ...(flags['codex-home'] === undefined ? {} : { codexHome: flags['codex-home'] }),
           ...(flags['project-dir'] === undefined ? {} : { projectDir: flags['project-dir'] }),
+          stateDirectory,
         })
         const targets = layerTargetFiles(paths, layer)
         const codexExecutable = detectCodexExecutable() ?? 'codex'
@@ -55,19 +59,33 @@ export default class AgentDoctor extends OcboxCommand {
         const tomlText = await readTextOrNull(targets.configFile)
         const hooksText = await readTextOrNull(targets.hooksFile)
         const projectDirectory = paths.projectDirectory ?? process.cwd()
-        const stateDirectory = resolveStateDirectory(flags)
-        const { manifest, warning } = await readManifestSafe(manifestFile(stateDirectory))
+        const { manifest, warning } = await readManifestSafe(
+          manifestPathForLayer(stateDirectory, layer),
+        )
+        let manifestWarning = warning
+        if (manifest === null && manifestWarning === null) {
+          const legacy = await readTextOrNull(manifestFile(stateDirectory))
+          if (legacy !== null) {
+            manifestWarning =
+              'A legacy single-layer manifest exists; it is ignored by this adapter version. Re-run setup to record per-layer ownership.'
+          }
+        }
         const selection = await resolveSessionSelection(
           stateDirectory,
           projectDirectory,
           flags['session'] ?? manifest?.sessionId,
         )
-        const trustLevel =
-          layer === 'project'
-            ? projectTrustLevel(tomlText, [projectDirectory], (text: string) =>
-                parseCodexToml(text),
-              )
-            : null
+        let trustLevel: string | null = null
+        if (layer === 'project') {
+          const userToml = await readTextOrNull(paths.userConfigFile)
+          const determined = determineProjectTrust(userToml, projectDirectory)
+          trustLevel =
+            determined === 'trusted'
+              ? 'trusted'
+              : (projectTrustLevel(tomlText, [projectDirectory], (text: string) =>
+                  parseCodexToml(text),
+                ) ?? determined)
+        }
         const report = codexDoctor({
           versionText,
           tomlText,
@@ -80,13 +98,13 @@ export default class AgentDoctor extends OcboxCommand {
         })
         const failed = report.checks.filter((check) => check.status === 'fail')
         const checks =
-          warning === null
+          manifestWarning === null
             ? report.checks
             : [
                 {
                   id: 'manifest-read',
                   status: 'warning' as const,
-                  summary: warning,
+                  summary: manifestWarning,
                   remediation: 'Re-run setup to rewrite the manifest.',
                 },
                 ...report.checks,

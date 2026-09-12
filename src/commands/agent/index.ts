@@ -6,7 +6,7 @@ const USAGE = [
   'USAGE',
   '  $ ocbox agent setup codex [--layer user|project] [--session SESSION_ID] [--yes]',
   '  $ ocbox agent doctor codex',
-  '  $ ocbox agent remove codex [--yes]',
+  '  $ ocbox agent remove codex [--layer user|project|all] [--yes]',
   '',
   'COMMANDS',
   '  setup   Plan or apply the owned config and hook fragments (idempotent)',

@@ -1,119 +1,122 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import {
-  FIXTURE_TOML_SCHEMA,
-  inlineHooksPresent,
-  mergeOwnedToml,
-  ownedTomlFragment,
-  parseCodexToml,
-  readOwnedToml,
-  serializeCodexToml,
-  stripOwnedToml,
-} from '../../../src/agents/codex/toml-merge.js'
+  parseHooksJsonDocument,
+  parseTomlDocument,
+  serializeHooksJsonDocument,
+  serializeTomlDocument,
+} from '../../../src/agents/codex/codec.js'
+import { CodexAdapterError } from '../../../src/agents/codex/errors.js'
+import { detectCodexSchema, validateHooksTable } from '../../../src/agents/codex/schema.js'
 import {
-  buildOwnedHookEntry,
-  hasOwnedHook,
-  mergeOwnedHooks,
-  parseHooksJson,
-  removeOwnedHooks,
-  serializeHooksJson,
-} from '../../../src/agents/codex/hooks-file.js'
-import { buildHookArgv, HOOK_OWNED_ID } from '../../../src/agents/codex/hook-helper.js'
+  ensureGroup,
+  eventGroups,
+  pruneEmptyHooksTable,
+  readHooksTable,
+  removeGroup,
+  toOwnedFragment,
+  type CodexDesiredFragment,
+} from '../../../src/agents/codex/hooks.js'
+import { deepEqual } from '../../../src/agents/codex/document.js'
+import { buildHookShellCommand } from '../../../src/agents/codex/hook-helper.js'
 
-const BASE_CONFIG = [
-  'model = "gpt-5.6-luna"',
-  'approval_policy = "never"',
-  '',
-  '[mcp_servers.context7]',
-  'url = "https://mcp.context7.com/mcp"',
-  '',
-  '[projects."C:\\\\Users\\\\boudi\\\\Desktop\\\\replica"]',
-  'trust_level = "trusted"',
-  '',
-].join('\n')
+const VERSION_OUTPUT = 'codex-cli 0.153.4'
 
-function fragment() {
-  return ownedTomlFragment({
-    adapterVersion: 'ocbox-codex-adapter-v1',
-    codexVersion: '0.153.4',
-    layer: 'user',
-    sessionId: 'sess-test-1',
-    hookId: HOOK_OWNED_ID,
-    hookRepresentation: 'hooks-json',
-  })
+function desiredSessionFragment(sessionId: string): CodexDesiredFragment {
+  return {
+    event: 'PreToolUse',
+    matcher: 'shell',
+    group: {
+      matcher: 'shell',
+      hooks: [{ type: 'command', command: buildHookShellCommand({ sessionId }) }],
+    },
+  }
 }
 
-describe('codex toml merge', () => {
-  it('preserves unrelated settings across a golden merge', () => {
-    const merged = serializeCodexToml(mergeOwnedToml(parseCodexToml(BASE_CONFIG), fragment()))
-    const document = parseCodexToml(merged)
-    expect(document['model']).toBe('gpt-5.6-luna')
-    expect(document['approval_policy']).toBe('never')
-    expect(document['mcp_servers']).toMatchObject({
-      context7: { url: 'https://mcp.context7.com/mcp' },
-    })
-    expect(document['projects']).toMatchObject({
-      'C:\\Users\\boudi\\Desktop\\replica': { trust_level: 'trusted' },
-    })
-    expect(readOwnedToml(document)).toMatchObject({
-      codex: { fixture: FIXTURE_TOML_SCHEMA, sessionId: 'sess-test-1', layer: 'user' },
-    })
+async function fixture(name: string): Promise<string> {
+  return readFile(new URL(`../../fixtures/agents/codex/${name}`, import.meta.url), 'utf8')
+}
+
+describe('codex schema gate', () => {
+  it('accepts the pinned schema and enumerates the hook events', () => {
+    const schema = detectCodexSchema(VERSION_OUTPUT, { config: null, hooks: null })
+    expect(schema.revision).toBe('codex-cli-0.153')
+    expect(schema.representations).toEqual(['config-toml', 'hooks-json'])
   })
 
-  it('round-trips merge then strip to the original document', () => {
-    const base = parseCodexToml(BASE_CONFIG)
-    const merged = mergeOwnedToml(base, fragment())
-    expect(stripOwnedToml(merged)).toEqual(base)
+  it('fails closed on an unknown hook event', () => {
+    expect(() =>
+      detectCodexSchema(VERSION_OUTPUT, { config: { hooks: { FutureEvent: [] } }, hooks: null }),
+    ).toThrow(CodexAdapterError)
   })
 
-  it('is byte-stable across repeated merges', () => {
-    const first = serializeCodexToml(mergeOwnedToml(parseCodexToml(BASE_CONFIG), fragment()))
-    const second = serializeCodexToml(mergeOwnedToml(parseCodexToml(first), fragment()))
-    expect(second).toBe(first)
-  })
-
-  it('refuses corrupted TOML instead of guessing', () => {
-    expect(() => parseCodexToml('model = [unclosed')).toThrow(/refusing to merge/)
-  })
-
-  it('detects inline hook representations', () => {
-    expect(inlineHooksPresent(parseCodexToml(`${BASE_CONFIG}\n[hooks]\ntest = 1\n`))).toBe(true)
-    expect(inlineHooksPresent(parseCodexToml(BASE_CONFIG))).toBe(false)
+  it('fails closed when an event value is not an array', () => {
+    expect(() => validateHooksTable({ PreToolUse: 'nope' }, 'config.toml')).toThrow(
+      CodexAdapterError,
+    )
   })
 })
 
-describe('codex hooks file merge', () => {
-  const owned = buildOwnedHookEntry('sess-test-1', buildHookArgv({ sessionId: 'sess-test-1' }))
-
-  it('appends the owned entry while preserving foreign hooks', () => {
-    const existing = parseHooksJson(
-      '{"schemaVersion":1,"fixture":"x","hooks":[{"id":"other","command":["run"],"matcher":"shell","sessionId":"","sync":"explicit"}]}',
-    )
-    const merged = mergeOwnedHooks(existing, owned)
-    expect(merged.hooks).toHaveLength(2)
-    expect(hasOwnedHook(merged)).toBe(true)
-    expect(serializeHooksJson(merged)).toContain(HOOK_OWNED_ID)
+describe('codex lossless hooks-table merge', () => {
+  it('adds the owned group to hooks.json without touching the user config', async () => {
+    const configToml = await fixture('user-config.toml')
+    const config = parseTomlDocument(configToml)
+    expect(config?.['model']).toBe('gpt-5.6-luna')
+    const owned = toOwnedFragment(desiredSessionFragment('sess-test-1'))
+    const target: Record<string, unknown> = {}
+    const table: Record<string, unknown> = {}
+    target['hooks'] = table
+    expect(ensureGroup(table, owned)).toBe(true)
+    expect(ensureGroup(table, owned)).toBe(false)
+    expect(eventGroups(table, 'PreToolUse')).toEqual([owned.group])
+    const serialized = serializeHooksJsonDocument(target)
+    expect(parseHooksJsonDocument(serialized)?.['hooks']).toEqual({
+      PreToolUse: [owned.group],
+    })
   })
 
-  it('replaces the owned entry idempotently on repeat merges', () => {
-    const once = mergeOwnedHooks(null, owned)
-    const twice = mergeOwnedHooks(once, owned)
-    expect(twice).toEqual(once)
-    expect(twice.hooks).toHaveLength(1)
+  it('merges into an existing config.toml hooks table, preserving user hooks exactly', async () => {
+    const configToml = await fixture('config-with-user-hooks.toml')
+    const config = parseTomlDocument(configToml) ?? {}
+    const owned = toOwnedFragment(desiredSessionFragment('sess-test-1'))
+    const table = readHooksTable(config)
+    expect(table).not.toBeNull()
+    if (table === null) throw new Error('fixture has no hooks table')
+    expect(ensureGroup(table, owned)).toBe(true)
+    const merged = config['hooks'] as Record<string, unknown>
+    expect(Object.keys(merged).sort()).toEqual(['PreToolUse', 'SessionStart'])
+    expect(merged['SessionStart']).toEqual([
+      { matcher: 'startup', hooks: [{ type: 'command', command: 'existing-user-hook' }] },
+    ])
+    expect(serializeTomlDocument(config)).toContain('existing-user-hook')
   })
 
-  it('removes only the owned entry', () => {
-    const existing = parseHooksJson(
-      '{"schemaVersion":1,"fixture":"x","hooks":[{"id":"other","command":[],"matcher":"shell","sessionId":"","sync":"explicit"}]}',
-    )
-    const merged = mergeOwnedHooks(existing, owned)
-    const { document, removed } = removeOwnedHooks(merged)
-    expect(removed).toBe(true)
-    expect(document.hooks).toHaveLength(1)
-    expect(hasOwnedHook(document)).toBe(false)
+  it('removes only the owned group and prunes the empty table', () => {
+    const owned = toOwnedFragment(desiredSessionFragment('sess-test-1'))
+    const document: Record<string, unknown> = { model: 'x', hooks: { PreToolUse: [owned.group] } }
+    const table = readHooksTable(document)
+    expect(table).not.toBeNull()
+    if (table === null) throw new Error('expected hooks table')
+    expect(removeGroup(table, owned)).toBe(true)
+    pruneEmptyHooksTable(document)
+    expect(document['hooks']).toBeUndefined()
+    expect(document['model']).toBe('x')
   })
 
-  it('refuses corrupted hooks JSON', () => {
-    expect(() => parseHooksJson('{oops')).toThrow(/refusing to merge/)
-    expect(() => parseHooksJson('{"schemaVersion":1}')).toThrow(/hooks array/)
+  it('keeps unrelated groups byte-stable across merge then strip', async () => {
+    const configToml = await fixture('config-with-user-hooks.toml')
+    const before = parseTomlDocument(configToml) ?? {}
+    const owned = toOwnedFragment(desiredSessionFragment('sess-test-1'))
+    const table = readHooksTable(before)
+    if (table === null) throw new Error('fixture has no hooks table')
+    ensureGroup(table, owned)
+    expect(removeGroup(table, owned)).toBe(true)
+    pruneEmptyHooksTable(before)
+    expect(deepEqual(before, parseTomlDocument(configToml))).toBe(true)
+  })
+
+  it('refuses corrupted documents instead of guessing', () => {
+    expect(() => parseTomlDocument('model = [unterminated')).toThrow(CodexAdapterError)
+    expect(() => parseHooksJsonDocument('[1,')).toThrow(CodexAdapterError)
   })
 })
