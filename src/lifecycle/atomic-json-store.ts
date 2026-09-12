@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, open, readFile, rm } from 'node:fs/promises'
+import { access, chmod, open, readFile, rm } from 'node:fs/promises'
 import { dirname, isAbsolute } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { z } from 'zod'
 import { ExclusiveFileLock, replaceFileAtomically } from '../state/exclusive-file-lock.js'
+
+// Bounded retry for transient Windows sharing violations during delete.
+const DELETE_RETRY_ATTEMPTS = 100
 
 export interface AtomicJsonStoreOptions {
   readonly lockWaitMilliseconds?: number
@@ -114,18 +118,35 @@ export class AtomicJsonStore<Value> {
   /**
    * Removes the underlying file under the same cross-process lock used by
    * load/update, so a reader never sees the file vanish mid-replacement and a
-   * writer never resurrects it after a concurrent delete.
+   * writer never resurrects it after a concurrent delete. On Windows,
+   * ReplaceFileAtomically keeps the destination open briefly, so a transient
+   * sharing violation is retried with backoff; the delete only reports success
+   * once the file's absence has been confirmed, never after a swallowed error.
    */
   async delete(signal?: AbortSignal): Promise<void> {
     await this.#lock.withLock(`${this.#path}.lock`, signal, async () => {
-      try {
-        await rm(this.#path, { force: true })
-        await syncDirectory(dirname(this.#path))
-      } catch (error) {
-        // ReplaceFileAtomically keeps the destination open briefly on Windows;
-        // a transient sharing violation during delete is retried best-effort.
-        if (['EACCES', 'EBUSY', 'EPERM'].includes(errorCode(error) ?? '')) return
-        throw error
+      const retryable = ['EACCES', 'EBUSY', 'EPERM']
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await rm(this.#path, { force: true })
+          await syncDirectory(dirname(this.#path))
+          // Windows `rm` can fail transiently with EACCES/EBUSY/EPERM while
+          // another handle holds the destination; absence is verified so a
+          // silently retained file can never be reported as cleared.
+          await access(this.#path)
+          return
+        } catch (error) {
+          if (errorCode(error) === 'ENOENT') return
+          if (
+            process.platform === 'win32' &&
+            retryable.includes(errorCode(error) ?? '') &&
+            attempt < DELETE_RETRY_ATTEMPTS
+          ) {
+            await delay(Math.min(5 * (attempt + 1), 50))
+            continue
+          }
+          throw error
+        }
       }
     })
   }

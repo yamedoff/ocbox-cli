@@ -62,7 +62,7 @@ export class AuthMetadataStore implements AuthMetadataRepository {
     )
   }
 
-  /** Locked, best-effort removal through the shared atomic-store contract. */
+  /** Locked, verified removal through the shared atomic-store contract. */
   async clear(): Promise<void> {
     await this.#store.delete()
   }

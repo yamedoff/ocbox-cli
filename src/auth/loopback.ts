@@ -9,6 +9,18 @@ import { timingSafeEqualText } from './pkce.js'
 // of unreserved base64url alphabet.
 const CODE_PATTERN = /^[A-Za-z0-9_-]{32,256}$/
 const MAX_REQUEST_TARGET_LENGTH = 2_048
+// Security-relevant callback parameters: any duplicated occurrence leaves
+// which copy governs undefined, so the request is refused before parsing.
+const CALLBACK_SECURITY_PARAMETERS = [
+  'client_id',
+  'code',
+  'code_challenge',
+  'error',
+  'error_description',
+  'error_uri',
+  'iss',
+  'state',
+] as const
 
 const SUCCESS_BODY =
   '<!doctype html><meta charset="utf-8"><title>OpenCloudBox</title><p>Authorization complete. You may close this window.</p>'
@@ -177,13 +189,20 @@ export class LoopbackCallbackListener implements LoopbackListener {
     const state = url.searchParams.get('state') ?? ''
     const providerError = url.searchParams.get('error')
     // Ambiguous shapes are refused: an authorization endpoint must emit each
-    // nonce parameter exactly once, and duplicated values would leave which
-    // copy governs undefined behavior.
-    for (const parameter of ['code', 'state', 'error'] as const) {
+    // security parameter exactly once, duplicated values would leave which
+    // copy governs undefined behavior, and success/error parameters must never
+    // coexist on one callback.
+    for (const parameter of CALLBACK_SECURITY_PARAMETERS) {
       if (url.searchParams.getAll(parameter).length > 1) {
         respond(response, 400, FAILURE_BODY)
         return
       }
+    }
+    if (providerError !== null && url.searchParams.get('code') !== null) {
+      // A callback carrying both `code` and `error` cannot be classified; the
+      // authorization server must send exactly one outcome.
+      respond(response, 400, FAILURE_BODY)
+      return
     }
     if (providerError !== null) {
       if (!timingSafeEqualText(state, this.#expectedState)) {

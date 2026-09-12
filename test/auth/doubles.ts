@@ -1,4 +1,5 @@
 import type { AuthMetadata, AuthMetadataRepository } from '../../src/auth/metadata.js'
+import type { SessionGate } from '../../src/auth/session-gate.js'
 import type { CliTokenPair } from '../../src/auth/oauth-client.js'
 import type {
   CredentialStore,
@@ -80,3 +81,30 @@ export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => voi
 }
 
 export const fixedClock = (now: number): { now: () => number } => ({ now: () => now })
+
+/** Tracks the maximum number of gate sections active concurrently. */
+export function concurrencyTrackingGate(): SessionGate & { maxConcurrent: () => number } {
+  let active = 0
+  let max = 0
+  let queued: Promise<unknown> = Promise.resolve()
+  const gate: SessionGate = (action) => {
+    // Serialize like the exclusive-file lock: each section waits for the
+    // previous one before its own critical section begins.
+    const run = () => {
+      active += 1
+      max = Math.max(max, active)
+      return action().finally(() => {
+        active -= 1
+      })
+    }
+    const result = queued.then(run, run)
+    queued = result.catch(() => undefined)
+    return result
+  }
+  return Object.assign(gate, { maxConcurrent: () => max })
+}
+
+/** A gate whose sections fail: proves the service still closes listeners. */
+export function failingGate(error: Error): SessionGate {
+  return () => Promise.reject(error)
+}

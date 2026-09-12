@@ -37,6 +37,7 @@ import { AuthMetadataStore } from './metadata.js'
 import { CliOAuthClient } from './oauth-client.js'
 import type { BrowserOpenerPort, FetchPort } from './ports.js'
 import { AuthSessionService } from './service.js'
+import { createSessionGate } from './session-gate.js'
 import { type RefreshGate, HostedTokenManager } from './token-manager.js'
 
 export interface AuthCommandFlags extends RuntimeFlags {
@@ -192,6 +193,10 @@ export function createAuthSessionService(
     listenerFactory: options.listenerFactory ?? startLoopbackListener,
     loginTimeoutMilliseconds: DEFAULT_LOGIN_TIMEOUT_MILLISECONDS,
     metadataStore: new AuthMetadataStore(join(stateDirectory, 'auth.json')),
+    // Login/status/logout snapshot-and-commit sections run under a bounded
+    // cross-process lock so two CLI processes never interleave their reads
+    // with another actor's credential/metadata writes.
+    sessionGate: createSessionGate(stateDirectory),
     oauth: (endpoints) =>
       new CliOAuthClient({
         clientId: endpoints.clientId,

@@ -59,9 +59,14 @@ emit secret values.
    `/callback` path. Only `GET /callback` on the exact `127.0.0.1:{port}` Host is
    accepted; wrong method/path/host, missing/wrong/replayed state, malformed
    codes, and provider `error` responses are refused and never resolve a code.
-   The `state` comparison is timing-safe. Exactly one short-lived callback is
-   accepted; the listener times out and releases the port on completion,
-   cancellation, or failure.
+   A callback carrying both `code` and `error` is refused as mutually
+   ambiguous, and duplicated occurrences of security-relevant callback
+   parameters (`code`, `state`, `error`, `iss`, `client_id`,
+   `code_challenge`, `error_description`, `error_uri`) are refused, because a
+   duplicated value would leave which copy governs undefined. The `state`
+   comparison is timing-safe. Exactly one short-lived callback is accepted;
+   the listener times out and releases the port on completion, cancellation,
+   Ctrl+C, or failure.
 3. Open the authorization URL with a platform process invocation that passes the
    URL as one argv item and never invokes a shell (`rundll32` on Windows, `open`
    on macOS, `xdg-open` on Linux). If opening fails, the authorization URL is
@@ -100,11 +105,25 @@ fails with `AUTH_FORBIDDEN`.
 Refresh rotation runs inside a bounded cross-process lock on the state
 directory (`auth.refresh.lock`), so two `ocbox` processes never present the
 same rotating refresh token simultaneously; contention surfaces as
-`OPERATION_CONFLICT` instead of an unbounded stall. Status and logout do not
-take that lock. Local cleanup failures on logout surface a typed
-`INVALID_STATE` failure rather than a false success, and login restores the
-exact prior credential/metadata state if its own commit fails in a way that
-cannot be rolled back cleanly.
+`OPERATION_CONFLICT` instead of an unbounded stall.
+
+Login/status/logout run their snapshot-and-commit sections inside a separate
+bounded cross-process lock (`auth.session.lock`): login snapshots prior state
+and commits (or rolls back) the credential/metadata pair under the lock, and
+status/logout read and clear under it, so a concurrent CLI process can never
+interleave a snapshot with another actor's commit. The session lock is always
+the outermost lock and the stores keep their own internal locks, so no lock
+cycle exists. Login deliberately releases the lock while the user is in the
+browser and re-acquires it only to commit.
+
+Local cleanup failures on logout, and a failed metadata clear on status,
+surface a typed `INVALID_STATE` failure rather than a false success. If login's
+rollback itself fails after a failed metadata commit, the commit failure is
+what callers see and the state directory may still hold the previous pair;
+running `ocbox auth logout` clears both stores regardless. The metadata store
+reports a cleared file only after its absence has been confirmed; transient
+Windows sharing violations are retried with backoff instead of being silently
+treated as success.
 
 ## Storage boundary
 
