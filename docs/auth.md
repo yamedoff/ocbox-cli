@@ -28,10 +28,15 @@ private commit `96ea2292…`) publishes `/auth/cli/authorize` only as an
 *authenticated POST* web-consent route and does not yet expose a browser-facing
 GET authorization page that the CLI could open. `login` therefore *requires* an
 explicit `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) naming the hosted
-browser authorization URL, validated to be an absolut, uncredentialed,
-query/fragment-free http(s) (https off-loopback) endpoint. The manual URL shape
-and the T16 web wiring must land before a default can exist; the CLI never
-pretends the API POST route is a browser page.
+browser authorization URL, validated to be an absolute, uncredentialed,
+query/fragment-free http(s) (https off-loopback) endpoint. No default page is
+derived — the protocol-only endpoint factory (`protocolEndpointsFromIssuer`)
+carries no browser URL at all, so an unopenable URL is unrepresentable. The
+canonical page and its query contract must land with the T16 web wiring before
+a default can exist; until then the OAuth-style query the CLI appends
+(`response_type`, `client_id`, `redirect_uri`, `scope`, `audience`, `state`,
+`code_challenge`) is a provisional CLI-side shape the T16 page must confirm,
+and the CLI never pretends the API POST route is a browser page.
 
 `login` prints/opens the authorization URL and waits for the loopback callback.
 `--no-browser` forces the manual-open path, which prints the same safe
@@ -104,6 +109,40 @@ The public client/types are generated deterministically from the reviewed
 private OpenAPI artifact pinned in [`openapi/PROVENANCE.json`](../openapi/PROVENANCE.json).
 `pnpm run api:check` verifies the SHA-256 checksum and regenerates the client to
 detect drift; it runs in CI and in `pnpm run test`.
+
+## Hosted provider composition (T14)
+
+The hosted data plane consumes one composed surface so login, token use, and
+the generated client can never disagree:
+
+- **One API base.** `protocolEndpointsFromIssuer` and the generated
+  `createClient` normalize the base identically (a trailing `/v1` is stripped
+  once, then `/v1/...` is appended per call). `createHostedApiClient` passes
+  the protocol issuer through untouched, keeping the generated client's
+  normalization the single URL model.
+- **One state directory.** `resolveAuthStateDirectory` (explicit directory,
+  then `--state-dir`/`OCBOX_STATE_DIR`, then the platform default) locates the
+  `auth.json` metadata and the `auth.refresh.lock` for both login and
+  `createHostedTokenManager`. Bearer material itself stays in the T3 platform
+  credential directory, never in the state directory.
+- **One credential identity.** The single CLI identity is the `hosted-oauth`
+  key (`ocbox`/`default`); the machine-level metadata stores that reference
+  plus issuer, client, `cli` audience, scopes, and expiry — never tokens,
+  codes, or verifiers. A stored credential minted by another issuer, or for
+  another audience, is refused before use.
+- **One transport.** `createAuthenticatedTransport` adapts
+  `AuthenticatedHttpClient` to the generated client's `ApiTransport` port:
+  bearer-only `Authorization`, origin *and* base-subpath binding, manual
+  redirects, bounded timeouts, and the single serialized refresh-and-retry for
+  replayable requests (idempotent methods or calls carrying an
+  `Idempotency-Key`). Per-operation keys flow through from the generated
+  client; `AbortSignal`s propagate; `ApiResult` request IDs and replay flags
+  surface per call. HTTP/auth error-to-catalogue mapping stays with the hosted
+  provider layer.
+- **One output contract.** Auth commands emit facts only
+  (logged-in/expiry/scopes/audience) through the shared JSON/JSONL/human
+  envelopes; secret values never reach stdout, stderr, diagnostics, fixtures,
+  or project state.
 
 ## Integration gate
 

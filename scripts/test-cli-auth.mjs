@@ -327,6 +327,8 @@ ${blocked.stderr.toString('utf8')}`
   )
 
   // 1. Successful manual-open login completed by a mock-loopback callback.
+  // The mock token server doubles as the browser page here (harness-only);
+  // the real hosted browser page does not exist yet (see docs/auth.md).
   const authorizeUrl = `${mock.url}/v1/auth/cli/authorize`
   let loginCode
   const login = await run(

@@ -5,7 +5,12 @@ import type {
 } from '../credentials/store.js'
 import { OcboxError } from '../errors/index.js'
 import type { ClockPort } from './clock.js'
-import { type AuthEndpoints, authEndpointsFromIssuer, buildAuthorizationUrl } from './config.js'
+import {
+  type AuthEndpoints,
+  buildAuthorizationUrl,
+  type HostedProtocolEndpoints,
+  protocolEndpointsFromIssuer,
+} from './config.js'
 import { newRequestId } from './errors.js'
 import type { EntropyPort } from './entropy.js'
 import type { LoopbackListener, LoopbackListenerFactory } from './loopback.js'
@@ -46,7 +51,7 @@ export interface AuthSessionServiceOptions {
   readonly credentialStore: CredentialStore
   readonly credentialKey: HostedOAuthCredentialKey
   readonly metadataStore: AuthMetadataRepository
-  readonly oauth: (endpoints: AuthEndpoints) => CliOAuthClientPort
+  readonly oauth: (endpoints: HostedProtocolEndpoints) => CliOAuthClientPort
   readonly entropy: EntropyPort
   readonly clock: ClockPort
   readonly browser: BrowserOpenerPort
@@ -192,7 +197,7 @@ export class AuthSessionService {
     if (credential !== null) {
       const endpoints =
         this.#options.endpoints ??
-        (metadata === null ? null : authEndpointsFromIssuer(metadata.issuer))
+        (metadata === null ? null : protocolEndpointsFromIssuer(metadata.issuer))
       if (endpoints !== null) {
         revocationAttempted = true
         const token = credential.refreshToken ?? credential.accessToken

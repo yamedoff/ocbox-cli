@@ -13,9 +13,14 @@ export const DEFAULT_EXPIRY_SKEW_MILLISECONDS = 30_000
 export const DEFAULT_LOGIN_TIMEOUT_MILLISECONDS = 5 * 60_000
 export const DEFAULT_HTTP_TIMEOUT_MILLISECONDS = 30_000
 
-export interface AuthEndpoints {
+/**
+ * Protocol endpoints derived from the pinned hosted OpenAPI contract root.
+ * This is the surface the hosted data plane (T14) consumes: token issuance,
+ * rotation, and revocation only. It deliberately carries no browser
+ * authorization page, because the pinned contract publishes none.
+ */
+export interface HostedProtocolEndpoints {
   readonly issuer: string
-  readonly authorizationEndpoint: string
   readonly tokenEndpoint: string
   readonly revocationEndpoint: string
   readonly clientId: string
@@ -23,12 +28,26 @@ export interface AuthEndpoints {
   readonly scopes: readonly string[]
 }
 
+/**
+ * Full login endpoints: the protocol surface plus the operator-supplied
+ * browser authorization page. There is no default page to derive: the pinned
+ * contract defines `/auth/cli/authorize` only as an authenticated POST
+ * web-consent route, so deriving a GET page from it would fabricate a URL
+ * that cannot complete a browser flow.
+ */
+export interface AuthEndpoints extends HostedProtocolEndpoints {
+  readonly authorizationEndpoint: string
+}
+
 export interface AuthEndpointOverrides {
-  readonly authorizationEndpoint?: string | undefined
   readonly tokenEndpoint?: string | undefined
   readonly revocationEndpoint?: string | undefined
   readonly clientId?: string | undefined
   readonly scopes?: readonly string[] | undefined
+}
+
+export interface BrowserAuthorizationEndpointOverride {
+  readonly authorizationEndpoint: string
 }
 
 /** Hosts for which cleartext http is tolerated (loopback-only development setups). */
@@ -115,14 +134,13 @@ function versionedApiBase(normalizedIssuer: string): string {
 }
 
 /** Derives the documented protocol endpoints from a single hosted API base URL. */
-export function authEndpointsFromIssuer(
+export function protocolEndpointsFromIssuer(
   issuer: string,
   overrides: AuthEndpointOverrides = {},
-): AuthEndpoints {
+): HostedProtocolEndpoints {
   const normalized = normalizeIssuer(issuer)
   const apiBase = versionedApiBase(normalized)
   for (const [name, value] of [
-    ['authorizationEndpoint', overrides.authorizationEndpoint],
     ['revocationEndpoint', overrides.revocationEndpoint],
     ['tokenEndpoint', overrides.tokenEndpoint],
   ] as const) {
@@ -130,13 +148,35 @@ export function authEndpointsFromIssuer(
   }
   return {
     audience: DEFAULT_AUDIENCE,
-    authorizationEndpoint:
-      overrides.authorizationEndpoint ?? joinEndpoint(apiBase, 'auth/cli/authorize'),
     clientId: overrides.clientId ?? DEFAULT_CLIENT_ID,
     issuer: normalized,
     revocationEndpoint: overrides.revocationEndpoint ?? joinEndpoint(apiBase, 'auth/revoke'),
     scopes: overrides.scopes ?? [...DEFAULT_SCOPES],
     tokenEndpoint: overrides.tokenEndpoint ?? joinEndpoint(apiBase, 'auth/cli/token'),
+  }
+}
+
+/**
+ * Resolves the full login endpoints. The browser authorization page is always
+ * explicit: no default is derived from the contract POST route, so a missing
+ * page fails closed instead of producing an unopenable URL.
+ */
+export function authEndpointsFromIssuer(
+  issuer: string,
+  overrides: AuthEndpointOverrides & BrowserAuthorizationEndpointOverride,
+): AuthEndpoints {
+  if (
+    typeof overrides.authorizationEndpoint !== 'string' ||
+    overrides.authorizationEndpoint.trim().length === 0
+  ) {
+    throw new TypeError(
+      'A hosted browser authorization URL is required; the pinned contract publishes no default page',
+    )
+  }
+  validateEndpointOverride('authorizationEndpoint', overrides.authorizationEndpoint)
+  return {
+    ...protocolEndpointsFromIssuer(issuer, overrides),
+    authorizationEndpoint: overrides.authorizationEndpoint,
   }
 }
 

@@ -4,23 +4,42 @@ import {
   buildAuthorizationUrl,
   DEFAULT_CLIENT_ID,
   normalizeIssuer,
+  protocolEndpointsFromIssuer,
 } from '../../src/auth/config.js'
+
+const BROWSER_PAGE = 'https://web.example.test/authorize'
 
 describe('auth endpoint configuration', () => {
   it('derives the documented protocol endpoints from the issuer under the pinned /v1 contract root', () => {
-    const endpoints = authEndpointsFromIssuer('https://api.example.test/')
+    const endpoints = protocolEndpointsFromIssuer('https://api.example.test/')
     expect(endpoints.clientId).toBe(DEFAULT_CLIENT_ID)
     expect(endpoints.audience).toBe('cli')
     expect(endpoints.issuer).toBe('https://api.example.test')
-    expect(endpoints.authorizationEndpoint).toBe('https://api.example.test/v1/auth/cli/authorize')
     expect(endpoints.tokenEndpoint).toBe('https://api.example.test/v1/auth/cli/token')
     expect(endpoints.revocationEndpoint).toBe('https://api.example.test/v1/auth/revoke')
   })
 
   it('normalizes a caller-supplied trailing /v1 away like the generated client', () => {
-    expect(authEndpointsFromIssuer('https://api.example.test/v1/').tokenEndpoint).toBe(
+    expect(protocolEndpointsFromIssuer('https://api.example.test/v1/').tokenEndpoint).toBe(
       'https://api.example.test/v1/auth/cli/token',
     )
+    expect(protocolEndpointsFromIssuer('https://api.example.test/deploy/v1').tokenEndpoint).toBe(
+      'https://api.example.test/deploy/v1/auth/cli/token',
+    )
+  })
+
+  it('never defaults the browser authorization page from the contract POST route', () => {
+    expect(() => authEndpointsFromIssuer('https://api.example.test', {} as never)).toThrow(
+      /browser authorization/i,
+    )
+  })
+
+  it('keeps an explicit cross-origin browser page while protocol endpoints stay on the API base', () => {
+    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+      authorizationEndpoint: BROWSER_PAGE,
+    })
+    expect(endpoints.authorizationEndpoint).toBe(BROWSER_PAGE)
+    expect(endpoints.tokenEndpoint).toBe('https://api.example.test/v1/auth/cli/token')
   })
 
   it('rejects credentialed, relative, non-http, and query-bearing issuers', () => {
@@ -46,7 +65,9 @@ describe('auth endpoint configuration', () => {
   })
 
   it('builds a deterministic authorization URL with no code or verifier', () => {
-    const endpoints = authEndpointsFromIssuer('https://api.example.test')
+    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+      authorizationEndpoint: BROWSER_PAGE,
+    })
     const url = new URL(
       buildAuthorizationUrl(endpoints, {
         codeChallenge: 'challenge-value',
@@ -54,8 +75,8 @@ describe('auth endpoint configuration', () => {
         state: 'state-value',
       }),
     )
-    expect(url.origin).toBe('https://api.example.test')
-    expect(url.pathname).toBe('/v1/auth/cli/authorize')
+    expect(url.origin).toBe('https://web.example.test')
+    expect(url.pathname).toBe('/authorize')
     expect(url.searchParams.get('response_type')).toBe('code')
     expect(url.searchParams.get('client_id')).toBe(DEFAULT_CLIENT_ID)
     expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:49152/callback')

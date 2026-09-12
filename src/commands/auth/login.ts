@@ -30,9 +30,7 @@ export default class AuthLogin extends OcboxCommand {
     const interrupt = this.abortOnInterrupt()
     try {
       const session = createAuthSessionService({
-        endpoints: resolveAuthEndpoints(flags, process.env, {
-          requireBrowserAuthorizationEndpoint: true,
-        }),
+        endpoints: resolveAuthEndpoints(flags, process.env),
         flags,
       })
       const result = await session.login({

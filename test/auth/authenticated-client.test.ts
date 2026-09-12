@@ -283,6 +283,44 @@ describe('authenticated HTTP client', () => {
     await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'a'.repeat(48) })
   })
 
+  it('binds the bearer to the configured base subtree on subpath deployments', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    let called = false
+    const fetchImpl: FetchPort = () => {
+      called = true
+      return Promise.resolve(new Response('ok'))
+    }
+    const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test/deploy',
+      fetch: fetchImpl,
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+
+    const allowed = await client.request({
+      method: 'GET',
+      url: 'https://api.test/deploy/v1/projects',
+    })
+    expect(allowed.response.status).toBe(200)
+    called = false
+    await expect(
+      client.request({ method: 'GET', url: 'https://api.test/other/v1/projects' }),
+    ).rejects.toBeInstanceOf(AuthBindingError)
+    await expect(
+      client.request({ method: 'GET', url: 'https://api.test/deployments/v1/projects' }),
+    ).rejects.toBeInstanceOf(AuthBindingError)
+    expect(called).toBe(false)
+    await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'a'.repeat(48) })
+  })
+
   it('never follows redirects with the bearer credential attached', async () => {
     const store = new MemoryCredentialStore()
     await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))

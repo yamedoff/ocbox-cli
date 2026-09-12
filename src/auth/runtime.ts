@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { RuntimeFlags } from '../cli/runtime.js'
 import { resolveStateDirectory } from '../cli/runtime.js'
 import {
@@ -28,6 +28,7 @@ import {
   DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
   DEFAULT_LOGIN_TIMEOUT_MILLISECONDS,
   DEFAULT_SCOPES,
+  type HostedProtocolEndpoints,
 } from './config.js'
 import { type EntropyPort, SystemEntropy } from './entropy.js'
 import { newRequestId } from './errors.js'
@@ -79,19 +80,17 @@ function configError(message: string): OcboxError {
 /**
  * Resolves the hosted API endpoints from flags/environment, or fails closed.
  *
- * When `requireBrowserAuthorizationEndpoint` is set (login), an explicit
- * browser authorization endpoint is mandatory: the pinned hosted OpenAPI
- * artifact (`96ea2292…`, servers `/v1`) defines `/auth/cli/authorize` only as
- * an *authenticated POST* web-consent route and publishes no browser-facing
- * GET authorization page that a CLI could open. Deriving one would fabricate a
- * URL that cannot work; until the hosted contract publishes the browser page
- * (T16 wiring), login fails closed unless `--authorize-url` (or
- * `OCBOX_AUTHORIZE_URL`) supplies the documented URL.
+ * An explicit browser authorization endpoint is always mandatory: the pinned
+ * hosted OpenAPI artifact (`96ea2292…`, servers `/v1`) defines
+ * `/auth/cli/authorize` only as an *authenticated POST* web-consent route and
+ * publishes no browser-facing GET authorization page that a CLI could open.
+ * Deriving one would fabricate a URL that cannot work; until the hosted
+ * contract publishes the browser page (T16 wiring), login fails closed unless
+ * `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) supplies the documented URL.
  */
 export function resolveAuthEndpoints(
   flags: AuthCommandFlags,
   environment: NodeJS.ProcessEnv = process.env,
-  options: { requireBrowserAuthorizationEndpoint?: boolean | undefined } = {},
 ): AuthEndpoints {
   const issuer =
     // Environment is an index signature; bracket access is required by TypeScript.
@@ -107,14 +106,12 @@ export function resolveAuthEndpoints(
     // Environment is an index signature; bracket access is required by TypeScript.
     // biome-ignore lint/complexity/useLiteralKeys: see explanation above
     environment['OCBOX_AUTHORIZE_URL']
-  if (options.requireBrowserAuthorizationEndpoint === true) {
-    if (typeof authorizeEndpoint !== 'string' || authorizeEndpoint.trim().length === 0) {
-      throw configError(
-        'The pinned hosted contract does not yet publish a browser authorization page; ' +
-          'pass --authorize-url (or OCBOX_AUTHORIZE_URL) with the documented hosted ' +
-          'authorization URL, or see docs/auth.md for the integration blocker',
-      )
-    }
+  if (typeof authorizeEndpoint !== 'string' || authorizeEndpoint.trim().length === 0) {
+    throw configError(
+      'The pinned hosted contract does not yet publish a browser authorization page; ' +
+        'pass --authorize-url (or OCBOX_AUTHORIZE_URL) with the documented hosted ' +
+        'authorization URL, or see docs/auth.md for the integration blocker',
+    )
   }
   try {
     return authEndpointsFromIssuer(issuer, {
@@ -122,9 +119,33 @@ export function resolveAuthEndpoints(
       revocationEndpoint: flags['revoke-url'],
       tokenEndpoint: flags['token-url'],
     })
-  } catch {
-    throw configError('The hosted API URL is not a valid uncredentialed http(s) base URL')
+  } catch (error) {
+    // Validator messages describe only the URL shape (protocol, host class,
+    // credentials, query/fragment) and never echo secret material, so they are
+    // safe to surface to the integrator diagnosing a rejected base URL.
+    const detail = error instanceof Error ? `: ${error.message}` : ''
+    throw configError(`The hosted API URL is not a valid uncredentialed http(s) base URL${detail}`)
   }
+}
+
+/**
+ * Resolves the state directory shared by login and the hosted token manager.
+ * An explicit directory wins, then command flags/environment, then the
+ * platform default — so T14 resolves exactly the metadata and refresh-lock
+ * location that `ocbox auth login` wrote. Bearer material itself still follows
+ * the T3 platform credential directory, never the state directory.
+ */
+export function resolveAuthStateDirectory(
+  options: {
+    readonly flags?: AuthCommandFlags | undefined
+    readonly stateDirectory?: string | undefined
+    readonly environment?: NodeJS.ProcessEnv | undefined
+  } = {},
+): string {
+  if (typeof options.stateDirectory === 'string' && options.stateDirectory.trim().length > 0) {
+    return resolve(options.stateDirectory)
+  }
+  return resolveStateDirectory(options.flags ?? {}, options.environment ?? process.env)
 }
 
 /** Builds the T3 credential store: OS adapter when present, protected file otherwise. */
@@ -183,7 +204,7 @@ export function createAuthSessionService(
 }
 
 export interface CreateHostedTokenManagerOptions {
-  readonly endpoints: AuthEndpoints
+  readonly endpoints: HostedProtocolEndpoints
   readonly credentialStore: CredentialStore
   readonly credentialKey?: HostedOAuthCredentialKey
   readonly clock?: ClockPort
@@ -192,6 +213,10 @@ export interface CreateHostedTokenManagerOptions {
   readonly requiredScopes?: readonly string[]
   readonly onRefreshed?: (credential: HostedOAuthCredential) => Promise<void> | void
   readonly environment?: NodeJS.ProcessEnv
+  /** Command flags carrying `--state-dir`; ignored when `stateDirectory` is set. */
+  readonly flags?: AuthCommandFlags | undefined
+  /** Explicit state directory; wins over flags/environment/platform default. */
+  readonly stateDirectory?: string | undefined
 }
 
 /**
@@ -242,7 +267,11 @@ export function createHostedTokenManager(
     timeoutMilliseconds: DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
     tokenEndpoint: options.endpoints.tokenEndpoint,
   })
-  const stateDirectory = resolveStateDirectory({}, environment)
+  const stateDirectory = resolveAuthStateDirectory({
+    environment,
+    flags: options.flags,
+    stateDirectory: options.stateDirectory,
+  })
   const metadataRepository = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
   return new HostedTokenManager({
     clock: options.clock ?? systemClock,

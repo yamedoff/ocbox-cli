@@ -76,16 +76,27 @@ function requestTargetOf(
     throw new TypeError('The request URL must not include a fragment')
   }
   if (apiOrigin !== undefined) {
-    let origin: string
+    let base: URL
     try {
-      origin = new URL(apiOrigin.trim()).origin
+      base = new URL(apiOrigin.trim())
     } catch {
       throw new TypeError('The configured API origin must be an absolute URL')
     }
-    if (url.origin !== origin) {
+    if (url.origin !== base.origin) {
       throw new AuthBindingError(
         undefined,
         'The request destination is not the configured hosted API; ' +
+          're-run `ocbox auth login` with the matching --api-url',
+      )
+    }
+    // Deployments mounted under a subpath bind the bearer to that subtree as
+    // well: a sibling path on the same host must never receive the credential.
+    // A root-mounted issuer keeps the previous origin-only behavior.
+    const prefix = base.pathname.replace(/\/+$/, '')
+    if (prefix !== '' && url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) {
+      throw new AuthBindingError(
+        undefined,
+        'The request destination is not under the configured hosted API base; ' +
           're-run `ocbox auth login` with the matching --api-url',
       )
     }

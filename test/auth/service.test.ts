@@ -95,7 +95,9 @@ function harness(
     clock: fixedClock(TEST_NOW),
     credentialKey: TEST_KEY,
     credentialStore: credentials,
-    endpoints: authEndpointsFromIssuer('https://api.example.test'),
+    endpoints: authEndpointsFromIssuer('https://api.example.test', {
+      authorizationEndpoint: 'https://web.example.test/authorize',
+    }),
     entropy: new CountingEntropy(),
     listenerFactory: startLoopbackListener,
     loginTimeoutMilliseconds: 5_000,
@@ -328,7 +330,9 @@ describe('auth session service failure legs', () => {
       clock: fixedClock(TEST_NOW),
       credentialKey: TEST_KEY,
       credentialStore: credentials,
-      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
       entropy: new CountingEntropy(),
       listenerFactory: startLoopbackListener,
       loginTimeoutMilliseconds: 5_000,
@@ -367,7 +371,9 @@ describe('auth session service failure legs', () => {
       clock: fixedClock(TEST_NOW),
       credentialKey: TEST_KEY,
       credentialStore: credentials,
-      endpoints: authEndpointsFromIssuer('https://api.example.test'),
+      endpoints: authEndpointsFromIssuer('https://api.example.test', {
+        authorizationEndpoint: 'https://web.example.test/authorize',
+      }),
       entropy: new CountingEntropy(),
       listenerFactory: startLoopbackListener,
       loginTimeoutMilliseconds: 5_000,
