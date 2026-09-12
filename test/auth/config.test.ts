@@ -89,4 +89,49 @@ describe('auth endpoint configuration', () => {
     expect(url.searchParams.has('code_verifier')).toBe(false)
     expect(url.searchParams.has('access_token')).toBe(false)
   })
+
+  it('allows a separate browser authorization origin but binds token/revocation overrides to the issuer origin', () => {
+    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+      authorizationEndpoint: 'https://login.example.test/authorize',
+    })
+    expect(endpoints.authorizationEndpoint).toBe('https://login.example.test/authorize')
+    expect(endpoints.tokenEndpoint).toBe('https://api.example.test/v1/auth/cli/token')
+    expect(endpoints.revocationEndpoint).toBe('https://api.example.test/v1/auth/revoke')
+
+    expect(() =>
+      authEndpointsFromIssuer('https://api.example.test', {
+        tokenEndpoint: 'https://evil.example.test/v1/auth/cli/token',
+      }),
+    ).toThrow(/configured hosted API origin/)
+    expect(() =>
+      authEndpointsFromIssuer('https://api.example.test', {
+        revocationEndpoint: 'https://evil.example.test/v1/auth/revoke',
+      }),
+    ).toThrow(/configured hosted API origin/)
+  })
+
+  it('accepts same-origin token and revocation overrides', () => {
+    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+      revocationEndpoint: 'https://api.example.test/v1/custom/revoke',
+      tokenEndpoint: 'https://api.example.test/v1/custom/token',
+    })
+    expect(endpoints.tokenEndpoint).toBe('https://api.example.test/v1/custom/token')
+    expect(endpoints.revocationEndpoint).toBe('https://api.example.test/v1/custom/revoke')
+  })
+
+  it('rejects credentialed, relative, and query/fragment endpoint overrides', () => {
+    expect(() =>
+      authEndpointsFromIssuer('https://api.example.test', {
+        tokenEndpoint: 'https://user:pass@api.example.test/v1/auth/cli/token',
+      }),
+    ).toThrow()
+    expect(() =>
+      authEndpointsFromIssuer('https://api.example.test', {
+        tokenEndpoint: 'https://api.example.test/v1/auth/cli/token?x=1',
+      }),
+    ).toThrow()
+    expect(() =>
+      authEndpointsFromIssuer('https://api.example.test', { revocationEndpoint: '/auth/revoke' }),
+    ).toThrow()
+  })
 })

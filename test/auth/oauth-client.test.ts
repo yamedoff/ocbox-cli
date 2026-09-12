@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CliOAuthClient } from '../../src/auth/oauth-client.js'
+import { CliOAuthClient, withRedirectDisabled } from '../../src/auth/oauth-client.js'
 import type { FetchPort } from '../../src/auth/ports.js'
 import { OcboxError } from '../../src/errors/index.js'
 
@@ -185,6 +185,64 @@ describe('CLI OAuth client', () => {
       { status: 200 },
     )
     const client = clientWith(() => Promise.resolve(oversizedOk))
+    await expect(client.revoke({ token: 'r'.repeat(48) })).rejects.toMatchObject({
+      code: 'PROVIDER_AUTH',
+    })
+  })
+
+  it('forces manual redirects even when the init tries to override them', () => {
+    expect(withRedirectDisabled({ redirect: 'follow' }).redirect).toBe('manual')
+    expect(withRedirectDisabled({ redirect: 'error', method: 'POST' })).toMatchObject({
+      method: 'POST',
+      redirect: 'manual',
+    })
+  })
+
+  it('reports caller cancellation distinctly from a transport timeout', async () => {
+    const hanging: FetchPort = (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const onAbort = (): void => reject(new Error('aborted'))
+        if (init?.signal?.aborted) onAbort()
+        else init?.signal?.addEventListener('abort', onAbort, { once: true })
+      })
+    const controller = new AbortController()
+    const client = clientWith(hanging, 10_000)
+    const pending = client.exchangeAuthorizationCode({
+      ...EXCHANGE,
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(pending).rejects.not.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' })
+  })
+
+  it('rejects a successful revocation body beyond the wire ceiling instead of silently succeeding', async () => {
+    const oversizedOk = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          // 384 KiB, well above both the 64 KiB protocol ceiling and the old
+          // 256 KiB read shield that previously reset the body to empty.
+          for (let chunk = 0; chunk < 24; chunk += 1) {
+            controller.enqueue(new Uint8Array(16 * 1024).fill(0x64))
+          }
+          controller.close()
+        },
+      }),
+      { status: 200 },
+    )
+    const client = clientWith(() => Promise.resolve(oversizedOk))
+    const error = await client.revoke({ token: 'r'.repeat(48) }).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('PROVIDER_AUTH')
+    expect(JSON.stringify(error)).not.toContain('dddddddd')
+  })
+
+  it('bounds multibyte success bodies by bytes, not UTF-16 length', async () => {
+    // 20,000 four-byte code points: 80,000 UTF-8 bytes but only 40,000 UTF-16
+    // code units, so a `text.length` check would wrongly accept it.
+    const body = '\u{1F600}'.repeat(20_000)
+    expect(body.length).toBeLessThan(64 * 1024)
+    const client = clientWith(() => Promise.resolve(new Response(body, { status: 200 })))
     await expect(client.revoke({ token: 'r'.repeat(48) })).rejects.toMatchObject({
       code: 'PROVIDER_AUTH',
     })

@@ -312,8 +312,17 @@ export interface CreateAuthenticatedHttpClientOptions {
 export function createAuthenticatedHttpClient(
   options: CreateAuthenticatedHttpClientOptions,
 ): AuthenticatedHttpClient {
+  const apiOrigin = options.apiOrigin ?? options.tokens.boundIssuer
+  if (apiOrigin === undefined) {
+    // Destination binding is mandatory; an unbound token manager must not yield
+    // a client that could attach the bearer to any URL.
+    throw configError(
+      'Cannot build the authenticated API client without a bound hosted API origin; ' +
+        'configure the hosted API URL or pass an explicit apiOrigin',
+    )
+  }
   return new AuthenticatedHttpClient({
-    apiOrigin: options.apiOrigin ?? options.tokens.boundIssuer,
+    apiOrigin,
     fetch: options.fetch ?? defaultFetch,
     timeoutMilliseconds: options.timeoutMilliseconds ?? DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
     tokens: options.tokens,

@@ -6,15 +6,12 @@ import type { FetchPort } from './ports.js'
 
 const MAX_RESPONSE_BYTES = 64 * 1024
 /**
- * Wire shield above the protocol parse ceiling. Token-pair payloads must parse
- * within `MAX_RESPONSE_BYTES` (64 KiB, matching the pinned contract-shape
- * bound); the larger wire ceiling exists only so that oversize material can be
- * detected and safely discarded (stopped mid-stream) instead of trickling
- * through the socket unboundedly. A successful revocation response must also
- * stay within the 64 KiB protocol ceiling, since the contract defines it as
- * status 204/200 with no meaningful content.
+ * The protocol parse ceiling is also the wire ceiling: token-pair payloads must
+ * parse within `MAX_RESPONSE_BYTES` (64 KiB, matching the pinned contract-shape
+ * bound) and a successful revocation response carries no meaningful content, so
+ * anything above 64 KiB is detected and discarded (stopped mid-stream) instead
+ * of trickling through the socket or being mistaken for success.
  */
-const MAX_BODY_READ_BYTES = 256 * 1024
 const PROVIDER_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/
 
 /** Strict runtime shape of the documented CLI token pair. */
@@ -76,8 +73,9 @@ function unsafeMessage(message: string): OcboxError {
 }
 
 /**
- * Reads at most `ceilingBytes` from the response and aborts the body beyond
- * that, so an oversized stream cannot buffer unboundedly in the CLI process.
+ * Reads at most the protocol ceiling (`MAX_RESPONSE_BYTES`) from the response
+ * and cancels the body beyond that, so an oversized stream cannot buffer
+ * unboundedly in the CLI process or be mistaken for a valid payload.
  */
 async function readBoundedResponseText(response: Response): Promise<string> {
   const body = response.body
@@ -90,7 +88,7 @@ async function readBoundedResponseText(response: Response): Promise<string> {
     const { done, value } = await reader.read()
     if (done) break
     bytes += value.byteLength
-    if (bytes > MAX_BODY_READ_BYTES) {
+    if (bytes > MAX_RESPONSE_BYTES) {
       await reader.cancel().catch(() => undefined)
       throw new OversizedResponseError()
     }
@@ -107,10 +105,14 @@ class OversizedResponseError extends Error {
   }
 }
 
-function withRedirectDisabled(init: RequestInit): RequestInit {
+/**
+ * Forces `redirect: 'manual'` on every protocol request. The redirect policy is
+ * applied last so a caller-supplied `init` can never override it.
+ */
+export function withRedirectDisabled(init: RequestInit): RequestInit {
   // OAuth token/revocation endpoints must never hand credentials across a
   // redirect; manual-mode makes any 3xx surface as an opaque failure instead.
-  return { redirect: 'manual', ...init }
+  return { ...init, redirect: 'manual' }
 }
 
 /**
@@ -157,27 +159,33 @@ interface TimeoutSignal {
   readonly signal: AbortSignal
   readonly dispose: () => void
   readonly didTimeout: () => boolean
+  readonly didCancel: () => boolean
 }
 
 function withTimeout(signal: AbortSignal | undefined, milliseconds: number): TimeoutSignal {
   const controller = new AbortController()
   let timedOut = false
+  let cancelled = false
   const timer = setTimeout(() => {
     timedOut = true
     controller.abort()
   }, milliseconds)
   timer.unref?.()
-  const onAbort = (): void => controller.abort()
+  const onAbort = (): void => {
+    cancelled = true
+    controller.abort()
+  }
   if (signal !== undefined) {
-    if (signal.aborted) controller.abort()
+    if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
   }
   return {
+    didCancel: () => cancelled,
+    didTimeout: () => timedOut,
     dispose: () => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
     },
-    didTimeout: () => timedOut,
     signal: controller.signal,
   }
 }
@@ -243,20 +251,21 @@ export class CliOAuthClient implements CliOAuthClientPort {
         }),
       )
       let text = ''
+      let readFailed = false
       try {
         text = await readBoundedResponseText(response)
       } catch {
-        text = ''
+        readFailed = true
       }
-      if (!response.ok) throw this.#mapError(response, text, timeout.didTimeout())
-      // The contract defines no response content; a bounded but oversized
-      // successful body is a protocol violation, never accepted silently.
-      if (text.length > MAX_RESPONSE_BYTES) {
-        throw unsafeMessage('The revocation response was not understood')
-      }
+      if (timeout.didTimeout() || timeout.didCancel()) throw this.#transportError(timeout)
+      if (!response.ok) throw this.#mapError(response, text)
+      // The contract defines no meaningful success content (204/200); a body
+      // that cannot be read within the 64 KiB ceiling is a protocol violation,
+      // never accepted silently as success.
+      if (readFailed) throw unsafeMessage('The revocation response was not understood')
     } catch (error) {
       if (error instanceof OcboxError) throw error
-      throw this.#transportError(timeout.didTimeout())
+      throw this.#transportError(timeout)
     } finally {
       timeout.dispose()
     }
@@ -277,16 +286,18 @@ export class CliOAuthClient implements CliOAuthClientPort {
           signal: timeout.signal,
         }),
       )
-      let text: string
+      let text = ''
+      let readFailed = false
       try {
         text = await readBoundedResponseText(response)
       } catch {
         // The bounded read shield (response size/tearing) is not diagnostic;
         // the payload can never be trusted or echoed.
-        throw unsafeMessage('The authentication response was not understood')
+        readFailed = true
       }
-      if (!response.ok) throw this.#mapError(response, text, timeout.didTimeout())
-      if (text.length === 0 || text.length > MAX_RESPONSE_BYTES) {
+      if (timeout.didTimeout() || timeout.didCancel()) throw this.#transportError(timeout)
+      if (!response.ok) throw this.#mapError(response, text)
+      if (readFailed || text.length === 0) {
         throw unsafeMessage('The authentication response was not understood')
       }
       let parsed: unknown
@@ -300,14 +311,13 @@ export class CliOAuthClient implements CliOAuthClientPort {
       return result.data
     } catch (error) {
       if (error instanceof OcboxError) throw error
-      throw this.#transportError(timeout.didTimeout())
+      throw this.#transportError(timeout)
     } finally {
       timeout.dispose()
     }
   }
 
-  #mapError(response: Response, text: string, timedOut: boolean): OcboxError {
-    if (timedOut) return this.#transportError(true)
+  #mapError(response: Response, text: string): OcboxError {
     const envelope = errorFromBody(text)
     const requestId = newRequestId()
     const providerCode = providerCodeOf(envelope)
@@ -358,17 +368,25 @@ export class CliOAuthClient implements CliOAuthClientPort {
     }
   }
 
-  #transportError(timedOut: boolean): OcboxError {
-    return timedOut
-      ? new OcboxError({
-          code: 'PROVIDER_TIMEOUT',
-          message: 'The hosted authentication service did not respond in time',
-          requestId: newRequestId(),
-        })
-      : new OcboxError({
-          code: 'PROVIDER_UNAVAILABLE',
-          message: 'The hosted authentication service could not be reached',
-          requestId: newRequestId(),
-        })
+  #transportError(timeout: TimeoutSignal): OcboxError {
+    if (timeout.didTimeout()) {
+      return new OcboxError({
+        code: 'PROVIDER_TIMEOUT',
+        message: 'The hosted authentication service did not respond in time',
+        requestId: newRequestId(),
+      })
+    }
+    if (timeout.didCancel()) {
+      return new OcboxError({
+        code: 'OPERATION_CANCELLED',
+        message: 'The authentication request was cancelled',
+        requestId: newRequestId(),
+      })
+    }
+    return new OcboxError({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: 'The hosted authentication service could not be reached',
+      requestId: newRequestId(),
+    })
   }
 }

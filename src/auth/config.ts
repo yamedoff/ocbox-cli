@@ -91,12 +91,16 @@ function joinEndpoint(issuer: string, path: string): string {
  * Validates an operator-supplied endpoint override. Protocol endpoint overrides
  * carry codes, verifiers, and refresh material, so they must be absolute
  * uncredentialed, query/fragment-free http(s) URLs, and cleartext http stays
- * restricted to loopback hosts exactly like the issuer itself. A different
- * origin than the issuer is allowed (hosted deployments may serve the browser
- * authorization page from a separate web origin) but every other form fails
- * closed instead of silently handing token material to a malformed target.
+ * restricted to loopback hosts exactly like the issuer itself. When an
+ * `expectedOrigin` is supplied the override must resolve to exactly that
+ * origin; everything else fails closed instead of silently handing token
+ * material to a malformed or foreign target.
  */
-export function validateEndpointOverride(name: string, value: string): void {
+export function validateEndpointOverride(
+  name: string,
+  value: string,
+  options: { readonly expectedOrigin?: string | undefined } = {},
+): void {
   let parsed: URL
   try {
     parsed = new URL(value.trim())
@@ -117,6 +121,9 @@ export function validateEndpointOverride(name: string, value: string): void {
   }
   if (parsed.search !== '' || parsed.hash !== '') {
     throw new TypeError(`The ${name} override must not include a query or fragment`)
+  }
+  if (options.expectedOrigin !== undefined && parsed.origin !== options.expectedOrigin) {
+    throw new TypeError(`The ${name} override must use the configured hosted API origin`)
   }
 }
 
@@ -140,11 +147,22 @@ export function protocolEndpointsFromIssuer(
 ): HostedProtocolEndpoints {
   const normalized = normalizeIssuer(issuer)
   const apiBase = versionedApiBase(normalized)
+  const issuerOrigin = new URL(normalized).origin
   for (const [name, value] of [
     ['revocationEndpoint', overrides.revocationEndpoint],
     ['tokenEndpoint', overrides.tokenEndpoint],
   ] as const) {
-    if (value !== undefined) validateEndpointOverride(name, value)
+    if (value === undefined) continue
+    validateEndpointOverride(name, value, {
+      // A browser authorization page may legitimately live on a separate web
+      // origin: only public parameters (client id, redirect URI, state, PKCE
+      // challenge) travel there, never a code, verifier, or token. The token
+      // and revocation endpoints receive authorization codes, PKCE verifiers,
+      // refresh tokens, and revoke tokens, and the pinned contract publishes
+      // them only under the issuer's own `/v1` root, so a cross-origin override
+      // for them has no contract evidence and must fail closed.
+      ...(name === 'authorizationEndpoint' ? {} : { expectedOrigin: issuerOrigin }),
+    })
   }
   return {
     audience: DEFAULT_AUDIENCE,

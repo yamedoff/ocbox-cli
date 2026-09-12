@@ -1,9 +1,16 @@
 import { OcboxError } from '../errors/index.js'
+import { normalizeIssuer } from './config.js'
 import { AuthBindingError, LoginRequiredError, newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
 import type { HostedTokenManager } from './token-manager.js'
 
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE'])
+/**
+ * The pinned contract constrains `Idempotency-Key` to 1-128 characters from
+ * `[A-Za-z0-9._:-]` (`components.parameters.IdempotencyKey`). A key outside
+ * that shape cannot justify a replay/refresh and must never reach the wire.
+ */
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
 
 export interface AuthenticatedRequest {
   readonly method: string
@@ -42,24 +49,35 @@ export interface AuthenticatedHttpClientOptions {
   readonly fetch: FetchPort
   readonly timeoutMilliseconds: number
   /**
-   * Certified API origin the bearer credential was minted for (derived from
-   * the configured hosted endpoints). When set, every request URL is refused
-   * unless it resolves to exactly this origin, so bearer material can never be
-   * attached to another destination by a misconfigured or hostile caller.
+   * Certified API base the bearer credential was minted for (derived from the
+   * configured hosted endpoints). Mandatory: without it a direct constructor
+   * could attach the bearer to any URL. The value is validated like the issuer
+   * (absolute uncredentialed http(s), no query/fragment, https off-loopback)
+   * and every request URL is refused unless it resolves to the configured
+   * origin and normalized base-path subtree. The path check prevents a bearer
+   * minted for a subpath deployment from reaching a same-origin sibling app.
    */
-  readonly apiOrigin?: string | undefined
+  readonly apiOrigin: string
+}
+
+function assertContractIdempotencyKey(value: string): void {
+  if (!IDEMPOTENCY_KEY_PATTERN.test(value)) {
+    throw new TypeError('The idempotency key must be 1-128 characters from [A-Za-z0-9._:-]')
+  }
+}
+
+/** Validates and canonicalizes the configured API base before any token read. */
+function certifiedApiBase(apiOrigin: string): URL {
+  return new URL(normalizeIssuer(apiOrigin))
 }
 
 /**
  * Resolves the wire target and binds it to the certified API origin. Requests
- * must be absolute http(s), uncredentialed, fragment-free, and (when bound)
- * aimed at exactly the configured origin; otherwise the bearer credential
- * would be sent to an unexpected destination.
+ * must be absolute http(s), uncredentialed, fragment-free, and aimed at exactly
+ * the configured origin; otherwise the bearer credential would be sent to an
+ * unexpected destination.
  */
-function requestTargetOf(
-  request: Pick<AuthenticatedRequest, 'url'>,
-  apiOrigin: string | undefined,
-): URL {
+function requestTargetOf(request: Pick<AuthenticatedRequest, 'url'>, apiBase: URL): URL {
   let url: URL
   try {
     url = request.url instanceof URL ? request.url : new URL(String(request.url))
@@ -75,31 +93,23 @@ function requestTargetOf(
   if (url.hash !== '') {
     throw new TypeError('The request URL must not include a fragment')
   }
-  if (apiOrigin !== undefined) {
-    let base: URL
-    try {
-      base = new URL(apiOrigin.trim())
-    } catch {
-      throw new TypeError('The configured API origin must be an absolute URL')
-    }
-    if (url.origin !== base.origin) {
-      throw new AuthBindingError(
-        undefined,
-        'The request destination is not the configured hosted API; ' +
-          're-run `ocbox auth login` with the matching --api-url',
-      )
-    }
-    // Deployments mounted under a subpath bind the bearer to that subtree as
-    // well: a sibling path on the same host must never receive the credential.
-    // A root-mounted issuer keeps the previous origin-only behavior.
-    const prefix = base.pathname.replace(/\/+$/, '')
-    if (prefix !== '' && url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) {
-      throw new AuthBindingError(
-        undefined,
-        'The request destination is not under the configured hosted API base; ' +
-          're-run `ocbox auth login` with the matching --api-url',
-      )
-    }
+  if (url.origin !== apiBase.origin) {
+    throw new AuthBindingError(
+      undefined,
+      'The request destination is not the configured hosted API; ' +
+        're-run `ocbox auth login` with the matching --api-url',
+    )
+  }
+  // URL parsing canonicalizes dot segments before this boundary check. A root
+  // deployment binds by origin; a subpath deployment also binds the bearer to
+  // that exact path segment or one of its descendants.
+  const prefix = apiBase.pathname.replace(/\/+$/, '')
+  if (prefix !== '' && url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) {
+    throw new AuthBindingError(
+      undefined,
+      'The request destination is not under the configured hosted API base; ' +
+        're-run `ocbox auth login` with the matching --api-url',
+    )
   }
   return url
 }
@@ -108,27 +118,33 @@ interface TimeoutSignal {
   readonly signal: AbortSignal
   readonly dispose: () => void
   readonly didTimeout: () => boolean
+  readonly didCancel: () => boolean
 }
 
 function withTimeout(signal: AbortSignal | undefined, milliseconds: number): TimeoutSignal {
   const controller = new AbortController()
   let timedOut = false
+  let cancelled = false
   const timer = setTimeout(() => {
     timedOut = true
     controller.abort()
   }, milliseconds)
   timer.unref?.()
-  const onAbort = (): void => controller.abort()
+  const onAbort = (): void => {
+    cancelled = true
+    controller.abort()
+  }
   if (signal !== undefined) {
-    if (signal.aborted) controller.abort()
+    if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
   }
   return {
+    didCancel: () => cancelled,
+    didTimeout: () => timedOut,
     dispose: () => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
     },
-    didTimeout: () => timedOut,
     signal: controller.signal,
   }
 }
@@ -138,22 +154,29 @@ function withTimeout(signal: AbortSignal | undefined, milliseconds: number): Tim
  * configured API origin. Eligibility for rotation and the single retry is
  * derived before any rotation happens: refresh happens exactly when the
  * request could be safely replayed (idempotent/safe methods, or any method
- * carrying an idempotency key), and a repeatedly-401ing request clears local
- * material only when no concurrent actor has rotated it since. Redirects are
- * never followed, so bearer material cannot leak to an alternate destination.
- * Refresh reuse or revocation clears material and surfaces a typed
- * login-required error.
+ * carrying a contract-valid idempotency key), and a repeatedly-401ing request
+ * clears local material only when no concurrent actor has rotated it since.
+ * Redirects are never followed, so bearer material cannot leak to an alternate
+ * destination. Refresh reuse or revocation clears material and surfaces a
+ * typed login-required error. Caller cancellation and transport timeouts are
+ * reported distinctly (`OPERATION_CANCELLED` vs `PROVIDER_TIMEOUT`).
  */
 export class AuthenticatedHttpClient {
   readonly #options: AuthenticatedHttpClientOptions
+  readonly #apiBase: URL
 
   constructor(options: AuthenticatedHttpClientOptions) {
     this.#options = options
+    this.#apiBase = certifiedApiBase(options.apiOrigin)
   }
 
   async request(request: AuthenticatedRequest): Promise<AuthenticatedFetchResult> {
+    // Reject a non-contract idempotency key before it can authorize a retry.
+    if (request.idempotencyKey !== undefined) {
+      assertContractIdempotencyKey(request.idempotencyKey)
+    }
     // Destination binding happens before any credential is read from the store.
-    const target = requestTargetOf(request, this.#options.apiOrigin)
+    const target = requestTargetOf(request, this.#apiBase)
     const credential = await this.#options.tokens.getValidCredential(request.signal)
     const usedToken = credential.accessToken
     let result = await this.#send(request, target, usedToken)
@@ -235,19 +258,31 @@ export class AuthenticatedHttpClient {
       }
     } catch (error) {
       if (error instanceof OcboxError) throw error
-      throw timeout.didTimeout()
-        ? new OcboxError({
-            code: 'PROVIDER_TIMEOUT',
-            message: 'The hosted service did not respond in time',
-            requestId: newRequestId(),
-          })
-        : new OcboxError({
-            code: 'PROVIDER_UNAVAILABLE',
-            message: 'The hosted service could not be reached',
-            requestId: newRequestId(),
-          })
+      throw this.#transportError(timeout)
     } finally {
       timeout.dispose()
     }
+  }
+
+  #transportError(timeout: TimeoutSignal): OcboxError {
+    if (timeout.didTimeout()) {
+      return new OcboxError({
+        code: 'PROVIDER_TIMEOUT',
+        message: 'The hosted service did not respond in time',
+        requestId: newRequestId(),
+      })
+    }
+    if (timeout.didCancel()) {
+      return new OcboxError({
+        code: 'OPERATION_CANCELLED',
+        message: 'The hosted service request was cancelled',
+        requestId: newRequestId(),
+      })
+    }
+    return new OcboxError({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: 'The hosted service could not be reached',
+      requestId: newRequestId(),
+    })
   }
 }

@@ -38,6 +38,7 @@ describe('authenticated HTTP client', () => {
       )
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -66,6 +67,7 @@ describe('authenticated HTTP client', () => {
       return Promise.resolve(new Response('no', { status: 401 }))
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -95,6 +97,7 @@ describe('authenticated HTTP client', () => {
       return Promise.resolve(new Response('no', { status: 401 }))
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -130,6 +133,7 @@ describe('authenticated HTTP client', () => {
       return Promise.resolve(new Response('no', { status: 401 }))
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -168,6 +172,7 @@ describe('authenticated HTTP client', () => {
       return Promise.resolve(new Response('ok', { status: 200 }))
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -205,6 +210,7 @@ describe('authenticated HTTP client', () => {
           : new Response('ok', { status: 200 }),
       )
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -237,6 +243,7 @@ describe('authenticated HTTP client', () => {
       )
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -350,6 +357,7 @@ describe('authenticated HTTP client', () => {
       )
     }
     const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
       fetch: fetchImpl,
       timeoutMilliseconds: 1_000,
       tokens,
@@ -395,5 +403,155 @@ describe('authenticated HTTP client', () => {
     expect(result.response.status).toBe(401)
     expect(calls).toBe(2)
     await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'z'.repeat(48) })
+  })
+
+  it('requires a validated API base and rejects a malformed or credentialed configured base', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    const fetchImpl: FetchPort = () => Promise.resolve(new Response('ok', { status: 200 }))
+    for (const apiOrigin of [
+      'not-a-url',
+      'ftp://api.test',
+      'https://user:pass@api.test',
+      'https://api.test/?x=1',
+      'https://api.test/#frag',
+    ]) {
+      expect(
+        () =>
+          new AuthenticatedHttpClient({
+            apiOrigin,
+            fetch: fetchImpl,
+            timeoutMilliseconds: 1_000,
+            tokens,
+          }),
+      ).toThrow()
+    }
+  })
+
+  it('rejects a non-contract idempotency key before reading or sending credentials', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const refresh = vi.fn(() => Promise.resolve(tokenPair('b')))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh,
+      store,
+    })
+    let called = false
+    const fetchImpl: FetchPort = () => {
+      called = true
+      return Promise.resolve(new Response('ok', { status: 200 }))
+    }
+    const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: fetchImpl,
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+    for (const idempotencyKey of ['', 'has space', 'a'.repeat(129), 'line\nbreak', 'semi;colon']) {
+      await expect(
+        client.request({
+          idempotencyKey,
+          method: 'POST',
+          url: 'https://api.test/v1/projects',
+        }),
+      ).rejects.toBeInstanceOf(TypeError)
+    }
+    // An invalid key must not authorize a retry or touch the credential store.
+    expect(called).toBe(false)
+    expect(refresh).not.toHaveBeenCalled()
+    await expect(store.get(TEST_KEY)).resolves.toMatchObject({ accessToken: 'a'.repeat(48) })
+  })
+
+  it('reports caller cancellation as OPERATION_CANCELLED and a transport timeout as PROVIDER_TIMEOUT', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    const hanging: FetchPort = (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const onAbort = (): void => reject(new Error('aborted'))
+        if (init?.signal?.aborted) onAbort()
+        else init?.signal?.addEventListener('abort', onAbort, { once: true })
+      })
+
+    const cancelling = new AbortController()
+    const cancelClient = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: hanging,
+      timeoutMilliseconds: 10_000,
+      tokens,
+    })
+    const pending = cancelClient.request({
+      method: 'GET',
+      signal: cancelling.signal,
+      url: 'https://api.test/v1/projects',
+    })
+    cancelling.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+
+    const timeoutClient = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: hanging,
+      timeoutMilliseconds: 5,
+      tokens,
+    })
+    await expect(
+      timeoutClient.request({ method: 'GET', url: 'https://api.test/v1/projects' }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' })
+  })
+
+  it('never follows or replays credentials across a redirect on the post-refresh retry', async () => {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    const seen: Array<{ auth: string; redirect: string | undefined; url: string }> = []
+    const fetchImpl: FetchPort = (input, init) => {
+      seen.push({ auth: authHeader(init), redirect: init?.redirect, url: String(input) })
+      return Promise.resolve(
+        seen.length === 1
+          ? new Response('unauthorized', { status: 401 })
+          : new Response('moved', {
+              headers: { location: 'https://attacker.test/v1/steal' },
+              status: 302,
+            }),
+      )
+    }
+    const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: fetchImpl,
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+    await expect(
+      client.request({ method: 'GET', url: 'https://api.test/v1/projects' }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_AUTH' })
+    expect(seen).toHaveLength(2)
+    expect(seen.every((call) => call.redirect === 'manual')).toBe(true)
+    expect(seen.map((call) => call.url)).toEqual([
+      'https://api.test/v1/projects',
+      'https://api.test/v1/projects',
+    ])
+    expect(seen.every((call) => !call.url.includes('attacker'))).toBe(true)
   })
 })

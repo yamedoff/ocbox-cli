@@ -19,8 +19,14 @@ is normalized (a trailing `/v1` is removed first, exactly like the generated
 client) and served under `/v1/auth/...`. Cleartext `http` is only accepted for
 literal loopback hosts (`127.0.0.1`, `localhost`, `[::1]`), so codes, PKCE
 verifiers, and token pairs never cross a non-loopback network hop in cleartext.
-The registered public client is `ocb_cli` with the single `source:read` scope
-and the `cli` audience; the authorized redirect is exactly
+Token and revocation endpoint overrides (`--token-url`/`--revoke-url`, and the
+programmatic overrides) must resolve to the configured API origin: the pinned
+contract publishes no separate token/revoke host, and those endpoints receive
+codes, verifiers, refresh tokens, and revoke tokens. A browser authorization
+override (`--authorize-url`) may use a separate origin, because only public
+parameters (client id, redirect URI, state, PKCE challenge) travel to the
+browser page. The registered public client is `ocb_cli` with the single
+`source:read` scope and the `cli` audience; the authorized redirect is exactly
 `http://127.0.0.1:{randomPort}/callback`.
 
 **Integration blocker (fail closed).** The pinned hosted contract (`/v1`,
@@ -30,7 +36,7 @@ GET authorization page that the CLI could open. `login` therefore *requires* an
 explicit `--authorize-url` (or `OCBOX_AUTHORIZE_URL`) naming the hosted
 browser authorization URL, validated to be an absolute, uncredentialed,
 query/fragment-free http(s) (https off-loopback) endpoint. No default page is
-derived — the protocol-only endpoint factory (`protocolEndpointsFromIssuer`)
+derived: the protocol-only endpoint factory (`protocolEndpointsFromIssuer`)
 carries no browser URL at all, so an unopenable URL is unrepresentable. The
 canonical page and its query contract must land with the T16 web wiring before
 a default can exist; until then the OAuth-style query the CLI appends
@@ -68,28 +74,26 @@ There is deliberately no out-of-band or pasted-code fallback.
 ## Token lifecycle
 
 Access material is attached only as `Authorization: Bearer`, only to the
-configured API origin (any other absolute URL is refused before the credential
-is even read), and never across redirects: requests run with manual redirect
-mode and any 3xx is an opaque failure. Expiry skew is enforced before use. On a
-401, rotation and the single retry are justified only when the request is
-replay-safe (idempotent/safe methods, or any method carrying a contract
-idempotency key); POST/PATCH without a key is surfaced as-is without burning a
-refresh family. Concurrent readers collapse into one serialized refresh —
-in-process and across separate CLI processes through the state-directory file
-lock — and a caller that finds a fresher generation already rotated by another
-process adopts it instead of presenting the same refresh token again. A
-401-triggered rotation is forced only while the store still holds exactly the
-token the server rejected. Waiting for that lock is cancellable and surfaces
-`OPERATION_CANCELLED` when the caller's signal aborts. A terminal second 401
-clears local material only when no concurrent actor already stored newer
-material — the comparison and deletion run as one critical section under the
-same lock. Refresh reuse or revocation clears local
-material and returns a typed login-required error (`AUTH_REQUIRED`). Requests
-are bounded by a timeout and expose the server request ID and `Retry-After`
-hints. Issuer, client, credential identity, audience, and required scopes are
-bound before a credential is used: the machine-level metadata must attest that
-the stored credential was minted by the configured issuer and client for this
-credential identity, or use fails with `AUTH_FORBIDDEN`.
+mandatory configured API base. A foreign origin or same-origin sibling outside
+a configured deployment subpath is refused before the credential is read.
+Requests use manual redirect mode, applied by the auth layer so credentials are
+never replayed across a 3xx. The configured base is validated like the issuer.
+An idempotency key is validated against the pinned contract constraint (1-128
+characters from `[A-Za-z0-9._:-]`) before it can reach the wire or justify a
+retry. On a 401, rotation and the single retry occur only for replay-safe calls
+(idempotent methods or a call with a contract-valid idempotency key).
+Concurrent readers serialize through the state-directory lock; a waiter adopts
+a fresher generation another process already rotated instead of presenting the
+same refresh token. A 401-triggered rotation remains forced only while the
+store holds the rejected access token. Lock waits are cancellable. A terminal
+second 401 compare-deletes only the generation it used, under that same lock.
+Refresh reuse or revocation clears matching local material and returns
+`AUTH_REQUIRED`. OAuth protocol response reads are bounded at 64 KiB on success
+and error paths and never echo the body. Caller cancellation is
+`OPERATION_CANCELLED`; a transport deadline is `PROVIDER_TIMEOUT`. Issuer,
+client, credential identity, audience, and required scopes must all match the
+machine-level metadata before the credential is used, otherwise the client
+fails with `AUTH_FORBIDDEN`.
 
 ## Concurrency
 
