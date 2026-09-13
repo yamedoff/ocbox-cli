@@ -1,52 +1,62 @@
-import { rm } from 'node:fs/promises'
 import { Args, Flags } from '@oclif/core'
 import {
+  applyCodexRemovePlan,
+  layerTargetFiles,
   manifestFile,
   manifestPathForLayer,
   nodeCodexFileSystem,
+  parseLegacyCodexManifest,
   planCodexRemove,
   readManifestSafe,
   readTextOrNull,
+  resolveAgentCodexPaths,
   type CodexLayer,
   type CodexManifest,
+  type LegacyCodexManifest,
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
 
 const LAYERS: readonly CodexLayer[] = ['user', 'project']
 
-async function removeLayer(
-  stateDirectory: string,
-  layer: CodexLayer,
-  apply: boolean,
-): Promise<{
+interface RemoveLayerOptions {
+  readonly stateDirectory: string
+  readonly layer: CodexLayer
+  readonly apply: boolean
+  readonly codexHome?: string | undefined
+  readonly projectDir?: string | undefined
+}
+
+async function removeLayer(options: RemoveLayerOptions): Promise<{
   readonly manifest: CodexManifest | null
   readonly result: Record<string, unknown>
 }> {
-  const { manifest, warning } = await readManifestSafe(manifestPathForLayer(stateDirectory, layer))
-  if (manifest === null) {
-    const legacy = layer === 'user' ? await readTextOrNull(manifestFile(stateDirectory)) : null
-    const warnings =
-      warning === null
-        ? legacy !== null
-          ? [
-              'A legacy single-layer manifest exists; it is ignored by this adapter version. Nothing owned to remove.',
-            ]
-          : ['No adapter manifest; nothing owned to remove.']
-        : [warning]
-    return {
-      manifest,
-      result: { ok: true, applied: false, actions: [], repairSteps: [], warnings },
-    }
-  }
-  const currentTomlText = await readTextOrNull(manifest.configPath)
-  const currentHooksText = await readTextOrNull(manifest.hooksPath)
+  const { stateDirectory, layer, apply } = options
+  const paths = resolveAgentCodexPaths({
+    ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
+    ...(options.projectDir === undefined ? {} : { projectDir: options.projectDir }),
+    stateDirectory,
+  })
+  const targets = layerTargetFiles(paths, layer)
+  const manifestPath = manifestPathForLayer(stateDirectory, layer)
+  const { manifest, warning } = await readManifestSafe(manifestPath)
+  const legacyText = await readTextOrNull(manifestFile(stateDirectory))
+  const legacyManifest: LegacyCodexManifest | null =
+    legacyText === null ? null : parseLegacyCodexManifest(legacyText)
+  const configFile = manifest?.configPath ?? targets.configFile
+  const hooksFile = manifest?.hooksPath ?? targets.hooksFile
+  const currentTomlText = await readTextOrNull(configFile)
+  const currentHooksText = await readTextOrNull(hooksFile)
   const originalTomlText =
-    manifest.backupConfigPath == null ? null : await readTextOrNull(manifest.backupConfigPath)
+    manifest?.backupConfigPath == null ? null : await readTextOrNull(manifest.backupConfigPath)
   const originalHooksText =
-    manifest.backupHooksPath == null ? null : await readTextOrNull(manifest.backupHooksPath)
+    manifest?.backupHooksPath == null ? null : await readTextOrNull(manifest.backupHooksPath)
   const plan = planCodexRemove({
     manifest,
+    legacyManifest,
+    layer,
+    configFile,
+    hooksFile,
     currentTomlText,
     currentHooksText,
     originalTomlText,
@@ -70,22 +80,11 @@ async function removeLayer(
       },
     }
   }
-  if (apply) {
-    for (const action of plan.actions) {
-      if (action.action === 'noop') continue
-      if (action.preservedCopy !== null && action.preservedCopy.length > 0) {
-        const current = action.file === manifest.configPath ? currentTomlText : currentHooksText
-        if (current !== null) {
-          await nodeCodexFileSystem.writeFileAtomic(action.preservedCopy, current)
-        }
-      }
-      if (action.action === 'delete') {
-        await rm(action.file, { force: true })
-      } else if (action.after !== null) {
-        await nodeCodexFileSystem.writeFileAtomic(action.file, action.after)
-      }
-    }
-    await rm(manifestPathForLayer(stateDirectory, layer), { force: true })
+  if (apply && plan.actions.some((action) => action.action !== 'noop')) {
+    await applyCodexRemovePlan(
+      { actions: plan.actions, manifestPath: manifest === null ? null : manifestPath },
+      nodeCodexFileSystem,
+    )
   }
   return {
     manifest,
@@ -149,7 +148,13 @@ export default class AgentRemove extends OcboxCommand {
         const repairs: unknown[] = []
         let applied = false
         for (const layer of layers) {
-          const { result } = await removeLayer(stateDirectory, layer, apply)
+          const { result } = await removeLayer({
+            stateDirectory,
+            layer,
+            apply,
+            ...(flags['codex-home'] === undefined ? {} : { codexHome: flags['codex-home'] }),
+            ...(flags['project-dir'] === undefined ? {} : { projectDir: flags['project-dir'] }),
+          })
           actions.push(...((result['actions'] as unknown[]) ?? []))
           repairSteps.push(...((result['repairSteps'] as string[]) ?? []))
           warnings.push(...((result['warnings'] as string[]) ?? []))

@@ -1,11 +1,6 @@
 import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { capabilityMatrix } from './capabilities.js'
-import {
-  parseHooksJsonDocument,
-  parseTomlDocument,
-  serializeHooksJsonDocument,
-  serializeTomlDocument,
-} from './codec.js'
+import { parseHooksJsonDocument, parseTomlDocument, serializeHooksJsonDocument } from './codec.js'
 import { type CodexJsonValue, deepEqual, isRecord, sha256 } from './document.js'
 import { CodexAdapterError } from './errors.js'
 import type { CodexFileSystem } from './fs.js'
@@ -23,14 +18,18 @@ import {
   removeGroup,
   toOwnedFragment,
 } from './hooks.js'
+import type { LegacyCodexManifest } from './legacy.js'
+import { legacyFragmentsForLayer } from './legacy.js'
 import {
   CODEX_ADAPTER_VERSION,
   type CodexAdapterManifest,
   type CodexManifest,
   serializeCodexAdapterManifest,
 } from './manifest.js'
+import { fragmentKey, ownedFragmentsInDocument, ownedFragmentsInDocuments } from './ownership.js'
 import { layerTargetFiles, type CodexLayer, type CodexPaths } from './paths.js'
 import { detectCodexSchema, validateHooksTable } from './schema.js'
+import { editTomlHooks } from './toml-edit.js'
 import { checkCodexVersion, LIVE_E2E_BLOCKER } from './version.js'
 import type { CodexSchemaDescriptor } from './version.js'
 
@@ -56,6 +55,7 @@ export interface SetupPlanInput {
   readonly timestamp?: string | undefined
   readonly preferredRepresentation?: CodexHookRepresentation | undefined
   readonly manifest?: CodexManifest | null | undefined
+  readonly legacyManifest?: LegacyCodexManifest | null | undefined
 }
 
 export interface PlannedFileChange {
@@ -113,7 +113,11 @@ export interface DriftReport {
   readonly details: readonly string[]
 }
 
-export type CodexRepairReason = 'user-modified-owned-fragment' | 'duplicated-representation'
+export type CodexRepairReason =
+  | 'user-modified-owned-fragment'
+  | 'duplicated-representation'
+  | 'orphaned-owned-fragment'
+  | 'legacy-orphaned-fragment'
 
 export interface CodexRepairEntry {
   readonly reason: CodexRepairReason
@@ -128,6 +132,10 @@ export interface CodexRepairEntry {
 
 export interface RemovePlanInput {
   readonly manifest: CodexManifest | null
+  readonly legacyManifest?: LegacyCodexManifest | null | undefined
+  readonly layer?: CodexLayer | undefined
+  readonly configFile?: string | null | undefined
+  readonly hooksFile?: string | null | undefined
   readonly currentTomlText: string | null
   readonly currentHooksText: string | null
   readonly originalTomlText: string | null
@@ -166,6 +174,7 @@ export interface DoctorInput {
   readonly tomlText: string | null
   readonly hooksText: string | null
   readonly manifest: CodexManifest | null
+  readonly legacyManifest?: LegacyCodexManifest | null | undefined
   readonly trustLevel: string | null
   readonly sessionId: string | null | undefined
   readonly sessionRecorded: boolean
@@ -345,6 +354,61 @@ function ensureHooksTable(document: Record<string, unknown>): Record<string, unk
   return table
 }
 
+/**
+ * Legacy manifests are evidence, not authority. A fragment is only removed when
+ * the exact recorded group is still present, so a legacy manifest can never
+ * name (and therefore delete) an unrelated user entry.
+ */
+function verifiedLegacyPresent(
+  table: Record<string, unknown> | null,
+  legacy: readonly CodexHookFragment[],
+): CodexHookFragment[] {
+  if (table === null || legacy.length === 0) return []
+  return legacy.filter((fragment) =>
+    eventGroups(table, fragment.event).some((group) => deepEqual(group, fragment.group)),
+  )
+}
+
+function removeMatchingGroups(
+  table: Record<string, unknown>,
+  fragments: readonly CodexHookFragment[],
+): CodexHookFragment[] {
+  const removed: CodexHookFragment[] = []
+  for (const fragment of fragments) {
+    if (removeGroup(table, fragment)) removed.push(fragment)
+  }
+  return removed
+}
+
+function classifyRepair(
+  fragment: CodexHookFragment,
+  legacyKeys: ReadonlySet<string>,
+  duplicated: boolean,
+): CodexRepairReason {
+  if (legacyKeys.has(fragmentKey(fragment))) return 'legacy-orphaned-fragment'
+  if (duplicated) return 'duplicated-representation'
+  return 'orphaned-owned-fragment'
+}
+
+function toRepairEntry(fragment: CodexHookFragment, reason: CodexRepairReason): CodexRepairEntry {
+  return {
+    reason,
+    id: fragment.id,
+    event: fragment.event,
+    matcher: fragment.matcher,
+    recorded: fragment.group,
+    current: fragment.group,
+    desired: null,
+    preserved: true,
+  }
+}
+
+function uniqueFragments(fragments: readonly CodexHookFragment[]): CodexHookFragment[] {
+  const unique = new Map<string, CodexHookFragment>()
+  for (const fragment of fragments) unique.set(fragmentKey(fragment), fragment)
+  return [...unique.values()]
+}
+
 function failedSetup(
   input: SetupPlanInput,
   targets: { readonly configFile: string; readonly hooksFile: string },
@@ -446,81 +510,88 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
     hooks,
     input.preferredRepresentation,
   )
-  let workingConfig = cloneDocument(config)
-  let workingHooks = cloneDocument(hooks)
-  if (representation === 'config-toml') workingConfig ??= {}
-  else workingHooks ??= {}
-  const targetDocument = representation === 'config-toml' ? workingConfig : workingHooks
-  if (targetDocument === null) {
-    return failedSetup(
-      input,
-      targets,
-      version.detected,
-      projectTrusted,
-      ['Planner failed to allocate the target document.'],
-      warnings,
+  const desiredOwned = [toOwnedFragment(desiredSessionFragment(sessionId, input.ocboxBin))]
+  const desiredKeys = new Set(desiredOwned.map((fragment) => fragmentKey(fragment)))
+  const legacyForLayer = legacyFragmentsForLayer(input.legacyManifest, input.layer)
+  const legacyKeys = new Set(legacyForLayer.map((fragment) => fragmentKey(fragment)))
+  const configIsTarget = representation === 'config-toml'
+
+  const configOwned = ownedFragmentsInDocument(config)
+  const hooksOwned = ownedFragmentsInDocument(hooks)
+  const configLegacy = verifiedLegacyPresent(readHooksTable(config), legacyForLayer)
+  const hooksLegacy = verifiedLegacyPresent(readHooksTable(hooks), legacyForLayer)
+
+  const repairs: CodexRepairEntry[] = []
+  const claimRemoval = (fragment: CodexHookFragment, nonTarget: boolean): void => {
+    repairs.push(
+      toRepairEntry(
+        fragment,
+        classifyRepair(fragment, legacyKeys, nonTarget && desiredKeys.has(fragmentKey(fragment))),
+      ),
     )
   }
-  const desiredOwned = [toOwnedFragment(desiredSessionFragment(sessionId, input.ocboxBin))]
 
-  let targetDirty = false
-  const table = ensureHooksTable(targetDocument)
-  const sessionRotated =
-    effectiveManifest !== null &&
-    effectiveManifest.fragments.length > 0 &&
-    effectiveManifest.sessionId !== sessionId
-  if (sessionRotated && effectiveManifest !== null) {
-    for (const fragment of effectiveManifest.fragments) {
-      const superseded = desiredOwned.some(
-        (desired) =>
-          desired.event === fragment.event &&
-          desired.matcher === fragment.matcher &&
-          desired.id !== fragment.id,
+  // config.toml is edited by byte-splicing the owned array-of-tables groups so
+  // comments, ordering, and unrelated tables survive untouched. The non-target
+  // representation is pruned by strict ownership of every `ocbox exec
+  // --session` fragment, not merely the fragment the current plan happens to
+  // reuse, so stale copies from older sessions or legacy formats cannot linger.
+  const configRemove = [
+    ...(configIsTarget
+      ? configOwned.filter((fragment) => !desiredKeys.has(fragmentKey(fragment)))
+      : configOwned),
+    ...configLegacy.filter(
+      (fragment) => !(configIsTarget && desiredKeys.has(fragmentKey(fragment))),
+    ),
+  ]
+  const configAdd = configIsTarget
+    ? desiredOwned.filter(
+        (desired) => !configOwned.some((owned) => fragmentKey(owned) === fragmentKey(desired)),
       )
-      if (superseded && removeGroup(table, fragment)) targetDirty = true
-    }
+    : []
+  const configEdit =
+    configRemove.length === 0 && configAdd.length === 0
+      ? null
+      : editTomlHooks(input.baseTomlText ?? '', { add: configAdd, remove: configRemove })
+  const configChanged = configEdit !== null && configEdit.strategy !== 'noop'
+  if (configChanged) {
+    for (const fragment of configRemove) claimRemoval(fragment, !configIsTarget)
   }
-  for (const fragment of desiredOwned) {
-    if (ensureGroup(table, fragment)) targetDirty = true
-  }
+  const nextConfig = configChanged ? configEdit.text : input.baseTomlText
 
-  const duplicateEntries: CodexRepairEntry[] = []
-  const nonTarget = representation === 'config-toml' ? workingHooks : workingConfig
-  if (nonTarget !== null) {
-    const nonTargetTable = readHooksTable(nonTarget)
-    if (nonTargetTable !== null) {
-      for (const fragment of desiredOwned) {
-        if (removeGroup(nonTargetTable, fragment)) {
-          duplicateEntries.push({
-            reason: 'duplicated-representation',
-            id: fragment.id,
-            event: fragment.event,
-            matcher: fragment.matcher,
-            recorded: fragment.group,
-            current: fragment.group,
-            desired: null,
-            preserved: true,
-          })
+  const hooksIsTarget = !configIsTarget
+  let workingHooks = cloneDocument(hooks)
+  if (hooksIsTarget) workingHooks ??= {}
+  let hooksChanged = false
+  if (workingHooks !== null) {
+    const table = hooksIsTarget ? ensureHooksTable(workingHooks) : readHooksTable(workingHooks)
+    if (table !== null) {
+      const hooksRemove = [
+        ...(hooksIsTarget
+          ? hooksOwned.filter((fragment) => !desiredKeys.has(fragmentKey(fragment)))
+          : hooksOwned),
+        ...hooksLegacy.filter(
+          (fragment) => !(hooksIsTarget && desiredKeys.has(fragmentKey(fragment))),
+        ),
+      ]
+      const removed = removeMatchingGroups(table, hooksRemove)
+      for (const fragment of removed) claimRemoval(fragment, !hooksIsTarget)
+      if (hooksIsTarget) {
+        for (const fragment of desiredOwned) {
+          if (ensureGroup(table, fragment)) hooksChanged = true
         }
       }
-      if (duplicateEntries.length > 0) pruneEmptyHooksTable(nonTarget)
+      if (removed.length > 0) {
+        pruneEmptyHooksTable(workingHooks)
+        hooksChanged = true
+      }
     }
   }
-  const mergedConfig = workingConfig
-  const mergedHooks = workingHooks
-  let nextConfig = input.baseTomlText
-  let nextHooks = input.baseHooksText
-  if (representation === 'config-toml') {
-    if (targetDirty) nextConfig = serializeTomlDocument(targetDocument)
-    if (duplicateEntries.length > 0 && workingHooks !== null) {
-      nextHooks = serializeHooksJsonDocument(workingHooks)
-    }
-  } else {
-    if (targetDirty) nextHooks = serializeHooksJsonDocument(targetDocument)
-    if (duplicateEntries.length > 0 && workingConfig !== null) {
-      nextConfig = serializeTomlDocument(workingConfig)
-    }
-  }
+  const nextHooks =
+    hooksChanged && workingHooks !== null
+      ? serializeHooksJsonDocument(workingHooks)
+      : input.baseHooksText
+  const targetDirty = configIsTarget ? configChanged : hooksChanged
 
   const driftConfig = cloneDocument(config)
   const driftHooks = cloneDocument(hooks)
@@ -535,38 +606,38 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
           input.baseHooksText,
         )
 
-  const retained = (effectiveManifest?.fragments ?? []).filter((fragment) => {
-    if (
-      sessionRotated &&
-      desiredOwned.some(
-        (desired) =>
-          desired.event === fragment.event &&
-          desired.matcher === fragment.matcher &&
-          desired.id !== fragment.id,
-      )
-    ) {
-      return false
-    }
-    const afterTable = readHooksTable(representation === 'config-toml' ? mergedConfig : mergedHooks)
-    if (afterTable === null) return false
-    return eventGroups(afterTable, fragment.event).some((group) => deepEqual(group, fragment.group))
-  })
+  const removedKeys = new Set(
+    repairs.map((repair) => `${repair.event}\u0000${JSON.stringify(repair.recorded)}`),
+  )
+  const retained = (effectiveManifest?.fragments ?? []).filter(
+    (fragment) => !removedKeys.has(`${fragment.event}\u0000${JSON.stringify(fragment.group)}`),
+  )
   const union = new Map<string, CodexHookFragment>()
   for (const fragment of [...retained, ...desiredOwned]) union.set(fragment.id, fragment)
   const fragments = [...union.values()].sort((left, right) => left.id.localeCompare(right.id))
 
-  const unchanged =
-    effectiveManifest !== null &&
-    !targetDirty &&
-    duplicateEntries.length === 0 &&
-    effectiveManifest.representation === representation &&
-    effectiveManifest.schemaRevision === schema.revision &&
-    sameFragmentSet(effectiveManifest.fragments, fragments)
-  if (duplicateEntries.length > 0) {
+  const duplicateRepairs = repairs.filter((repair) => repair.reason === 'duplicated-representation')
+  const orphanRepairs = repairs.filter(
+    (repair) =>
+      repair.reason === 'orphaned-owned-fragment' || repair.reason === 'legacy-orphaned-fragment',
+  )
+  if (duplicateRepairs.length > 0) {
     warnings.push(
       'A duplicate owned hook existed in both representations; the non-target copy was pruned while unrelated hooks were preserved.',
     )
   }
+  if (orphanRepairs.length > 0) {
+    warnings.push(
+      'Stale or orphaned adapter-owned hooks were found and pruned; user hooks were preserved.',
+    )
+  }
+  const unchanged =
+    effectiveManifest !== null &&
+    !targetDirty &&
+    repairs.length === 0 &&
+    effectiveManifest.representation === representation &&
+    effectiveManifest.schemaRevision === schema.revision &&
+    sameFragmentSet(effectiveManifest.fragments, fragments)
   if (unchanged) {
     return {
       ok: true,
@@ -672,7 +743,7 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
     liveBlocker: LIVE_E2E_BLOCKER,
     status: changes.length === 0 ? 'unchanged' : 'installed',
     drift,
-    repairs: duplicateEntries,
+    repairs,
     manifest: nextManifest,
     idempotent: false,
   }
@@ -728,20 +799,17 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
   const warnings: string[] = []
   const repairSteps: string[] = []
   const actions: RemoveFileAction[] = []
-  if (input.manifest === null) {
-    return {
-      ok: true,
-      actions,
-      repairSteps,
-      warnings: ['No adapter manifest; nothing owned to remove.'],
-      status: 'not-installed',
-      repairs: [],
-      drift: null,
-      idempotent: true,
-    }
-  }
-  const manifest = input.manifest as CodexAdapterManifest
-  const representation = manifest.representation
+  const legacyFragments =
+    input.legacyManifest === null || input.legacyManifest === undefined
+      ? []
+      : input.layer === undefined
+        ? input.legacyManifest.fragments
+        : legacyFragmentsForLayer(input.legacyManifest, input.layer)
+  const legacyKeys = new Set(legacyFragments.map((fragment) => fragmentKey(fragment)))
+  const manifest = input.manifest as CodexAdapterManifest | null
+  const configFile = input.configFile ?? manifest?.configPath ?? null
+  const hooksFile = input.hooksFile ?? manifest?.hooksPath ?? null
+
   let config: Record<string, unknown> | null = null
   let hooks: Record<string, unknown> | null = null
   let corrupted: string | null = null
@@ -757,9 +825,9 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
   }
   if (corrupted !== null) {
     const failed: RemoveFileAction[] = []
-    if (input.currentTomlText !== null) {
+    if (input.currentTomlText !== null && configFile !== null) {
       failed.push({
-        file: manifest.configPath,
+        file: configFile,
         action: 'noop',
         after: input.currentTomlText,
         preservedCopy: null,
@@ -770,9 +838,9 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
         'Config file is corrupted: restore it from a timestamped .ocbox-backup copy, then re-run doctor.',
       )
     }
-    if (input.currentHooksText !== null) {
+    if (input.currentHooksText !== null && hooksFile !== null) {
       failed.push({
-        file: manifest.hooksPath,
+        file: hooksFile,
         action: 'noop',
         after: input.currentHooksText,
         preservedCopy: null,
@@ -794,6 +862,59 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
       idempotent: false,
     }
   }
+
+  const configOwned = ownedFragmentsInDocument(config)
+  const hooksOwned = ownedFragmentsInDocument(hooks)
+  const configLegacy = verifiedLegacyPresent(readHooksTable(config), legacyFragments)
+  const hooksLegacy = verifiedLegacyPresent(readHooksTable(hooks), legacyFragments)
+
+  // Crash recovery: even with no manifest, any fragment that provably belongs to
+  // the adapter (or is named by a verified legacy manifest) is discovered by
+  // strict ownership and stripped without touching user entries.
+  if (manifest === null) {
+    const configRemove = uniqueFragments([...configOwned, ...configLegacy])
+    const hooksRemove = uniqueFragments([...hooksOwned, ...hooksLegacy])
+    if (configRemove.length === 0 && hooksRemove.length === 0) {
+      return {
+        ok: true,
+        actions,
+        repairSteps,
+        warnings: ['No adapter manifest and no adapter-owned fragments; nothing owned to remove.'],
+        status: 'not-installed',
+        repairs: [],
+        drift: null,
+        idempotent: true,
+      }
+    }
+    if (configFile !== null && input.currentTomlText !== null && configRemove.length > 0) {
+      actions.push(stripTomlAction(configFile, input.currentTomlText, configRemove))
+    }
+    if (hooksFile !== null && input.currentHooksText !== null && hooksRemove.length > 0) {
+      actions.push(stripHooksAction(hooksFile, input.currentHooksText, hooksRemove))
+    }
+    const repairs = uniqueFragments([...configRemove, ...hooksRemove]).map((fragment) =>
+      toRepairEntry(
+        fragment,
+        legacyKeys.has(fragmentKey(fragment))
+          ? 'legacy-orphaned-fragment'
+          : 'orphaned-owned-fragment',
+      ),
+    )
+    warnings.push(
+      'No per-layer manifest; planned removal of adapter-owned orphan fragments discovered by strict ownership.',
+    )
+    return {
+      ok: true,
+      actions,
+      repairSteps,
+      warnings,
+      status: 'removed',
+      repairs,
+      drift: null,
+      idempotent: false,
+    }
+  }
+
   const drift = buildFragmentDrift(
     manifest,
     config,
@@ -844,9 +965,16 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
     input.currentHooksText !== null &&
     contentSha256(input.currentHooksText) === manifest.hooksSha256
 
+  const configRemove = uniqueFragments([...configOwned, ...configLegacy, ...manifest.fragments])
+  const hooksRemove = uniqueFragments([...hooksOwned, ...hooksLegacy, ...manifest.fragments])
+  const configRemovePresent = fragmentsPresentIn(readHooksTable(config), configRemove)
+  const hooksRemovePresent = fragmentsPresentIn(readHooksTable(hooks), hooksRemove)
+  const configPath = manifest.configPath
+  const hooksPath = manifest.hooksPath
+
   if (input.currentTomlText === null) {
     actions.push({
-      file: manifest.configPath,
+      file: configPath,
       action: 'noop',
       after: null,
       preservedCopy: null,
@@ -855,9 +983,9 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
     })
   } else if (intactToml) {
     if (originalToml === null) {
-      if (representation !== 'config-toml') {
+      if (configRemovePresent.length === 0) {
         actions.push({
-          file: manifest.configPath,
+          file: configPath,
           action: 'noop',
           after: input.currentTomlText,
           preservedCopy: null,
@@ -865,10 +993,10 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
           backupPath: null,
         })
       } else {
-        const stripped = serializeTomlDocument(stripManifestFragments(config, manifest))
-        const empty = stripped.length === 0
+        const stripped = stripOwnedTomlText(input.currentTomlText, configRemovePresent)
+        const empty = tomlTextIsEmpty(stripped)
         actions.push({
-          file: manifest.configPath,
+          file: configPath,
           action: empty ? 'delete' : 'strip-owned',
           after: empty ? null : stripped,
           preservedCopy: null,
@@ -878,7 +1006,7 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
       }
     } else {
       actions.push({
-        file: manifest.configPath,
+        file: configPath,
         action: 'restore',
         after: input.originalTomlText,
         preservedCopy: null,
@@ -888,7 +1016,7 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
     }
   } else if (originalToml !== null && currentToml === originalToml) {
     actions.push({
-      file: manifest.configPath,
+      file: configPath,
       action: 'noop',
       after: input.currentTomlText,
       preservedCopy: null,
@@ -896,11 +1024,14 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
       backupPath: null,
     })
   } else {
-    const preserved = `${manifest.configPath}.ocbox-preserved`
+    const preserved = `${configPath}.ocbox-preserved`
     const fallback =
-      input.originalTomlText ?? serializeTomlDocument(stripManifestFragments(config, manifest))
+      input.originalTomlText ??
+      (configRemovePresent.length > 0
+        ? stripOwnedTomlText(input.currentTomlText, configRemovePresent)
+        : input.currentTomlText)
     actions.push({
-      file: manifest.configPath,
+      file: configPath,
       action: 'preserve-and-plan',
       after: fallback.length === 0 ? null : fallback,
       preservedCopy: preserved,
@@ -915,7 +1046,7 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
 
   if (input.currentHooksText === null) {
     actions.push({
-      file: manifest.hooksPath,
+      file: hooksPath,
       action: 'noop',
       after: null,
       preservedCopy: null,
@@ -924,9 +1055,9 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
     })
   } else if (intactHooks) {
     if (originalHooks === null) {
-      if (representation !== 'hooks-json') {
+      if (hooksRemovePresent.length === 0) {
         actions.push({
-          file: manifest.hooksPath,
+          file: hooksPath,
           action: 'noop',
           after: input.currentHooksText,
           preservedCopy: null,
@@ -934,10 +1065,12 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
           backupPath: null,
         })
       } else {
-        const stripped = serializeHooksJsonDocument(stripManifestFragments(hooks, manifest))
+        const stripped = serializeHooksJsonDocument(
+          stripFragmentsFromJson(hooks, hooksRemovePresent),
+        )
         const empty = Object.keys(parseHooksJsonLenient(stripped)).length === 0
         actions.push({
-          file: manifest.hooksPath,
+          file: hooksPath,
           action: empty ? 'delete' : 'strip-owned',
           after: empty ? null : stripped,
           preservedCopy: null,
@@ -947,7 +1080,7 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
       }
     } else {
       actions.push({
-        file: manifest.hooksPath,
+        file: hooksPath,
         action: 'restore',
         after: input.originalHooksText,
         preservedCopy: null,
@@ -957,7 +1090,7 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
     }
   } else if (originalHooks !== null && currentHooks === originalHooks) {
     actions.push({
-      file: manifest.hooksPath,
+      file: hooksPath,
       action: 'noop',
       after: input.currentHooksText,
       preservedCopy: null,
@@ -965,11 +1098,12 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
       backupPath: null,
     })
   } else {
-    const preserved = `${manifest.hooksPath}.ocbox-preserved`
+    const preserved = `${hooksPath}.ocbox-preserved`
     const fallback =
-      input.originalHooksText ?? serializeHooksJsonDocument(stripManifestFragments(hooks, manifest))
+      input.originalHooksText ??
+      serializeHooksJsonDocument(stripFragmentsFromJson(hooks, hooksRemovePresent))
     actions.push({
-      file: manifest.hooksPath,
+      file: hooksPath,
       action: 'preserve-and-plan',
       after: fallback,
       preservedCopy: preserved,
@@ -993,14 +1127,68 @@ export function planCodexRemove(input: RemovePlanInput): RemovePlan {
   }
 }
 
-function stripManifestFragments(
+function fragmentsPresentIn(
+  table: Record<string, unknown> | null,
+  fragments: readonly CodexHookFragment[],
+): CodexHookFragment[] {
+  if (table === null) return []
+  return fragments.filter((fragment) =>
+    eventGroups(table, fragment.event).some((group) => deepEqual(group, fragment.group)),
+  )
+}
+
+function stripOwnedTomlText(currentText: string, remove: readonly CodexHookFragment[]): string {
+  return editTomlHooks(currentText, { add: [], remove }).text
+}
+
+function tomlTextIsEmpty(text: string): boolean {
+  const parsed = parseTomlDocument(text)
+  return parsed === null || Object.keys(parsed).length === 0
+}
+
+function stripTomlAction(
+  file: string,
+  currentText: string,
+  remove: readonly CodexHookFragment[],
+): RemoveFileAction {
+  const stripped = stripOwnedTomlText(currentText, remove)
+  const empty = tomlTextIsEmpty(stripped)
+  return {
+    file,
+    action: empty ? 'delete' : 'strip-owned',
+    after: empty ? null : stripped,
+    preservedCopy: null,
+    detail: 'Removing adapter-owned fragments; unrelated TOML is preserved byte-for-byte.',
+    backupPath: null,
+  }
+}
+
+function stripHooksAction(
+  file: string,
+  currentText: string,
+  remove: readonly CodexHookFragment[],
+): RemoveFileAction {
+  const document = parseHooksJsonLenient(currentText)
+  const stripped = serializeHooksJsonDocument(stripFragmentsFromJson(document, remove))
+  const empty = Object.keys(parseHooksJsonLenient(stripped)).length === 0
+  return {
+    file,
+    action: empty ? 'delete' : 'strip-owned',
+    after: empty ? null : stripped,
+    preservedCopy: null,
+    detail: 'Removing adapter-owned fragments; unrelated hooks are preserved.',
+    backupPath: null,
+  }
+}
+
+function stripFragmentsFromJson(
   document: Record<string, unknown> | null,
-  manifest: CodexAdapterManifest,
+  fragments: readonly CodexHookFragment[],
 ): Record<string, unknown> {
   const cloned = JSON.parse(JSON.stringify(document ?? {})) as Record<string, unknown>
   const table = readHooksTable(cloned)
   if (table !== null) {
-    for (const fragment of manifest.fragments) removeGroup(table, fragment)
+    removeMatchingGroups(table, fragments)
     pruneEmptyHooksTable(cloned)
   }
   return cloned
@@ -1063,6 +1251,56 @@ export async function applyCodexChangePlan(
       remediation: 'Re-run setup after resolving the filesystem error.',
     })
   }
+}
+
+/**
+ * Applies a removal plan through the same transactional writer as setup. Every
+ * touched file (including preserved copies and the manifest) is snapshotted
+ * first, so a failure part-way through a multi-file removal restores the prior
+ * state exactly instead of leaving a half-removed layer.
+ */
+export async function applyCodexRemovePlan(
+  plan: { readonly actions: readonly RemoveFileAction[]; readonly manifestPath: string | null },
+  fileSystem: CodexFileSystem,
+): Promise<void> {
+  const operations: PlannedFileChange[] = []
+  for (const action of plan.actions) {
+    if (action.action === 'noop') continue
+    const current = await fileSystem.readFile(action.file)
+    if (action.preservedCopy !== null && action.preservedCopy.length > 0 && current !== null) {
+      operations.push({
+        file: action.preservedCopy,
+        kind: 'config',
+        before: null,
+        after: current,
+        representation: 'preserved',
+        backupPath: null,
+        existedBefore: false,
+      })
+    }
+    operations.push({
+      file: action.file,
+      kind: 'config',
+      before: current,
+      after: action.after,
+      representation: 'config',
+      backupPath: null,
+      existedBefore: current !== null,
+    })
+  }
+  if (plan.manifestPath !== null) {
+    const before = await fileSystem.readFile(plan.manifestPath)
+    operations.push({
+      file: plan.manifestPath,
+      kind: 'manifest',
+      before,
+      after: null,
+      representation: 'manifest-json',
+      backupPath: null,
+      existedBefore: before !== null,
+    })
+  }
+  await applyCodexChangePlan({ files: operations }, fileSystem)
 }
 
 export function codexDoctor(input: DoctorInput): {
@@ -1174,6 +1412,26 @@ export function codexDoctor(input: DoctorInput): {
             : 'Repair the config first.',
       })
     }
+  }
+  const discoveredOwned = ownedFragmentsInDocuments([tomlDocument, hooksDocument])
+  const recordedKeys = new Set(
+    (input.manifest?.fragments ?? []).map((fragment) => fragmentKey(fragment)),
+  )
+  const legacyKeys = new Set(
+    (input.legacyManifest?.fragments ?? []).map((fragment) => fragmentKey(fragment)),
+  )
+  const orphans = discoveredOwned.filter(
+    (fragment) =>
+      !recordedKeys.has(fragmentKey(fragment)) && !legacyKeys.has(fragmentKey(fragment)),
+  )
+  if (orphans.length > 0) {
+    checks.push({
+      id: 'orphaned-hooks',
+      status: 'warning',
+      summary: `Found ${orphans.length} adapter-owned hook(s) that no manifest records.`,
+      remediation:
+        'Run `ocbox agent remove codex` to prune the orphaned fragments; user hooks are preserved.',
+    })
   }
   if (input.manifest === null) {
     checks.push({

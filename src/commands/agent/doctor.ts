@@ -7,6 +7,7 @@ import {
   manifestFile,
   manifestPathForLayer,
   parseCodexToml,
+  parseLegacyCodexManifest,
   projectTrustLevel,
   readManifestSafe,
   readTextOrNull,
@@ -63,11 +64,13 @@ export default class AgentDoctor extends OcboxCommand {
           manifestPathForLayer(stateDirectory, layer),
         )
         let manifestWarning = warning
-        if (manifest === null && manifestWarning === null) {
-          const legacy = await readTextOrNull(manifestFile(stateDirectory))
-          if (legacy !== null) {
+        let legacyManifest: ReturnType<typeof parseLegacyCodexManifest> = null
+        const legacyText = await readTextOrNull(manifestFile(stateDirectory))
+        if (legacyText !== null) {
+          legacyManifest = parseLegacyCodexManifest(legacyText)
+          if (legacyManifest !== null && manifest === null && manifestWarning === null) {
             manifestWarning =
-              'A legacy single-layer manifest exists; it is ignored by this adapter version. Re-run setup to record per-layer ownership.'
+              'A legacy single-layer manifest exists; run setup or remove to repair its owned fragments by strict ownership.'
           }
         }
         const selection = await resolveSessionSelection(
@@ -91,6 +94,7 @@ export default class AgentDoctor extends OcboxCommand {
           tomlText,
           hooksText,
           manifest,
+          legacyManifest,
           trustLevel,
           sessionId: selection.sessionId,
           sessionRecorded: selection.recorded,

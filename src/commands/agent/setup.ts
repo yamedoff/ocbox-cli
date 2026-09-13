@@ -8,6 +8,7 @@ import {
   manifestFile,
   nodeCodexFileSystem,
   parseCodexToml,
+  parseLegacyCodexManifest,
   planCodexSetup,
   projectTrustLevel,
   readManifestSafe,
@@ -17,6 +18,7 @@ import {
   runCodexVersion,
   detectCodexExecutable,
   type CodexLayer,
+  type LegacyCodexManifest,
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
@@ -94,11 +96,13 @@ export default class AgentSetup extends OcboxCommand {
         const layeredManifestPath = manifestPathForLayer(stateDirectory, layer)
         const { manifest, warning: layeredWarning } = await readManifestSafe(layeredManifestPath)
         let warning = layeredWarning
-        if (manifest === null && warning === null) {
-          const legacy = await readTextOrNull(manifestFile(stateDirectory))
-          if (legacy !== null) {
+        let legacyManifest: LegacyCodexManifest | null = null
+        const legacyText = await readTextOrNull(manifestFile(stateDirectory))
+        if (legacyText !== null) {
+          legacyManifest = parseLegacyCodexManifest(legacyText)
+          if (legacyManifest !== null && manifest === null && warning === null) {
             warning =
-              'A legacy single-layer manifest exists; it is ignored by this adapter version. Re-run setup to record per-layer ownership.'
+              'A legacy single-layer manifest exists; its recovered fragments are repaired by strict ownership and a per-layer manifest is recorded.'
           }
         }
         const plan = planCodexSetup(
@@ -112,6 +116,7 @@ export default class AgentSetup extends OcboxCommand {
             paths,
             baseTomlText,
             baseHooksText,
+            legacyManifest,
             ...(flags['ocbox-bin'] === undefined ? {} : { ocboxBin: flags['ocbox-bin'] }),
           },
           manifest,
