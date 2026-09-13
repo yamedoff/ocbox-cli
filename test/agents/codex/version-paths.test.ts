@@ -40,6 +40,37 @@ describe('codex version gate', () => {
     )
   })
 
+  it('accepts safe build suffixes on the pinned shell version', () => {
+    for (const output of [
+      'codex-cli 0.153.4 (abc123)',
+      'codex-cli 0.153.4 (abc123def456)',
+      'codex-cli 0.153.4 (Build 7f3a1c2)',
+      'codex-cli 0.153.4+build.5',
+      'codex-cli 0.153.4 (abc123)\n',
+    ]) {
+      expect(checkCodexVersion(output), output).toMatchObject({
+        detected: '0.153.4',
+        status: 'supported',
+        remediation: null,
+      })
+      expect(parseCodexVersionText(output), output).toBe('0.153.4')
+      expect(parseCodexVersion(output).prerelease, output).toBeNull()
+    }
+  })
+
+  it('still refuses suffixes that hide a prerelease or another version', () => {
+    const otherVersion = checkCodexVersion('codex-cli 0.154.0 (abc123)')
+    expect(otherVersion.status).toBe('unsupported')
+    expect(otherVersion.detected).toBe('0.154.0')
+    const nested = checkCodexVersion('codex-cli 0.153.4 (0.200.0)')
+    expect(nested.status).toBe('unsupported')
+    const prerelease = checkCodexVersion('codex-cli 0.153.4-alpha.1 (abc123)')
+    expect(prerelease.status).toBe('unsupported')
+    expect(prerelease.prerelease).toBe('alpha.1')
+    const trailing = checkCodexVersion('codex-cli 0.153.4 some other text')
+    expect(trailing.status).toBe('unsupported')
+  })
+
   it('refuses unsupported shell versions with remediation instead of guessing', () => {
     const check = checkCodexVersion('codex-cli 0.200.0')
     expect(check.status).toBe('unsupported')
@@ -156,6 +187,39 @@ describe('codex path resolution', () => {
     ).toThrow()
     expect(() =>
       assertAdapterOwnedPath('/home/ada/.codex/hooks.json', '/home/ada/.codex', 'linux'),
+    ).not.toThrow()
+  })
+
+  it('asserts project-layer targets against the project root on Windows and POSIX', () => {
+    const win = resolveCodexPaths({
+      platform: 'win32',
+      homeDirectory: 'C:\\Users\\Ada',
+      projectDirectory: 'C:\\repo',
+    })
+    expect(() =>
+      assertAdapterOwnedPath(win.projectConfigFile ?? '', win.codexHome, 'win32'),
+    ).toThrow()
+    expect(() =>
+      assertAdapterOwnedPath(win.projectConfigFile ?? '', win.projectRoot ?? '', 'win32'),
+    ).not.toThrow()
+    expect(() =>
+      assertAdapterOwnedPath(win.projectHooksFile ?? '', win.projectRoot ?? '', 'win32'),
+    ).not.toThrow()
+
+    const posixPaths = resolveCodexPaths({
+      platform: 'linux',
+      homeDirectory: '/home/ada',
+      projectDirectory: '/srv/repo',
+    })
+    expect(() =>
+      assertAdapterOwnedPath(posixPaths.projectConfigFile ?? '', posixPaths.codexHome, 'linux'),
+    ).toThrow()
+    expect(() =>
+      assertAdapterOwnedPath(
+        posixPaths.projectConfigFile ?? '',
+        posixPaths.projectRoot ?? '',
+        'linux',
+      ),
     ).not.toThrow()
   })
 })

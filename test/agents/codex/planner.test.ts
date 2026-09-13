@@ -141,6 +141,18 @@ describe('codex setup planner', () => {
     expect(plan.errors.join(' ')).toMatch(/failing closed/)
   })
 
+  it('fails closed on an explicit Session that is not recorded', () => {
+    const plan = planCodexSetup(setupInput({ sessionId: 'sess-missing', sessionRecorded: false }))
+    expect(plan.ok).toBe(false)
+    expect(plan.errors.join(' ')).toMatch(/not recorded/)
+    expect(plan.changes).toHaveLength(0)
+  })
+
+  it('still plans when session recording was not checked', () => {
+    const plan = planCodexSetup(setupInput())
+    expect(plan.ok).toBe(true)
+  })
+
   it('never auto-trusts the project layer', () => {
     const paths = userPaths('/srv/repo')
     const untrusted = planCodexSetup({

@@ -47,6 +47,7 @@ export interface SetupPlanInput {
   readonly layer: CodexLayer
   readonly trustLevel: string | null
   readonly sessionId: string | null | undefined
+  readonly sessionRecorded?: boolean | undefined
   readonly allowUnverifiedSchema?: boolean | undefined
   readonly paths: CodexPaths
   readonly baseTomlText: string | null
@@ -392,6 +393,10 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
   if (input.sessionId === null || input.sessionId === undefined || input.sessionId.length === 0) {
     errors.push(
       'No usable Session for remote routing; failing closed. Select a Session with `ocbox use <session>` or pass --session explicitly.',
+    )
+  } else if (input.sessionRecorded === false) {
+    errors.push(
+      `The Session "${input.sessionId}" is not recorded in lifecycle state; refusing to install routing to an unknown Session. Select an existing Session with \`ocbox use <session>\` or pass a recorded --session value.`,
     )
   }
   let config: Record<string, unknown> | null = null
@@ -1138,11 +1143,7 @@ export function codexDoctor(input: DoctorInput): {
         'config.toml',
       )
       validateHooksTable(
-        hooksDocument === null && input.hooksText !== null
-          ? undefined
-          : hooksDocument === null
-            ? undefined
-            : hooksDocument[CODEX_HOOKS_TABLE_KEY],
+        hooksDocument === null ? undefined : hooksDocument[CODEX_HOOKS_TABLE_KEY],
         'hooks.json',
       )
       const inline = tomlDocument !== null && readHooksTable(tomlDocument) !== null

@@ -55,8 +55,29 @@ export const PINNED_CODEX_RELEASES: readonly PinnedCodexRelease[] = [
 ]
 
 const VERSION_PATTERN =
-  /^(?:codex(?:-cli|-desktop)?\s+)?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?\s*$/
+  /^(?:codex(?:-cli|-desktop)?\s+)?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(\s*(?:\([^)]*\)|\+[0-9A-Za-z.-]+))?\s*$/
 const LOOSE_VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/
+const SAFE_SUFFIX_PATTERN = /^\s*(?:\([0-9A-Za-z][0-9A-Za-z ._-]*\)|\+[0-9A-Za-z][0-9A-Za-z.-]*)$/
+const SEMVER_TOKEN_PATTERN = /\d+\.\d+\.\d+/
+
+/**
+ * A safe suffix is build metadata that accompanies a version without changing
+ * which release was installed, e.g. `(abc123)` or `+build.5`. A suffix that
+ * carries its own semver token (or any other unstructured trailing text) is
+ * not safe: it could mask a different version, so it must fail closed.
+ */
+function isSafeVersionSuffix(suffix: string): boolean {
+  if (!SAFE_SUFFIX_PATTERN.test(suffix)) return false
+  return !SEMVER_TOKEN_PATTERN.test(suffix)
+}
+
+function anchoredVersionMatch(text: string): RegExpExecArray | null {
+  const match = VERSION_PATTERN.exec(text.trim())
+  if (match === null) return null
+  const suffix = match[5]
+  if (suffix !== undefined && !isSafeVersionSuffix(suffix)) return null
+  return match
+}
 
 function channelFor(raw: string): CodexReleaseChannel {
   if (/desktop/i.test(raw)) return 'desktop'
@@ -65,13 +86,13 @@ function channelFor(raw: string): CodexReleaseChannel {
 }
 
 function prereleaseFor(raw: string): string | null {
-  const match = VERSION_PATTERN.exec(raw.trim())
+  const match = anchoredVersionMatch(raw)
   if (match === null) return null
   return match[4] ?? null
 }
 
 export function parseCodexVersionText(text: string): string | null {
-  const anchored = VERSION_PATTERN.exec(text.trim())
+  const anchored = anchoredVersionMatch(text)
   if (anchored !== null) return `${anchored[1]}.${anchored[2]}.${anchored[3]}`
   const loose = LOOSE_VERSION_PATTERN.exec(text)
   if (loose === null) return null
@@ -79,7 +100,7 @@ export function parseCodexVersionText(text: string): string | null {
 }
 
 export function parseCodexVersion(raw: string): CodexVersion {
-  const match = VERSION_PATTERN.exec(raw.trim())
+  const match = anchoredVersionMatch(raw)
   if (match === null) {
     throw new CodexAdapterError({
       code: 'CODEX_VERSION_UNSUPPORTED',
@@ -113,9 +134,8 @@ function desktopRemediation(raw: string): string {
 }
 
 export function checkCodexVersion(versionText: string): CodexVersionCheck {
-  const raw = versionText.trim()
   const channel = channelFor(versionText)
-  const anchored = VERSION_PATTERN.exec(raw)
+  const anchored = anchoredVersionMatch(versionText)
   if (anchored === null) {
     const loose = parseCodexVersionText(versionText)
     if (loose === null) {

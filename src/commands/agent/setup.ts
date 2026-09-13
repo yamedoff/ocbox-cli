@@ -107,6 +107,7 @@ export default class AgentSetup extends OcboxCommand {
             layer,
             trustLevel,
             sessionId: selection.sessionId,
+            sessionRecorded: selection.recorded,
             allowUnverifiedSchema: flags['allow-unverified-schema'] === true,
             paths,
             baseTomlText,
@@ -151,13 +152,13 @@ export default class AgentSetup extends OcboxCommand {
             liveBlocker: plan.liveBlocker,
           }
         }
+        const applyRoot = plan.layer === 'project' ? paths.projectDirectory : paths.codexHome
+        if (applyRoot === null) {
+          throw new Error('The project layer requires a project directory; pass --project-dir.')
+        }
         for (const change of plan.changes) {
           if (change.kind === 'manifest') continue
-          const root =
-            change.file === plan.configFile || change.file === plan.hooksFile
-              ? paths.codexHome
-              : (paths.projectRoot ?? paths.codexHome)
-          assertAdapterOwnedPath(change.file, root, paths.platform)
+          assertAdapterOwnedPath(change.file, applyRoot, paths.platform)
         }
         await applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem)
         const backupConfigPath =
