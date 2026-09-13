@@ -72,9 +72,9 @@ describe('claude-code version gate', () => {
   it('restricts the version override to the explicit test harness', () => {
     expect(TEST_HARNESS_ENV).toBe('OCBOX_TEST_MODE')
     expect(() => assertClaudeVersionOverrideAllowed(undefined, {})).not.toThrow()
-    expect(() =>
-      assertClaudeVersionOverrideAllowed('2.0.51 (Claude Code)', {}),
-    ).toThrow(/test harness/)
+    expect(() => assertClaudeVersionOverrideAllowed('2.0.51 (Claude Code)', {})).toThrow(
+      /test harness/,
+    )
     expect(() =>
       assertClaudeVersionOverrideAllowed('2.0.51 (Claude Code)', {
         [TEST_HARNESS_ENV]: '1',
@@ -108,9 +108,7 @@ describe('claude-code version gate', () => {
     expect(fixture.evidence.length).toBeGreaterThan(0)
     expect([...CLAUDE_HOOK_EVENTS]).toEqual([...fixture.hookEvents])
     expect([...CLAUDE_TOOL_MATCHERS]).toEqual([...fixture.toolMatchers])
-    expect(CLAUDE_CODE_PINNED_SURFACE_FIXTURE).toBe(
-      'test/fixtures/claude-code/pinned-surface.json',
-    )
+    expect(CLAUDE_CODE_PINNED_SURFACE_FIXTURE).toBe('test/fixtures/claude-code/pinned-surface.json')
     expect(CLAUDE_CODE_PINNED_SURFACE_EVIDENCE.fixture).toBe(CLAUDE_CODE_PINNED_SURFACE_FIXTURE)
     expect(CLAUDE_CODE_PINNED_SURFACE_EVIDENCE.label).toContain(PINNED_CLAUDE_CODE_VERSION)
     expect(CLAUDE_CODE_PINNED_SURFACE_EVIDENCE.note).toContain('live-only gate')

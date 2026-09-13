@@ -313,7 +313,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
     }
   }
-<  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
+  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
   const lockedSources = policy.locks.map((lock) => `${lock.kind} (${lock.path})`).join(', ')
   const shadowingRules = policy.shadowing.map(describeShadow).join(', ')
   if (policy.locks.length > 0) {

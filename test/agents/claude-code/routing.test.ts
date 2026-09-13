@@ -6,7 +6,10 @@ import {
   PINNED_SURFACE_SUMMARY,
   ROUTING_AID_NOTICE,
 } from '../../../src/agents/claude-code/capabilities.js'
-import { CLAUDE_HOOK_EVENTS, CLAUDE_TOOL_MATCHERS } from '../../../src/agents/claude-code/version.js'
+import {
+  CLAUDE_HOOK_EVENTS,
+  CLAUDE_TOOL_MATCHERS,
+} from '../../../src/agents/claude-code/version.js'
 import { buildHookCommand, decideRouting } from '../../../src/agents/claude-code/routing.js'
 import { OWNED_HOOK_COMMAND_FRAGMENT } from '../../../src/agents/claude-code/settings-model.js'
 

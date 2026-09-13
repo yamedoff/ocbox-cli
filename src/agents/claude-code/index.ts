@@ -22,7 +22,7 @@ export {
   stableStringify,
 } from './json.js'
 export type { JsonObject, JsonPrimitive, JsonValue } from './json.js'
-<export { hashOwnedValue, ownedEntriesStatus, planMerge, planRemove, sha256Json } from './merge.js'
+export { hashOwnedValue, ownedEntriesStatus, planMerge, planRemove, sha256Json } from './merge.js'
 export type { MergePlan, PlanMergeOptions, RemovePlan } from './merge.js'
 export type {
   DoctorResult,

@@ -353,4 +353,3 @@ export function planRemove(
     changed: removedHooks > 0 || removedPermissions > 0 || pruned.removed.length > 0,
   }
 }
-<

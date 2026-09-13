@@ -47,7 +47,7 @@ export async function readTextIfPresent(path: string): Promise<string | null> {
   }
 }
 
-<const DEFAULT_FILE_MODE = 0o600
+const DEFAULT_FILE_MODE = 0o600
 
 async function resolveTargetMode(path: string): Promise<number> {
   try {

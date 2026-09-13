@@ -32,12 +32,7 @@ export function buildHookCommand(sessionId: string | null): string {
  * of routing back out (unbounded recursion guard).
  */
 export function recursionGuardArgs(): readonly string[] {
-  return [
-    '--env',
-    `${RECURSION_GUARD_ENV}=1`,
-    '--env',
-    `${ADAPTER_ID_ENV}=${ADAPTER_ID}`,
-  ]
+  return ['--env', `${RECURSION_GUARD_ENV}=1`, '--env', `${ADAPTER_ID_ENV}=${ADAPTER_ID}`]
 }
 
 /**
@@ -47,8 +42,7 @@ export function recursionGuardArgs(): readonly string[] {
  * it matches the exact emitted shape. The Session varies, so the only variable
  * segment is the optional `--session <id>` token.
  */
-const OWNED_HOOK_COMMAND_PATTERN =
-  /^ocbox agent hook claude-code(?: --session (\S+))?$/
+const OWNED_HOOK_COMMAND_PATTERN = /^ocbox agent hook claude-code(?: --session (\S+))?$/
 
 export function parseOwnedHookCommand(
   command: unknown,

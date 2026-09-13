@@ -145,8 +145,7 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
   return { path, present: true, document, issues }
 }
 
-<const OWNED_HOOK_COMMAND_PATTERN =
-  /^ocbox agent hook claude-code(?: --session (\S+))?$/
+const OWNED_HOOK_COMMAND_PATTERN = /^ocbox agent hook claude-code(?: --session (\S+))?$/
 
 export function parseOwnedHookCommand(
   command: unknown,

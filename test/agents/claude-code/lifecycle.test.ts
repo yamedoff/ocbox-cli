@@ -84,9 +84,9 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       expect(
         doctor.findings.some((finding) => finding.check === 'owned-entries' && finding.ok),
       ).toBe(true)
-      expect(
-        doctor.findings.some((finding) => finding.check === 'drift' && !finding.ok),
-      ).toBe(false)
+      expect(doctor.findings.some((finding) => finding.check === 'drift' && !finding.ok)).toBe(
+        false,
+      )
       expect(doctor.capabilityMatrix.length).toBeGreaterThanOrEqual(8)
       const removed = await planRemove({
         layout,
