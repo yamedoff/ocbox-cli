@@ -18,10 +18,11 @@ import {
  * manifest alone: it must be provable from the persisted command itself.
  *
  * A group is adapter-owned only when one of its command hooks invokes the
- * `ocbox` binary with both the `exec` subcommand and a `--session` selector.
- * That is the exact routing shape the adapter installs, so unrelated user
- * commands (including user edits that replaced the owned command) are never
- * claimed.
+ * `ocbox` binary either as the installed hook entrypoint
+ * (`ocbox agent hook codex --session …`) or as the legacy routed shape
+ * (`ocbox exec --session …`). Both shapes carry an explicit `--session`
+ * selector, so unrelated user commands (including user edits that replaced
+ * the owned command) are never claimed.
  */
 
 function stripQuotes(token: string): string {
@@ -89,7 +90,12 @@ export function isAdapterOwnedCommand(command: unknown): boolean {
   })
   if (binIndex === -1) return false
   const rest = words.slice(binIndex)
-  return rest.includes('exec') && rest.includes('--session')
+  if (!rest.includes('--session')) return false
+  if (rest.includes('exec')) return true
+  const agentIndex = rest.indexOf('agent')
+  const hookIndex = rest.indexOf('hook')
+  const codexIndex = rest.indexOf('codex')
+  return agentIndex !== -1 && hookIndex === agentIndex + 1 && codexIndex === hookIndex + 1
 }
 
 export function isAdapterOwnedGroup(group: unknown): boolean {

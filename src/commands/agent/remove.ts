@@ -1,6 +1,7 @@
 import { Args, Flags } from '@oclif/core'
 import {
   applyCodexRemovePlan,
+  assertAdapterOwnedPath,
   layerTargetFiles,
   manifestFile,
   manifestPathForLayer,
@@ -81,6 +82,17 @@ async function removeLayer(options: RemoveLayerOptions): Promise<{
     }
   }
   if (apply && plan.actions.some((action) => action.action !== 'noop')) {
+    const applyRoot = layer === 'project' ? paths.projectDirectory : paths.codexHome
+    if (applyRoot === null) {
+      throw new Error('The project layer requires a project directory; pass --project-dir.')
+    }
+    for (const action of plan.actions) {
+      if (action.action === 'noop') continue
+      assertAdapterOwnedPath(action.file, applyRoot, paths.platform)
+      if (action.preservedCopy !== null) {
+        assertAdapterOwnedPath(action.preservedCopy, applyRoot, paths.platform)
+      }
+    }
     await applyCodexRemovePlan(
       { actions: plan.actions, manifestPath: manifest === null ? null : manifestPath },
       nodeCodexFileSystem,

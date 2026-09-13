@@ -16,7 +16,8 @@ import {
   serializeTomlDocument,
 } from '../../../src/agents/codex/codec.js'
 import { nodeCodexFileSystem } from '../../../src/agents/codex/fs.js'
-import { buildHookShellCommand } from '../../../src/agents/codex/hook-helper.js'
+import { buildHookCommand } from '../../../src/agents/codex/hook-helper.js'
+import { CODEX_HOOK_MATCHER_TOOL } from '../../../src/agents/codex/hook-contract.js'
 import { type CodexHookFragment, toOwnedFragment } from '../../../src/agents/codex/hooks.js'
 import { parseLegacyCodexManifest } from '../../../src/agents/codex/legacy.js'
 import { ownedFragmentsInDocument } from '../../../src/agents/codex/ownership.js'
@@ -57,10 +58,10 @@ function setupInput(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
 function owned(sessionId: string): CodexHookFragment {
   return toOwnedFragment({
     event: 'PreToolUse',
-    matcher: 'shell',
+    matcher: CODEX_HOOK_MATCHER_TOOL,
     group: {
-      matcher: 'shell',
-      hooks: [{ type: 'command', command: buildHookShellCommand({ sessionId }) }],
+      matcher: CODEX_HOOK_MATCHER_TOOL,
+      hooks: [{ type: 'command', command: buildHookCommand({ sessionId }) }],
     },
   })
 }
