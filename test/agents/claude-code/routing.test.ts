@@ -6,6 +6,7 @@ import {
   ROUTING_AID_NOTICE,
 } from '../../../src/agents/claude-code/capabilities.js'
 import { buildHookCommand, decideRouting } from '../../../src/agents/claude-code/routing.js'
+import { OWNED_HOOK_COMMAND_FRAGMENT } from '../../../src/agents/claude-code/settings-model.js'
 
 describe('claude-code routing and capability matrix', () => {
   it('routes covered Bash through ocbox exec with a session', () => {
@@ -54,17 +55,19 @@ describe('claude-code routing and capability matrix', () => {
     expect(decision.reason).toContain('recursion guard')
     const nested = decideRouting({
       toolName: 'Bash',
-      command: 'ocbox exec --session s # ocbox-claude-code router',
+      command: 'ocbox agent hook claude-code --session s',
       sessionId: 's',
       environment: {},
     })
     expect(nested.action).toBe('allow-local')
   })
 
-  it('builds hook commands under the hooks key with the owned marker', () => {
-    expect(buildHookCommand('sess-1')).toContain('ocbox exec')
-    expect(buildHookCommand('sess-1')).toContain('ocbox-claude-code')
-    expect(buildHookCommand(null)).toContain('ocbox exec')
+  it('emits a real hook entrypoint that never depends on an undocumented env var', () => {
+    const withSession = buildHookCommand('sess-1')
+    expect(withSession).toContain(OWNED_HOOK_COMMAND_FRAGMENT)
+    expect(withSession).toContain('--session sess-1')
+    expect(withSession).not.toContain('CLAUDE_TOOL_COMMAND')
+    expect(buildHookCommand(null)).toBe(OWNED_HOOK_COMMAND_FRAGMENT)
   })
 
   it('publishes an exact covered/uncovered matrix in routing-aid language', () => {

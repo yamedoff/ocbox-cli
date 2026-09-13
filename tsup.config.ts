@@ -11,6 +11,7 @@ export default defineConfig({
   dts: true,
   entry: {
     'commands/agent/doctor': 'src/commands/agent/doctor.ts',
+    'commands/agent/hook': 'src/commands/agent/hook.ts',
     'commands/agent/index': 'src/commands/agent/index.ts',
     'commands/agent/remove': 'src/commands/agent/remove.ts',
     'commands/agent/setup': 'src/commands/agent/setup.ts',

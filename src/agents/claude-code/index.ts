@@ -8,6 +8,8 @@ export {
 } from './capabilities.js'
 export { ClaudeCodeAdapterError } from './errors.js'
 export type { ClaudeCodeAdapterErrorCode } from './errors.js'
+export { parseClaudeHookInput, runClaudeRoutingHook } from './hook.js'
+export type { ClaudeHookInput, ClaudeRoutingHookOptions } from './hook.js'
 export {
   cloneJson,
   deepEqual,
@@ -35,8 +37,8 @@ export {
   ADAPTER_ID_ENV,
   buildHookCommand,
   decideRouting,
-  hookRouterShellPrelude,
   RECURSION_GUARD_ENV,
+  recursionGuardArgs,
 } from './routing.js'
 export {
   collectDenyAskRules,

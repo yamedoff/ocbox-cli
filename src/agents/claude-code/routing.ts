@@ -1,3 +1,5 @@
+import { OWNED_HOOK_COMMAND_FRAGMENT, OWNED_MARKER } from './settings-model.js'
+
 export const RECURSION_GUARD_ENV = 'OCBOX_AGENT_ROUTED' as const
 export const ADAPTER_ID_ENV = 'OCBOX_AGENT_ADAPTER' as const
 export const ADAPTER_ID = 'claude-code' as const
@@ -15,9 +17,27 @@ export interface RoutingInput {
   readonly environment: Readonly<Record<string, string | undefined>>
 }
 
+/**
+ * The installed hook command is a real `ocbox` entrypoint. It reads the Claude
+ * Code PreToolUse stdin JSON, applies routing, and fails closed with exit 2.
+ */
 export function buildHookCommand(sessionId: string | null): string {
   const sessionFragment = sessionId === null ? '' : ` --session ${sessionId}`
-  return `ocbox exec${sessionFragment} --shell "$CLAUDE_TOOL_COMMAND" # ocbox-claude-code router; requires OCBOX_AGENT_ROUTED=1 to prevent loops`
+  return `${OWNED_HOOK_COMMAND_FRAGMENT}${sessionFragment}`
+}
+
+/**
+ * `ocbox exec` settings that mark a routed execution environment as adapter
+ * owned, so a nested Claude Code inside the Session leaves Bash local instead
+ * of routing back out (unbounded recursion guard).
+ */
+export function recursionGuardArgs(): readonly string[] {
+  return [
+    '--env',
+    `${RECURSION_GUARD_ENV}=1`,
+    '--env',
+    `${ADAPTER_ID_ENV}=${ADAPTER_ID}`,
+  ]
 }
 
 export function decideRouting(input: RoutingInput): RoutingDecision {
@@ -37,7 +57,10 @@ export function decideRouting(input: RoutingInput): RoutingDecision {
       execArgv: null,
     }
   }
-  if (input.command.includes('ocbox exec') && input.command.includes('ocbox-claude-code')) {
+  if (
+    input.command.includes(OWNED_HOOK_COMMAND_FRAGMENT) ||
+    (input.command.includes('ocbox exec') && input.command.includes(OWNED_MARKER))
+  ) {
     return {
       action: 'allow-local',
       reason: 'adapter-owned router invocation; not re-routed',
@@ -57,18 +80,4 @@ export function decideRouting(input: RoutingInput): RoutingDecision {
     reason: `covered Bash call routed to selected Session through ocbox exec; source moves only via explicit ocbox sync`,
     execArgv: ['exec', '--session', input.sessionId, '--shell', input.command],
   }
-}
-
-export function hookRouterShellPrelude(): string {
-  return [
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion in emitted hook script
-    'if [ "${OCBOX_AGENT_ROUTED:-}" = "1" ] && [ "${OCBOX_AGENT_ADAPTER:-}" = "claude-code" ]; then',
-    '  exit 0',
-    'fi',
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion in emitted hook script
-    'if [ -z "${OCBOX_SESSION_ID:-}" ]; then',
-    '  echo "ocbox claude-code router: no usable Session; failing closed" >&2',
-    '  exit 2',
-    'fi',
-  ].join('\n')
 }

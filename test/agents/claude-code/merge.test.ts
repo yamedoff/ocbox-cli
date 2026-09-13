@@ -41,7 +41,7 @@ describe('claude-code settings model and merge', () => {
     expect(permissions['deny']).toContain('Bash(rm -rf *)')
     expect(permissions['ask']).toContain('Read(./secrets/**)')
     expect(permissions['allow']).toContain('Bash(npm test *)')
-    expect(permissions['allow']).toContain('Bash(ocbox exec *)')
+    expect(permissions['allow']).toContain('Bash(ocbox exec:*)')
     const hooks = document['hooks'] as Record<string, unknown[]>
     expect(Array.isArray(hooks['PreToolUse'])).toBe(true)
     expect(hooks['PreToolUse']?.some(hookEntryOwned)).toBe(true)
@@ -99,10 +99,10 @@ describe('claude-code settings model and merge', () => {
     )
     const parsed = parseSettingsJson('/tmp/s.json', raw)
     const merged = planMerge(parsed.document, 'sess-1', {
-      higherDeny: ['Bash(ocbox exec *)'],
+      higherDeny: ['Bash(ocbox exec:*)'],
     })
     expect(merged.addedPermission).toBe(false)
-    expect(merged.protectedRules).toContain('Bash(ocbox exec *)')
+    expect(merged.protectedRules).toContain('Bash(ocbox exec:*)')
     const permissions = merged.document.permissions as Record<string, unknown>
     expect(permissions['deny']).toContain('Bash(rm -rf *)')
   })

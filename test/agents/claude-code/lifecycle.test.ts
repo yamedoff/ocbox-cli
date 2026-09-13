@@ -211,7 +211,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       explicitPaths: [explicitPath],
     })
     const files = memoryFiles({
-      [explicitPath]: '{"permissions": {"deny": ["Bash(ocbox exec *)"]}}',
+      [explicitPath]: '{"permissions": {"deny": ["Bash(ocbox exec:*)"]}}',
     })
     await expect(
       planSetup({ layout, scope: 'project', sessionId: 's', claudeVersionRaw: PINNED, files }),

@@ -7,6 +7,7 @@ const USAGE = [
   '  $ ocbox agent setup claude-code [--scope user|project|local] [--session SESSION_ID]',
   '  $ ocbox agent doctor claude-code [--scope user|project|local] [--session SESSION_ID]',
   '  $ ocbox agent remove claude-code [--scope user|project|local]',
+  '  $ ocbox agent hook claude-code --session SESSION_ID   # internal PreToolUse hook (stdin JSON)',
   '',
   'ADAPTERS',
   '  claude-code  Reversible routing aid for Claude Code (pinned version only)',

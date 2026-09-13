@@ -1,6 +1,6 @@
 export const OWNED_MARKER = 'ocbox-claude-code' as const
-export const OWNED_HOOK_COMMAND_FRAGMENT = 'ocbox exec' as const
-export const OWNED_PERMISSION_ALLOW = 'Bash(ocbox exec *)' as const
+export const OWNED_HOOK_COMMAND_FRAGMENT = 'ocbox agent hook claude-code' as const
+export const OWNED_PERMISSION_ALLOW = 'Bash(ocbox exec:*)' as const
 export const COVERED_HOOK_EVENT = 'PreToolUse' as const
 export const COVERED_HOOK_MATCHER = 'Bash' as const
 
@@ -146,11 +146,7 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
 }
 
 export function isOwnedHookCommand(command: unknown): boolean {
-  return (
-    typeof command === 'string' &&
-    command.includes(OWNED_HOOK_COMMAND_FRAGMENT) &&
-    command.includes(OWNED_MARKER)
-  )
+  return typeof command === 'string' && command.includes(OWNED_HOOK_COMMAND_FRAGMENT)
 }
 
 export function hookEntryOwned(entry: unknown): boolean {

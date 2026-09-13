@@ -290,7 +290,7 @@ export function detectDrift(
   )
   const allow = permissionsContainer?.allow
   if (!Array.isArray(allow) || !allow.some(permissionRuleOwned)) {
-    details.push('owned Bash(ocbox exec *) permission rule missing or edited')
+    details.push(`owned ${OWNED_PERMISSION_ALLOW} permission rule missing or edited`)
   }
   if (sha256Json(baseDocument) !== sha256Json(currentDocument) && details.length === 0) {
     details.push('unrelated settings changed around owned entries; owned entries intact')

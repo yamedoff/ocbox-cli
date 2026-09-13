@@ -9,7 +9,7 @@ export const COVERED_CAPABILITIES: readonly CapabilityRow[] = [
     capability: 'Bash tool calls via PreToolUse matcher "Bash"',
     status: 'covered',
     detail:
-      'Proven for the pinned version only. Matching shell execution is routed as a routing aid to the selected Session through "ocbox exec"; missing session fails closed and blocks the call.',
+      'Proven for the pinned version only. The owned hook entrypoint reads the PreToolUse stdin JSON (tool_input.command), routes matching shell execution as a routing aid to the selected Session through "ocbox exec", and exits 2 to block when the payload is unreadable or no Session is usable. A routed call exports OCBOX_AGENT_ROUTED=1 and OCBOX_AGENT_ADAPTER=claude-code so a nested adapter-owned call is left local instead of recursing.',
   },
   {
     capability: 'Source movement through explicit sync',

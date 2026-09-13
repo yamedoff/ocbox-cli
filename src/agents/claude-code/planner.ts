@@ -4,6 +4,7 @@ import {
   type ClaudeSettingsDocument,
   collectDenyAskRules,
   hasManagedHookLock,
+  OWNED_PERMISSION_ALLOW,
   parseSettingsJson,
 } from './settings-model.js'
 import type { AdapterScope, ClaudeSettingsLayout } from './settings-sources.js'
@@ -267,7 +268,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       check: 'owned-entries',
       ok: merged.alreadyApplied,
       detail: merged.alreadyApplied
-        ? `owned PreToolUse Bash hook and Bash(ocbox exec *) rule present under the hooks key at ${targetPath}`
+        ? `owned PreToolUse Bash hook and ${OWNED_PERMISSION_ALLOW} rule present under the hooks key at ${targetPath}`
         : `owned entries missing at ${targetPath}; run setup`,
     })
     const manifestPath = manifestPathForTarget(targetPath)
