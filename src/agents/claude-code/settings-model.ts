@@ -1,4 +1,3 @@
-export const OWNED_MARKER = 'ocbox-claude-code' as const
 export const OWNED_HOOK_COMMAND_FRAGMENT = 'ocbox agent hook claude-code' as const
 export const OWNED_PERMISSION_ALLOW = 'Bash(ocbox exec:*)' as const
 export const COVERED_HOOK_EVENT = 'PreToolUse' as const
@@ -194,6 +193,17 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
   return { path, present: true, document, issues }
 }
 
+/**
+ * Canonical ownership grammar for the adapter's installed router command. This
+ * is the single source of truth: `routing.ts` imports and re-exports it, and
+ * `merge.ts`/`hook.ts` consume it through that module, so the command emitter
+ * and every ownership check can never drift apart.
+ *
+ * Ownership is never inferred from substrings: a user command that merely
+ * mentions `ocbox agent hook claude-code` must survive `remove` untouched unless
+ * it matches this exact shape. The Session varies, so the only variable segment
+ * is the optional `--session <id>` token.
+ */
 const OWNED_HOOK_COMMAND_PATTERN = /^ocbox agent hook claude-code(?: --session (\S+))?$/
 
 export function parseOwnedHookCommand(

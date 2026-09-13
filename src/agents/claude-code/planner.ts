@@ -740,14 +740,30 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   await assertTargetBoundary(options.files, targetPath)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
+    // A target that fails schema validation can still contain a container the
+    // adapter once owned and a user later replaced with a different type.
+    // Surface those container-invalid conflicts and retain the ownership
+    // manifest so the operator keeps repair context instead of getting a
+    // misleadingly clean `not-installed`. `planRemoveEntries` is pure and only
+    // reads the parsed document, so running it on a schema-invalid document is
+    // safe.
+    const conflicts = planRemoveEntries(current.document, [], {
+      pruneEmptiedOwned: false,
+    }).conflicts.map((conflict) => conflict.pointer)
     return {
       status: 'not-installed',
       targetPath,
       repairPlan: [
         `target ${targetPath} is invalid: ${current.issues.join('; ')}`,
         'restore the newest .ocbox-backup-*.json by hand, then re-run doctor; owned entries were not touched',
+        ...(conflicts.length > 0
+          ? [
+              `container-invalid at ${conflicts.join(', ')}: user replaced an owned container with a different type; left untouched for manual review`,
+              `ownership manifest retained at ${manifestPathForTarget(targetPath)} for repair context`,
+            ]
+          : []),
       ],
-      conflicts: [],
+      conflicts,
     }
   }
   const manifestPath = manifestPathForTarget(targetPath)

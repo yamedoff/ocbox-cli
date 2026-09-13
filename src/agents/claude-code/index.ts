@@ -70,7 +70,6 @@ export {
   hookEntryOwned,
   hookObjectOwned,
   OWNED_HOOK_COMMAND_FRAGMENT,
-  OWNED_MARKER,
   OWNED_PERMISSION_ALLOW,
   parsePermissionRule,
   parseSettingsJson,
