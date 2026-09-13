@@ -119,6 +119,53 @@ describe('execution command runner', () => {
     )
   })
 
+  it('fails closed with exit 2 for a pre-start resolution failure when asked (N2)', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', 'tool'],
+      () => {
+        throw new OcboxError({
+          code: 'ENVIRONMENT_NOT_FOUND',
+          message: 'Session was not found',
+          requestId: ids.request,
+        })
+      },
+      output,
+      { failClosedBeforeStart: true },
+    )
+    expect(exitCode).toBe(2)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'infrastructure_error',
+      error: { code: 'ENVIRONMENT_NOT_FOUND' },
+    })
+  })
+
+  it('fails closed with exit 2 for an invalid exec argument when asked (N2)', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--session', 'sess-1', '--shell', 'echo hi'],
+      () => target(),
+      output,
+      { failClosedBeforeStart: true },
+    )
+    expect(exitCode).toBe(2)
+  })
+
+  it('keeps an honest remote result despite the fail-closed option (N2)', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', process.execPath, '-e', 'process.exit(125)'],
+      () => target(),
+      output,
+      { failClosedBeforeStart: true },
+    )
+    expect(exitCode).toBe(125)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'remote_result',
+      result: { exitCode: 125 },
+    })
+  })
+
   it('surfaces a typed, actionable error when target resolution fails before start', async () => {
     const output = io()
     const exitCode = await runExecutionCommand(

@@ -1,3 +1,4 @@
+import { SessionIdSchema } from '../../contracts.js'
 import { CAPABILITY_MATRIX, ROUTING_AID_NOTICE } from './capabilities.js'
 import { planMerge, planRemove as planRemoveEntries, sha256Json } from './merge.js'
 import {
@@ -82,6 +83,18 @@ function stableStringify(document: ClaudeSettingsDocument): string {
   return `${JSON.stringify(document, null, 2)}\n`
 }
 
+/**
+ * The selected Session is embedded verbatim into the installed hook command and
+ * later parsed by the strict `ocbox exec` grammar. Validate it with the
+ * canonical id schema up front so a mistyped id can never be installed (which
+ * would make the hook fail open at route time) or reported healthy by doctor.
+ */
+export function selectedSessionIssue(sessionId: string | null): string | null {
+  if (sessionId === null) return null
+  if (SessionIdSchema.safeParse(sessionId).success) return null
+  return `Selected Session "${sessionId}" is not a valid Session ID (expected a UUID or ULID); run "ocbox session list" and re-run with a real --session value`
+}
+
 async function rollbackTarget(
   files: PlannerFileAccess,
   targetPath: string,
@@ -119,26 +132,28 @@ interface PolicyShadow {
   readonly polarity: 'deny' | 'ask'
 }
 
-interface HigherPolicyEvaluation {
+interface PolicyEvaluation {
   readonly locks: readonly PolicyLock[]
   readonly shadowing: readonly PolicyShadow[]
   readonly deny: readonly string[]
   readonly ask: readonly string[]
 }
 
-// Read-only evaluation of every settings source at or above the target scope's
-// precedence. Deny/ask rules from lower sources cannot weaken these, and the
-// PreToolUse hook fires before Claude Code evaluates local permissions, so any
-// matching deny/ask must stop setup before the routing hook is installed.
-async function evaluateHigherPolicy(
+// Read-only evaluation of every applicable settings source. Claude Code unions
+// deny/ask rules across all settings sources and evaluates them deny-first, so a
+// rule from a source ranked below the target still shadows the owned allow; the
+// PreToolUse hook fires before permission evaluation, so the command would route
+// remotely before the local deny/ask applied. Locks are a different concept: they
+// are a managed-policy gate, so they are honored only from sources at or above
+// the target. Write precedence governs which source the adapter may write, not
+// whether a rule blocks.
+async function evaluatePolicy(
   files: PlannerFileAccess,
   layout: ClaudeSettingsLayout,
   scope: AdapterScope,
-): Promise<HigherPolicyEvaluation> {
+): Promise<PolicyEvaluation> {
   const targetRank = precedenceRank(scopeToSourceKind(scope))
-  const sources = resolveClaudeSettingsSources(layout).filter(
-    (source) => source.precedence <= targetRank,
-  )
+  const sources = resolveClaudeSettingsSources(layout)
   const locks: PolicyLock[] = []
   const shadowing: PolicyShadow[] = []
   const deny: string[] = []
@@ -148,7 +163,7 @@ async function evaluateHigherPolicy(
     if (raw === null) continue
     const parsed = parseSettingsJson(source.path, raw)
     if (parsed.issues.length > 0) continue
-    if (hasManagedHookLock(parsed.document)) {
+    if (source.precedence <= targetRank && hasManagedHookLock(parsed.document)) {
       locks.push({ kind: source.kind, path: source.path })
     }
     const rules = collectDenyAskRules(parsed.document)
@@ -183,7 +198,7 @@ function managedLockError(locks: readonly PolicyLock[]): Error {
 function shadowedRouterError(shadowing: readonly PolicyShadow[]): Error {
   const rules = shadowing.map(describeShadow).join(', ')
   return new Error(
-    `Higher-precedence policy shadows the owned router (${rules}). Setup fails closed rather than installing a hook that would execute remotely before the local deny/ask is evaluated.`,
+    `A deny/ask rule from a settings source shadows the owned router (${rules}). Claude Code unions deny/ask rules across all settings sources and evaluates them before the allow, so setup fails closed rather than installing a hook that would execute remotely before the deny/ask is evaluated.`,
   )
 }
 
@@ -196,12 +211,14 @@ function protectedRulesError(rules: readonly string[]): Error {
 export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
   const gate = gateClaudeVersion(options.claudeVersionRaw)
   if (!gate.supported) throw new Error(gate.remediation)
+  const sessionIssue = selectedSessionIssue(options.sessionId)
+  if (sessionIssue !== null) throw new Error(sessionIssue)
   const targetPath = targetPathForScope(options.layout, options.scope)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     throw new Error(`Target settings failed validation: ${current.issues.join('; ')}`)
   }
-  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
+  const policy = await evaluatePolicy(options.files, options.layout, options.scope)
   if (policy.locks.length > 0) throw managedLockError(policy.locks)
   if (policy.shadowing.length > 0) throw shadowedRouterError(policy.shadowing)
   const manifestPath = manifestPathForTarget(targetPath)
@@ -240,6 +257,7 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     backupPath,
     createdPointers: [...new Set([...carriedPointers, ...merged.createdPointers])],
     protectedRules: merged.protectedRules,
+    createdFile: existingManifest?.createdFile ?? current.raw === null,
   }
   try {
     await options.files.writeText(targetPath, stableStringify(merged.document))
@@ -313,7 +331,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
     }
   }
-  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
+  const policy = await evaluatePolicy(options.files, options.layout, options.scope)
   const lockedSources = policy.locks.map((lock) => `${lock.kind} (${lock.path})`).join(', ')
   const shadowingRules = policy.shadowing.map(describeShadow).join(', ')
   if (policy.locks.length > 0) {
@@ -334,13 +352,14 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
     findings.push({
       check: 'higher-policy-shadow',
       ok: false,
-      detail: `deny/ask rules shadow the owned router (${shadowingRules}); setup fails closed because the PreToolUse hook runs before local permission evaluation, so an administrator must remove or narrow the rule`,
+      detail: `deny/ask rules from settings sources shadow the owned router (${shadowingRules}); setup fails closed because the PreToolUse hook runs before local permission evaluation and deny/ask are unioned across sources, so an administrator must remove or narrow the rule`,
     })
   } else {
     findings.push({
       check: 'higher-policy-shadow',
       ok: true,
-      detail: 'no deny/ask rule at or above target precedence shadows the owned router',
+      detail:
+        'no deny/ask rule from any settings source shadows the owned router (deny/ask are unioned across all sources)',
     })
   }
   let installedSessionId: string | null = null
@@ -439,15 +458,19 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
     }
   }
-  const sessionUsable = options.sessionId !== null && options.sessionId.length > 0
+  const sessionIssue = selectedSessionIssue(options.sessionId)
+  const sessionSelected = options.sessionId !== null
   findings.push({
     check: 'session',
-    ok: sessionUsable && !sessionMismatch,
-    detail: !sessionUsable
-      ? 'no usable selected Session; covered Bash calls fail closed (blocked, exit 2) until a Session is selected'
-      : sessionMismatch
-        ? `installed adapter routes through Session ${installedSessionId ?? '(none)'}, not the selected ${options.sessionId}; run remove then setup to change Sessions`
-        : `selected Session ${options.sessionId}; covered Bash calls route through ocbox exec`,
+    ok: sessionIssue === null && sessionSelected && !sessionMismatch,
+    detail:
+      sessionIssue !== null
+        ? sessionIssue
+        : !sessionSelected
+          ? 'no usable selected Session; covered Bash calls fail closed (blocked, exit 2) until a Session is selected'
+          : sessionMismatch
+            ? `installed adapter routes through Session ${installedSessionId ?? '(none)'}, not the selected ${options.sessionId}; run remove then setup to change Sessions`
+            : `selected Session ${options.sessionId}; covered Bash calls route through ocbox exec`,
   })
   findings.push({
     check: 'routing-boundary',
@@ -519,8 +542,20 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
       `container-invalid at ${conflicts.join(', ')}: user replaced an owned container with a different type; left untouched for manual review`,
     )
   }
+  // A fresh install created the whole settings file; when removing leaves it
+  // empty, delete the adapter-created file instead of leaving `{}`. A target
+  // that existed before setup (createdFile false) is always rewritten so its
+  // original bytes survive.
+  const deleteCreatedFile =
+    manifest?.createdFile === true &&
+    conflicts.length === 0 &&
+    Object.keys(removed.document).length === 0
   try {
-    await options.files.writeText(targetPath, stableStringify(removed.document))
+    if (deleteCreatedFile && options.files.removePath !== undefined) {
+      await options.files.removePath(targetPath)
+    } else {
+      await options.files.writeText(targetPath, stableStringify(removed.document))
+    }
     if (conflicts.length === 0 && manifestRaw !== null && options.files.removePath !== undefined) {
       await options.files.removePath(manifestPath).catch(() => undefined)
     }

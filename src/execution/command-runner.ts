@@ -64,6 +64,14 @@ export type ExecutionTargetResolver = (
 
 export interface ExecutionCommandOptions extends ExecutionServiceOptions {
   readonly interrupts?: ExecutionInterruptSource
+  /**
+   * Adapter-owned hook invocations must fail closed: a pre-start argument or
+   * Session-resolution failure returns Claude Code's blocking exit 2 instead of
+   * the generic infrastructure exit 125, which Claude treats as non-blocking and
+   * would let the covered Bash call run locally. Failures after the remote
+   * execution started are untouched and keep their honest passthrough codes.
+   */
+  readonly failClosedBeforeStart?: boolean
 }
 
 /** Process signal adapter used by the eventual oclif command entrypoint. */
@@ -162,6 +170,7 @@ export async function runExecutionCommand(
   } catch (error) {
     const completion = beforeStartFailure(error)
     await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
+    if (options.failClosedBeforeStart === true) return 2
     return exitCodeForExecution(completion.outcome)
   }
 

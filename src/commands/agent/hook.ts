@@ -17,6 +17,25 @@ async function readStandardInput(): Promise<string> {
 }
 
 /**
+ * Builds the hook's `ocbox exec` invocation. Pre-start argument and Session
+ * resolution failures map to Claude Code's blocking exit 2 (`failClosedBeforeStart`),
+ * so an unroutable covered Bash call is blocked locally instead of running.
+ */
+export function createClaudeHookInvoker(
+  runtime: RuntimeFlags,
+  io: ExecutionCommandIo,
+): (argv: readonly string[]) => Promise<number> {
+  return (argv) =>
+    runExecutionCommand(
+      argv.slice(1),
+      async (parsed) =>
+        (await createLifecycleService(runtime)).executionTarget(parsed.sessionId ?? undefined),
+      io,
+      { interrupts: processInterrupts, failClosedBeforeStart: true },
+    )
+}
+
+/**
  * Adapter-owned hook entrypoint. Claude Code pipes the PreToolUse JSON on
  * stdin; this command applies fail-closed routing and only then runs the
  * selected Session through the same `ocbox exec` runner as the CLI command.
@@ -46,14 +65,7 @@ export default class AgentHook extends OcboxCommand {
       rawInput: await readStandardInput(),
       sessionId: flags.session ?? null,
       environment: process.env,
-      invokeExec: async (argv) =>
-        runExecutionCommand(
-          argv.slice(1),
-          async (parsed) =>
-            (await createLifecycleService(runtime)).executionTarget(parsed.sessionId ?? undefined),
-          io,
-          { interrupts: processInterrupts },
-        ),
+      invokeExec: createClaudeHookInvoker(runtime, io),
       writeError: (message) => {
         process.stderr.write(`${message}\n`)
       },

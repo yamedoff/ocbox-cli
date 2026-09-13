@@ -20,6 +20,8 @@ import {
 } from '../../../src/agents/claude-code/store.js'
 
 const PINNED = '2.0.51 (Claude Code)'
+const SESSION_A = '11111111-1111-4111-8111-111111111111'
+const SESSION_B = '22222222-2222-4222-8222-222222222222'
 
 function memoryFiles(
   seed: Record<string, string> = {},
@@ -61,7 +63,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       const setup = await planSetup({
         layout,
         scope: 'project',
-        sessionId: 'sess-1',
+        sessionId: SESSION_A,
         claudeVersionRaw: PINNED,
         files,
       })
@@ -69,7 +71,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       const repeat = await planSetup({
         layout,
         scope: 'project',
-        sessionId: 'sess-1',
+        sessionId: SESSION_A,
         claudeVersionRaw: PINNED,
         files,
       })
@@ -77,7 +79,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       const doctor = await planDoctor({
         layout,
         scope: 'project',
-        sessionId: 'sess-1',
+        sessionId: SESSION_A,
         claudeVersionRaw: PINNED,
         files,
       })
@@ -119,14 +121,20 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       managedPathOverride: fakeManaged,
     })
     await expect(
-      planSetup({ layout, scope: 'project', sessionId: 's', claudeVersionRaw: '9.9.9', files }),
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_A,
+        claudeVersionRaw: '9.9.9',
+        files,
+      }),
     ).rejects.toThrow()
     const locked = memoryFiles({ [fakeManaged]: '{"allowManagedHooksOnly": true}' })
     await expect(
       planSetup({
         layout,
         scope: 'project',
-        sessionId: 's',
+        sessionId: SESSION_A,
         claudeVersionRaw: PINNED,
         files: locked,
       }),
@@ -144,7 +152,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     await planSetup({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -155,7 +163,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     const doctor = await planDoctor({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -209,7 +217,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     const setup = await planSetup({
       layout,
       scope: 'project',
-      sessionId: 's',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -233,9 +241,48 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       [explicitPath]: '{"permissions": {"deny": ["Bash(ocbox exec:*)"]}}',
     })
     await expect(
-      planSetup({ layout, scope: 'project', sessionId: 's', claudeVersionRaw: PINNED, files }),
-    ).rejects.toThrow(/Higher-precedence policy|Managed policy/)
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_A,
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/shadows the owned router|Managed policy/)
     expect(files.store.has(targetPathForScope(layout, 'project'))).toBe(false)
+  })
+
+  it('refuses to install an invalid Session and never writes the target (N2)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: 'sess-1',
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/not a valid Session ID/)
+    expect(files.store.has(target)).toBe(false)
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('reports an invalid Session as unhealthy in doctor (N2)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const doctor = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(doctor.ok).toBe(false)
+    const finding = doctor.findings.find((entry) => entry.check === 'session')
+    expect(finding?.ok).toBe(false)
+    expect(finding?.detail).toContain('not a valid Session ID')
   })
 
   it('rolls back the target when the manifest write fails', async () => {
@@ -261,7 +308,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       planSetup({
         layout,
         scope: 'project',
-        sessionId: 's',
+        sessionId: SESSION_A,
         claudeVersionRaw: PINNED,
         files: failing,
       }),
@@ -270,7 +317,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     expect(files.store.get(target)).toBe(before)
   })
 
-  it('prunes adapter-created empty containers on remove', async () => {
+  it('deletes the adapter-created settings file on fresh remove instead of leaving {} (N3)', async () => {
     const files = memoryFiles()
     const layout = resolveClaudeSettingsLayout({
       homeDirectory: join('fake-root', 'h'),
@@ -281,11 +328,12 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     await planSetup({
       layout,
       scope: 'user',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
     const target = targetPathForScope(layout, 'user')
+    expect(files.store.has(target)).toBe(true)
     const removed = await planRemove({
       layout,
       scope: 'user',
@@ -294,10 +342,61 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
       files,
     })
     expect(removed.status).toBe('removed')
-    const restored = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
-    expect(restored['permissions']).toBeUndefined()
-    expect(restored['hooks']).toBeUndefined()
+    expect(files.store.has(target)).toBe(false)
     expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('restores a pre-existing file byte-for-byte instead of deleting it (N3)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const originalRaw = `${JSON.stringify(
+      { cleanupPeriodDays: 30, permissions: { allow: ['Bash(ls)'] } },
+      null,
+      2,
+    )}\n`
+    const files = memoryFiles({ [target]: originalRaw })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(files.store.has(target)).toBe(true)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.get(target)).toBe(originalRaw)
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('keeps a pre-existing empty {} file instead of deleting it (N3 boundary)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const originalRaw = '{}\n'
+    const files = memoryFiles({ [target]: originalRaw })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.has(target)).toBe(true)
+    expect(files.store.get(target)).toBe(originalRaw)
   })
 
   it('restores exact user bytes on setup-remove, including absent deny/ask (H6)', async () => {
@@ -313,7 +412,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     await planSetup({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -352,7 +451,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
         planSetup({
           layout,
           scope: 'project',
-          sessionId: 'sess-1',
+          sessionId: SESSION_A,
           claudeVersionRaw: PINNED,
           files,
         }),
@@ -371,7 +470,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     await planSetup({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -387,7 +486,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     const doctor = await planDoctor({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -408,30 +507,30 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     await planSetup({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })
     const rotated = await planSetup({
       layout,
       scope: 'project',
-      sessionId: 'sess-2',
+      sessionId: SESSION_B,
       claudeVersionRaw: PINNED,
       files,
     })
     expect(rotated.status).toBe('applied')
     const document = files.store.get(target) as string
-    expect(document).toContain('--session sess-2')
-    expect(document).not.toContain('--session sess-1')
+    expect(document).toContain(`--session ${SESSION_B}`)
+    expect(document).not.toContain(`--session ${SESSION_A}`)
     const manifest = JSON.parse(files.store.get(manifestPathForTarget(target)) as string) as Record<
       string,
       unknown
     >
-    expect(manifest['sessionId']).toBe('sess-2')
+    expect(manifest['sessionId']).toBe(SESSION_B)
     const healthy = await planDoctor({
       layout,
       scope: 'project',
-      sessionId: 'sess-2',
+      sessionId: SESSION_B,
       claudeVersionRaw: PINNED,
       files,
     })
@@ -439,7 +538,7 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     const stale = await planDoctor({
       layout,
       scope: 'project',
-      sessionId: 'sess-1',
+      sessionId: SESSION_A,
       claudeVersionRaw: PINNED,
       files,
     })

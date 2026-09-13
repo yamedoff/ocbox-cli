@@ -20,6 +20,13 @@ export interface OwnedManifest {
   readonly backupPath: string | null
   readonly createdPointers: readonly string[]
   readonly protectedRules: readonly string[]
+  /**
+   * True when setup created the target settings file from nothing. `remove`
+   * deletes that adapter-created file instead of leaving an empty `{}`, while a
+   * pre-existing file is always rewritten (byte-for-byte for the untouched
+   * shape) rather than deleted.
+   */
+  readonly createdFile: boolean
 }
 
 export function hashDocument(document: ClaudeSettingsDocument): string {
@@ -143,6 +150,7 @@ export function parseManifestContent(raw: string | null): OwnedManifest | null {
       protectedRules: Array.isArray(parsed.protectedRules)
         ? parsed.protectedRules.filter((entry): entry is string => typeof entry === 'string')
         : [],
+      createdFile: parsed.createdFile === true,
     }
   } catch {
     return null
