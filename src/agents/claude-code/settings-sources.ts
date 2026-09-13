@@ -8,15 +8,6 @@ export type ClaudeSettingsSource =
   | 'user'
   | 'explicit'
 
-export interface ClaudeSettingsLayout {
-  readonly platform: string
-  readonly userSettingsPath: string
-  readonly sharedProjectSettingsPath: string
-  readonly localProjectSettingsPath: string
-  readonly managedSettingsPath: string | null
-  readonly precedenceHighToLow: readonly ClaudeSettingsSource[]
-}
-
 export interface ClaudeLayoutOptions {
   readonly homeDirectory?: string | undefined
   readonly projectDirectory?: string | undefined

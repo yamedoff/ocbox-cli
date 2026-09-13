@@ -2,7 +2,11 @@ import { execFile } from 'node:child_process'
 import { Args, Flags } from '@oclif/core'
 import { liveFileAccess, planDoctor } from '../../agents/claude-code/planner.js'
 import { resolveClaudeSettingsLayout as resolveLayout } from '../../agents/claude-code/settings-sources.js'
-import { PINNED_CLAUDE_CODE_VERSION } from '../../agents/claude-code/version.js'
+import {
+  assertClaudeVersionOverrideAllowed,
+  PINNED_CLAUDE_CODE_VERSION,
+  TEST_HARNESS_ENV,
+} from '../../agents/claude-code/version.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 
 function readInstalledVersion(): Promise<string> {
@@ -33,7 +37,7 @@ export default class AgentDoctor extends OcboxCommand {
     session: Flags.string({ description: 'Selected Session ID for covered shell routing' }),
     'project-dir': Flags.string({ description: 'Project directory owning .claude settings' }),
     'claude-version': Flags.string({
-      description: `Override detected version (tests only; pinned ${PINNED_CLAUDE_CODE_VERSION})`,
+      description: `Override detected version (offline test harness only, requires ${TEST_HARNESS_ENV}=1; pinned ${PINNED_CLAUDE_CODE_VERSION})`,
     }),
   }
 
@@ -50,7 +54,9 @@ export default class AgentDoctor extends OcboxCommand {
           throw new Error(`unknown adapter "${adapter}"; only "claude-code" is supported`)
         }
         const scope = flags.scope as 'user' | 'project' | 'local'
-        const detected = flags['claude-version'] ?? (await readInstalledVersion())
+        const override = flags['claude-version']
+        assertClaudeVersionOverrideAllowed(override)
+        const detected = override ?? (await readInstalledVersion())
         const layout = resolveLayout({ projectDirectory: flags['project-dir'] })
         const result = await planDoctor({
           layout,

@@ -1,3 +1,10 @@
+import {
+  CLAUDE_CODE_PINNED_SURFACE_EVIDENCE,
+  CLAUDE_HOOK_EVENTS,
+  CLAUDE_TOOL_MATCHERS,
+  PINNED_CLAUDE_CODE_VERSION,
+} from './version.js'
+
 export interface CapabilityRow {
   readonly capability: string
   readonly status: 'covered' | 'uncovered'
@@ -8,8 +15,7 @@ export const COVERED_CAPABILITIES: readonly CapabilityRow[] = [
   {
     capability: 'Bash tool calls via PreToolUse matcher "Bash"',
     status: 'covered',
-    detail:
-      'Proven for the pinned version only. The owned hook entrypoint reads the PreToolUse stdin JSON (tool_input.command), routes matching shell execution as a routing aid to the selected Session through "ocbox exec", and exits 2 to block when the payload is unreadable or no Session is usable. A routed call exports OCBOX_AGENT_ROUTED=1 and OCBOX_AGENT_ADAPTER=claude-code so a nested adapter-owned call is left local instead of recursing.',
+    detail: `Proven for the pinned version only (single pinned surface: ${CLAUDE_HOOK_EVENTS.length} hook events, ${CLAUDE_TOOL_MATCHERS.length} tool matchers, evidence ${CLAUDE_CODE_PINNED_SURFACE_EVIDENCE.fixture}). The owned hook entrypoint reads the PreToolUse stdin JSON (tool_input.command), routes matching shell execution as a routing aid to the selected Session through "ocbox exec", and exits 2 to block when the payload is unreadable or no Session is usable. A routed call exports OCBOX_AGENT_ROUTED=1 and OCBOX_AGENT_ADAPTER=claude-code so a nested adapter-owned call is left local instead of recursing.`,
   },
   {
     capability: 'Source movement through explicit sync',
@@ -69,41 +75,12 @@ export const CAPABILITY_MATRIX: readonly CapabilityRow[] = [
 export const ROUTING_AID_NOTICE =
   'This adapter is a reversible routing aid, not host isolation. Only the covered Bash row above is routed; every uncovered row stays local.'
 
-export const HOOKABLE_TOOL_NAMES: readonly string[] = [
-  'Bash',
-  'Edit',
-  'Write',
-  'NotebookEdit',
-  'Read',
-  'Glob',
-  'Grep',
-  'LSP',
-  'WebFetch',
-  'WebSearch',
-  'Task',
-  'Agent',
-  'Skill',
-  'TodoWrite',
-  'Monitor',
-  'PowerShell',
-  'ExitPlanMode',
-]
+export const PINNED_SURFACE_SUMMARY =
+  `Claude Code ${PINNED_CLAUDE_CODE_VERSION}: single pinned surface with ` +
+  `${CLAUDE_HOOK_EVENTS.length} hook events and ${CLAUDE_TOOL_MATCHERS.length} tool matchers ` +
+  `(evidence ${CLAUDE_CODE_PINNED_SURFACE_EVIDENCE.fixture}).`
 
-export const HOOK_EVENTS: readonly string[] = [
-  'SessionStart',
-  'Setup',
-  'UserPromptSubmit',
-  'UserPromptExpansion',
-  'PreToolUse',
-  'PermissionRequest',
-  'PermissionDenied',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'PostToolBatch',
-  'Notification',
-  'MessageDisplay',
-  'SubagentStart',
-  'SubagentStop',
-  'TaskCreated',
-  'TaskCompleted',
-]
+export {
+  CLAUDE_HOOK_EVENTS as HOOK_EVENTS,
+  CLAUDE_TOOL_MATCHERS as HOOKABLE_TOOL_NAMES,
+} from './version.js'

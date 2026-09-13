@@ -1,5 +1,5 @@
 import { CAPABILITY_MATRIX, ROUTING_AID_NOTICE } from './capabilities.js'
-import { detectDrift, planMerge, planRemove as planRemoveEntries, sha256Json } from './merge.js'
+import { planMerge, planRemove as planRemoveEntries, sha256Json } from './merge.js'
 import {
   type ClaudeSettingsDocument,
   collectDenyAskRules,
@@ -287,11 +287,6 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
       try {
         const manifest = JSON.parse(manifestRaw) as OwnedManifest
-        const drift = detectDrift(
-          JSON.parse(JSON.stringify({})) as ClaudeSettingsDocument,
-          current.document,
-        )
-        void drift
         if (
           manifest.baseHash !== sha256Json(current.document) &&
           manifest.appliedHash !== hashDocument(current.document)

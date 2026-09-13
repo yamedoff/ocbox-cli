@@ -3,8 +3,10 @@ import {
   CAPABILITY_MATRIX,
   HOOK_EVENTS,
   HOOKABLE_TOOL_NAMES,
+  PINNED_SURFACE_SUMMARY,
   ROUTING_AID_NOTICE,
 } from '../../../src/agents/claude-code/capabilities.js'
+import { CLAUDE_HOOK_EVENTS, CLAUDE_TOOL_MATCHERS } from '../../../src/agents/claude-code/version.js'
 import { buildHookCommand, decideRouting } from '../../../src/agents/claude-code/routing.js'
 import { OWNED_HOOK_COMMAND_FRAGMENT } from '../../../src/agents/claude-code/settings-model.js'
 
@@ -83,5 +85,14 @@ describe('claude-code routing and capability matrix', () => {
     for (const required of ['Edit', 'WebFetch', 'MCP', 'subagent']) {
       expect(names).toContain(required)
     }
+  })
+
+  it('references exactly one pinned hook/tool surface', () => {
+    expect([...HOOKABLE_TOOL_NAMES]).toEqual([...CLAUDE_TOOL_MATCHERS])
+    expect([...HOOK_EVENTS]).toEqual([...CLAUDE_HOOK_EVENTS])
+    expect(HOOKABLE_TOOL_NAMES).toContain('Bash')
+    expect(HOOK_EVENTS).toContain('PreToolUse')
+    expect(PINNED_SURFACE_SUMMARY).toContain('single pinned surface')
+    expect(CAPABILITY_MATRIX[0]?.detail).toContain('single pinned surface')
   })
 })

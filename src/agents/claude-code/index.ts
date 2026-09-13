@@ -3,6 +3,7 @@ export {
   COVERED_CAPABILITIES,
   HOOK_EVENTS,
   HOOKABLE_TOOL_NAMES,
+  PINNED_SURFACE_SUMMARY,
   ROUTING_AID_NOTICE,
   UNCOVERED_CAPABILITIES,
 } from './capabilities.js'
@@ -21,8 +22,8 @@ export {
   stableStringify,
 } from './json.js'
 export type { JsonObject, JsonPrimitive, JsonValue } from './json.js'
-export { detectDrift, hashOwnedValue, planMerge, planRemove, sha256Json } from './merge.js'
-export type { DriftReport, MergePlan, PlanMergeOptions, RemovePlan } from './merge.js'
+export { hashOwnedValue, planMerge, planRemove, sha256Json } from './merge.js'
+export type { MergePlan, PlanMergeOptions, RemovePlan } from './merge.js'
 export type {
   DoctorResult,
   PlannerFileAccess,
@@ -81,15 +82,19 @@ export {
 export type { OwnedManifest } from './store.js'
 export {
   CLAUDE_CODE_PINNED_VERSION,
+  CLAUDE_CODE_PINNED_SURFACE_EVIDENCE,
+  CLAUDE_CODE_PINNED_SURFACE_FIXTURE,
   CLAUDE_CODE_SETTINGS_SCHEMA_REVISION,
   CLAUDE_CODE_VERSION_PINS,
   CLAUDE_HOOK_EVENTS,
   CLAUDE_TOOL_MATCHERS,
+  assertClaudeVersionOverrideAllowed,
   detectClaudeCodeVersion,
   gateClaudeVersion,
   parseClaudeCodeVersion,
   PINNED_CLAUDE_CODE_VERSION,
   parseClaudeVersionOutput,
   settingsSchemaRevisionFor,
+  TEST_HARNESS_ENV,
 } from './version.js'
 export type { ClaudeCodeVersionDescriptor, ClaudeHookEvent } from './version.js'

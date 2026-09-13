@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { replaceFileAtomically } from '../../state/exclusive-file-lock.js'
 import { hashBytes } from './json.js'
@@ -47,13 +47,44 @@ export async function readTextIfPresent(path: string): Promise<string | null> {
   }
 }
 
+const DEFAULT_FILE_MODE = 0o600
+
+async function resolveTargetMode(path: string): Promise<number> {
+  try {
+    const info = await stat(path)
+    return info.mode & 0o777
+  } catch {
+    return DEFAULT_FILE_MODE
+  }
+}
+
+async function fsyncParentDirectory(directory: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(directory, 'r')
+  } catch {
+    return
+  }
+  try {
+    await handle.sync()
+  } catch {
+    // Some platforms (notably Windows) cannot fsync a directory handle; the
+    // rename itself still provides atomic replacement there.
+  } finally {
+    await handle.close()
+  }
+}
+
 export async function writeFileAtomic(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
+  const directory = dirname(path)
+  await mkdir(directory, { recursive: true })
+  const mode = await resolveTargetMode(path)
   const temporary = `${path}.tmp-${randomUUID()}`
   let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
-    handle = await open(temporary, 'wx', 0o600)
+    handle = await open(temporary, 'wx', mode)
     await handle.writeFile(content, 'utf8')
+    await handle.chmod(mode)
     await handle.sync()
     await handle.close()
     handle = undefined
@@ -62,6 +93,7 @@ export async function writeFileAtomic(path: string, content: string): Promise<vo
     } catch {
       await rename(temporary, path)
     }
+    await fsyncParentDirectory(directory)
   } catch (error) {
     await handle?.close()
     await rm(temporary, { force: true })
@@ -90,9 +122,10 @@ export function parseManifestContent(raw: string | null): OwnedManifest | null {
     if (typeof parsed.targetPath !== 'string') return null
     if (typeof parsed.baseHash !== 'string') return null
     if (typeof parsed.appliedHash !== 'string') return null
+    if (typeof parsed.pinnedVersion !== 'string' || parsed.pinnedVersion.length === 0) return null
     return {
       adapter: 'claude-code',
-      pinnedVersion: parsed.pinnedVersion ?? ('2.0.51' as OwnedManifest['pinnedVersion']),
+      pinnedVersion: parsed.pinnedVersion as OwnedManifest['pinnedVersion'],
       targetPath: parsed.targetPath,
       baseHash: parsed.baseHash,
       appliedHash: parsed.appliedHash,
