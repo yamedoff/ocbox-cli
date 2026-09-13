@@ -1,4 +1,5 @@
 /** Side-effect-free T3 infrastructure entrypoint. */
+export * from './agents/index.js'
 export * from './auth/index.js'
 export * from './config/index.js'
 export * from './credentials/index.js'

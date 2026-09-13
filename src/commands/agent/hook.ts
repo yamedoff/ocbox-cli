@@ -6,10 +6,13 @@ import {
   guardDenyReason,
   runClaudeRoutingHook,
 } from '../../agents/claude-code/hook.js'
+import { codexPreToolUseDenyDecision } from '../../agents/codex/hook-contract.js'
+import { runCodexRoutingHook } from '../../agents/codex/hook.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { createLifecycleService, type RuntimeFlags } from '../../cli/runtime.js'
 import {
   processInterrupts,
+  runExecutionCommand,
   runExecutionCommandResult,
   type ExecutionCommandIo,
 } from '../../execution/index.js'
@@ -57,6 +60,26 @@ export function createClaudeHookInvoker(
 }
 
 /**
+ * Builds the codex hook's `ocbox exec` invocation. Codex routed execution
+ * output goes to stderr so stdout stays a clean hook-decision channel, matching
+ * the accepted T10 entrypoint.
+ */
+export function createCodexHookInvoker(
+  runtime: RuntimeFlags,
+  io: ExecutionCommandIo,
+): (argv: readonly string[]) => Promise<number> {
+  const routedIo: ExecutionCommandIo = { stdout: io.stderr, stderr: io.stderr }
+  return async (argv) =>
+    runExecutionCommand(
+      argv.slice(1),
+      async (parsed) =>
+        (await createLifecycleService(runtime)).executionTarget(parsed.sessionId ?? undefined),
+      routedIo,
+      { interrupts: processInterrupts },
+    )
+}
+
+/**
  * Injectable surface for the fail-closed hook boundary. Everything the boundary
  * touches (stdin reader, exec invoker, writers) is a dependency so the
  * unexpected-error paths can be exercised without a real stream or process exit.
@@ -72,6 +95,21 @@ export interface AgentHookSafetyDeps {
 }
 
 /**
+ * Injectable surface for the codex fail-closed hook boundary. It mirrors the
+ * claude-code boundary but preserves the codex decision format (a JSON string)
+ * and the codex numeric exit contract (0 after a routed deny, 2 fail-closed).
+ */
+export interface CodexHookSafetyDeps {
+  readonly adapter: string
+  readonly readInput: () => Promise<string>
+  readonly sessionId: string | null
+  readonly environment: Readonly<Record<string, string | undefined>>
+  readonly invokeExec: (argv: readonly string[]) => Promise<number>
+  readonly writeError: (message: string) => void
+  readonly writeDecision: (json: string) => void
+}
+
+/**
  * Redacts an unexpected error before it crosses the hook boundary. A thrown
  * error can carry a credential or a host-local path, and the hook's decision
  * reason and stderr are captured by Claude Code, so the detail is passed through
@@ -80,6 +118,12 @@ export interface AgentHookSafetyDeps {
 function safeGuardReason(message: string): string {
   const redacted = redactForOutput(message)
   return guardDenyReason(typeof redacted === 'string' ? redacted : 'unexpected hook error')
+}
+
+function safeCodexGuardReason(message: string): string {
+  const redacted = redactForOutput(message)
+  const detail = typeof redacted === 'string' ? redacted : 'unexpected hook error'
+  return `ocbox codex router: ${detail}; failing closed`
 }
 
 /**
@@ -101,8 +145,21 @@ function emitGuardDeny(deps: AgentHookSafetyDeps, reason: string): void {
   }
 }
 
+function emitCodexGuardDeny(deps: CodexHookSafetyDeps, reason: string): void {
+  try {
+    deps.writeError(reason)
+  } catch {
+    // The process is failing closed regardless of whether stderr is writable.
+  }
+  try {
+    deps.writeDecision(codexPreToolUseDenyDecision(reason))
+  } catch {
+    // Do not retry a decision write; there is no second execution to report.
+  }
+}
+
 /**
- * Top-level fail-closed boundary for `ocbox agent hook`.
+ * Top-level fail-closed boundary for `ocbox agent hook claude-code`.
  *
  * Claude Code treats a PreToolUse hook exit other than 2 as a non-blocking
  * warning, so an uncaught generic error (exit 1) would let a covered Bash call
@@ -141,17 +198,61 @@ export async function runAgentHookSafely(deps: AgentHookSafetyDeps): Promise<num
 }
 
 /**
- * Adapter-owned hook entrypoint. Claude Code pipes the PreToolUse JSON on
+ * Top-level fail-closed boundary for `ocbox agent hook codex`.
+ *
+ * It preserves the accepted T10 codex contract: a routed covered call writes
+ * the documented PreToolUse deny decision and exits 0 so Codex does not run it
+ * locally, while an unreadable payload or missing Session fails closed with
+ * exit 2. Unexpected stdin, exec, or writer failures are redacted and converted
+ * into the same fail-closed deny with exit 2 instead of escaping as exit 1.
+ */
+export async function runCodexAgentHookSafely(deps: CodexHookSafetyDeps): Promise<number> {
+  if (deps.adapter !== 'codex') {
+    try {
+      deps.writeError(`unknown adapter "${deps.adapter}"; only "codex" is supported`)
+    } catch {
+      // Preserve the fail-closed exit code even when stderr is unavailable.
+    }
+    return 2
+  }
+  let rawInput: string
+  try {
+    rawInput = await deps.readInput()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    emitCodexGuardDeny(deps, safeCodexGuardReason(`unexpected hook process error (${detail})`))
+    return 2
+  }
+  try {
+    return await runCodexRoutingHook({
+      rawInput,
+      sessionId: deps.sessionId,
+      environment: deps.environment,
+      invokeExec: deps.invokeExec,
+      writeError: deps.writeError,
+      writeDecision: deps.writeDecision,
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    emitCodexGuardDeny(deps, safeCodexGuardReason(`unexpected hook process error (${detail})`))
+    return 2
+  }
+}
+
+/**
+ * Adapter-owned hook entrypoint. Each adapter pipes its PreToolUse JSON on
  * stdin; this command applies fail-closed routing, runs the selected Session
  * through the same `ocbox exec` runner as the CLI command, and then emits the
  * documented blocking `permissionDecision: "deny"` so the original local Bash
  * copy never executes a second time.
  */
 export default class AgentHook extends OcboxCommand {
-  static override description =
-    'Internal claude-code hook entrypoint (reads PreToolUse JSON from stdin)'
+  static override description = 'Internal agent hook entrypoint (reads PreToolUse JSON from stdin)'
   static override args = {
-    adapter: Args.string({ required: true, description: 'Adapter name (only claude-code)' }),
+    adapter: Args.string({
+      required: true,
+      description: 'Adapter name ("codex" or "claude-code")',
+    }),
   }
   static override flags = {
     ...runtimeFlags,
@@ -160,20 +261,45 @@ export default class AgentHook extends OcboxCommand {
 
   async run(): Promise<void> {
     const { args, flags } = await this.parse(AgentHook)
+    const adapter = String(args.adapter ?? '')
     const runtime: RuntimeFlags = flags
-    const io: ExecutionCommandIo = { stdout: process.stdout, stderr: process.stderr }
-    process.exitCode = await runAgentHookSafely({
-      adapter: String(args.adapter ?? ''),
-      readInput: readStandardInput,
-      sessionId: flags.session ?? null,
-      environment: process.env,
-      invokeExec: createClaudeHookInvoker(runtime, io),
-      writeError: (message) => {
-        process.stderr.write(`${message}\n`)
-      },
-      writeDecision: (decision) => {
-        process.stdout.write(`${JSON.stringify(decision)}\n`)
-      },
-    })
+    if (adapter === 'claude-code') {
+      const io: ExecutionCommandIo = { stdout: process.stdout, stderr: process.stderr }
+      process.exitCode = await runAgentHookSafely({
+        adapter,
+        readInput: readStandardInput,
+        sessionId: flags.session ?? null,
+        environment: process.env,
+        invokeExec: createClaudeHookInvoker(runtime, io),
+        writeError: (message) => {
+          process.stderr.write(`${message}\n`)
+        },
+        writeDecision: (decision) => {
+          process.stdout.write(`${JSON.stringify(decision)}\n`)
+        },
+      })
+      return
+    }
+    if (adapter === 'codex') {
+      const io: ExecutionCommandIo = { stdout: process.stderr, stderr: process.stderr }
+      process.exitCode = await runCodexAgentHookSafely({
+        adapter,
+        readInput: readStandardInput,
+        sessionId: flags.session ?? null,
+        environment: process.env,
+        invokeExec: createCodexHookInvoker(runtime, io),
+        writeError: (message) => {
+          process.stderr.write(`${message}\n`)
+        },
+        writeDecision: (json) => {
+          process.stdout.write(`${json}\n`)
+        },
+      })
+      return
+    }
+    process.stderr.write(
+      `unknown adapter "${adapter}"; only "codex", "claude-code" are supported\n`,
+    )
+    process.exitCode = 2
   }
 }
