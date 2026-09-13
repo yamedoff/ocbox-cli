@@ -133,15 +133,30 @@ function safeOutcomeDetail(error: unknown): ExecutionOutcomeDetail | undefined {
 }
 
 /**
+ * Honest, structured view of an execution invocation. `started` is false only
+ * for failures detected before the remote execution began (argument parsing,
+ * target resolution, or `service.start`); those are the failures a caller may
+ * choose to map to a blocking hook decision. `exitCode` is always the normative
+ * CLI mapping for `outcome`, never the fail-closed hook exit.
+ */
+export interface ExecutionCommandResult {
+  readonly started: boolean
+  readonly outcome: ExecutionOutcome
+  readonly exitCode: number
+}
+
+/**
  * Complete provider-neutral `ocbox exec` flow. The caller resolves the selected
  * Session/provider target; this runner owns parsing, streaming, Ctrl-C, and exit policy.
+ * This variant exposes the structured outcome so adapter hooks can report the
+ * remote result (including a legitimate remote exit 2) without losing fidelity.
  */
-export async function runExecutionCommand(
+export async function runExecutionCommandResult(
   input: readonly string[],
   resolveTarget: ExecutionTargetResolver,
   io: ExecutionCommandIo,
   options: ExecutionCommandOptions = {},
-): Promise<number> {
+): Promise<ExecutionCommandResult> {
   let mode = requestedOutputMode(input)
   let arguments_: ParsedExecArguments
   let run: ExecutionRun
@@ -170,8 +185,11 @@ export async function runExecutionCommand(
   } catch (error) {
     const completion = beforeStartFailure(error)
     await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
-    if (options.failClosedBeforeStart === true) return 2
-    return exitCodeForExecution(completion.outcome)
+    return {
+      started: false,
+      outcome: completion.outcome,
+      exitCode: exitCodeForExecution(completion.outcome),
+    }
   }
 
   let forceExit: ((completion: ExecutionCompletion) => void) | undefined
@@ -193,8 +211,28 @@ export async function runExecutionCommand(
     terminal = true
     terminalStreamAccepted = true
     await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
-    return exitCodeForExecution(completion.outcome)
+    return {
+      started: true,
+      outcome: completion.outcome,
+      exitCode: exitCodeForExecution(completion.outcome),
+    }
   } finally {
     dispose()
   }
+}
+
+/**
+ * Numeric-exit entrypoint used by the `ocbox exec` CLI and the adapter hook
+ * builder. It preserves the honest outcome exit code, except when the caller
+ * explicitly asks pre-start failures to fail closed as Claude Code's exit 2.
+ */
+export async function runExecutionCommand(
+  input: readonly string[],
+  resolveTarget: ExecutionTargetResolver,
+  io: ExecutionCommandIo,
+  options: ExecutionCommandOptions = {},
+): Promise<number> {
+  const result = await runExecutionCommandResult(input, resolveTarget, io, options)
+  if (!result.started && options.failClosedBeforeStart === true) return 2
+  return result.exitCode
 }

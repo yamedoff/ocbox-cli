@@ -9,8 +9,23 @@ export {
 } from './capabilities.js'
 export { ClaudeCodeAdapterError } from './errors.js'
 export type { ClaudeCodeAdapterErrorCode } from './errors.js'
-export { parseClaudeHookInput, runClaudeRoutingHook } from './hook.js'
-export type { ClaudeHookInput, ClaudeRoutingHookOptions } from './hook.js'
+export {
+  buildClaudeDenyDecision,
+  guardDenyReason,
+  HOOK_DENY_SOURCE_GUARD,
+  HOOK_DENY_SOURCE_ROUTE,
+  parseClaudeHookInput,
+  routeDenyReason,
+  runClaudeRoutingHook,
+} from './hook.js'
+export type {
+  ClaudeHookDenyDecision,
+  ClaudeHookDenySource,
+  ClaudeHookExecResult,
+  ClaudeHookInput,
+  ClaudeHookOutcome,
+  ClaudeRoutingHookOptions,
+} from './hook.js'
 export {
   cloneJson,
   deepEqual,
@@ -24,6 +39,10 @@ export {
 export type { JsonObject, JsonPrimitive, JsonValue } from './json.js'
 export { hashOwnedValue, ownedEntriesStatus, planMerge, planRemove, sha256Json } from './merge.js'
 export type { MergePlan, PlanMergeOptions, RemovePlan } from './merge.js'
+export {
+  assertSettingsPathWithinRoot,
+  ClaudeSettingsPathBoundaryError,
+} from './path-boundary.js'
 export type {
   DoctorResult,
   PlannerFileAccess,

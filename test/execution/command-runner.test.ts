@@ -9,6 +9,7 @@ import type {
 import { OcboxError } from '../../src/errors/index.js'
 import {
   runExecutionCommand,
+  runExecutionCommandResult,
   type ExecutionInterruptSource,
   type ExecutionWritable,
 } from '../../src/execution/index.js'
@@ -299,5 +300,36 @@ describe('execution command runner', () => {
       outcome: 'cancelled',
     })
     expect(lines.filter((line) => line['kind'] === 'event')).toHaveLength(1)
+  })
+
+  it('surfaces the honest structured result for a started remote run', async () => {
+    const output = io()
+    const result = await runExecutionCommandResult(
+      ['--json', '--', process.execPath, '-e', 'process.exit(2)'],
+      () => target(),
+      output,
+    )
+    expect(result.started).toBe(true)
+    expect(result.exitCode).toBe(2)
+    expect(result.outcome.kind).toBe('remote_result')
+  })
+
+  it('marks a pre-start failure started:false while keeping the honest exit code', async () => {
+    const output = io()
+    const result = await runExecutionCommandResult(
+      ['--json', '--', 'tool'],
+      () => {
+        throw new OcboxError({
+          code: 'ENVIRONMENT_NOT_FOUND',
+          message: 'Session was not found',
+          requestId: ids.request,
+        })
+      },
+      output,
+      { failClosedBeforeStart: true },
+    )
+    expect(result.started).toBe(false)
+    expect(result.exitCode).toBe(125)
+    expect(result.outcome.kind).toBe('infrastructure_error')
   })
 })

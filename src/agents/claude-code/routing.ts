@@ -20,10 +20,27 @@ export interface RoutingInput {
 /**
  * The installed hook command is a real `ocbox` entrypoint. It reads the Claude
  * Code PreToolUse stdin JSON, applies routing, and fails closed with exit 2.
+ *
+ * Every hook the adapter installs must be detectable by `parseOwnedHookCommand`
+ * so `doctor` can report it and `remove` can delete it. A Session whose text
+ * contains whitespace (padded, internal, control) would embed an ambiguous
+ * `--session` token that the anchored parser can never recover, stranding an
+ * unremovable hook. The build is therefore gated by a build/parse round-trip:
+ * callers must pass the canonical value, and anything that cannot round-trip is
+ * refused before it reaches a settings file.
  */
 export function buildHookCommand(sessionId: string | null): string {
   const sessionFragment = sessionId === null ? '' : ` --session ${sessionId}`
-  return `${OWNED_HOOK_COMMAND_FRAGMENT}${sessionFragment}`
+  const command = `${OWNED_HOOK_COMMAND_FRAGMENT}${sessionFragment}`
+  const parsed = parseOwnedHookCommand(command)
+  if (parsed === null || parsed.sessionId !== sessionId) {
+    throw new Error(
+      `Refusing to install an undetectable owned hook: Session ${JSON.stringify(
+        sessionId,
+      )} does not round-trip through the hook command grammar`,
+    )
+  }
+  return command
 }
 
 /**

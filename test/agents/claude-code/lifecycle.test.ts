@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+﻿import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -544,5 +544,288 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     })
     expect(stale.ok).toBe(false)
     expect(stale.findings.some((finding) => finding.check === 'session' && !finding.ok)).toBe(true)
+  })
+
+  it('canonicalizes a padded Session once across setup, manifest, doctor, and remove (F2)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const padded = `  ${SESSION_A}  `
+    const setup = await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: padded,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(setup.status).toBe('applied')
+    expect(setup.sessionId).toBe(SESSION_A)
+    const document = files.store.get(target) as string
+    expect(document).toContain(`--session ${SESSION_A}`)
+    expect(document).not.toContain(`--session   ${SESSION_A}`)
+    const manifest = JSON.parse(files.store.get(manifestPathForTarget(target)) as string) as Record<
+      string,
+      unknown
+    >
+    expect(manifest['sessionId']).toBe(SESSION_A)
+    const repeat = await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(repeat.status).toBe('already-applied')
+    const doctor = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: `\t${SESSION_A}\n`,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(doctor.ok).toBe(true)
+    expect(doctor.findings.find((finding) => finding.check === 'owned-entries')?.ok).toBe(true)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.has(target)).toBe(false)
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('rotates to a padded Session via the canonical value and still removes it (F2)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const rotated = await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: `  ${SESSION_B}  `,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(rotated.status).toBe('applied')
+    const document = files.store.get(target) as string
+    expect(document).toContain(`--session ${SESSION_B}`)
+    expect(document).not.toContain(SESSION_A)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(removed.repairPlan).toEqual([])
+  })
+
+  it.each([
+    ['internal space', '1111 1111-1111-4111-8111-111111111111'],
+    ['internal tab', '11111111-1111-4111-8111-11111111111\t1'],
+    ['trailing NUL control', '11111111-1111-4111-8111-111111111111\u0000'],
+    ['opaque short id', 'sess-1'],
+  ])('refuses a Session with %s before any write (F2)', async (_label, sessionId) => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId,
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/not a valid Session ID/)
+    expect(files.store.has(target)).toBe(false)
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('restores non-canonical original bytes exactly (CRLF, 4-space, no trailing newline) (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original =
+      '{\r\n    "cleanupPeriodDays": 30,\r\n    "permissions": {\r\n        "allow": [\r\n            "Bash(ls)"\r\n        ]\r\n    }\r\n}'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(files.store.get(target)).not.toBe(original)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.get(target)).toBe(original)
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('restores tab-indented bytes with a trailing newline exactly (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original =
+      '{\n\t"cleanupPeriodDays": 7,\n\t"permissions": {\n\t\t"allow": ["Bash(git status)"]\n\t}\n}\n'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.get(target)).toBe(original)
+  })
+
+  it('keeps the original backup across a Session rotation so remove restores it (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original = '{\n    "permissions": {"allow": ["Bash(ls)"]},\n    "keep": true\n}\n'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const manifestPath = manifestPathForTarget(target)
+    const firstBackup = (
+      JSON.parse(files.store.get(manifestPath) as string) as Record<string, unknown>
+    )['backupPath'] as string
+    expect(files.store.get(firstBackup)).toBe(original)
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_B,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const rotatedBackup = (
+      JSON.parse(files.store.get(manifestPath) as string) as Record<string, unknown>
+    )['backupPath'] as string
+    expect(rotatedBackup).toBe(firstBackup)
+    expect(files.store.get(firstBackup)).toBe(original)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.get(target)).toBe(original)
+  })
+
+  it('refuses destructive byte restoration on drift and preserves user edits (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original = '{\n        "permissions": { "allow": ["Bash(ls)"] }\n}\n'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const edited = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
+    edited['userNote'] = 'edited by hand'
+    files.store.set(target, JSON.stringify(edited, null, 4))
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(removed.repairPlan.join(' ').toLowerCase()).toContain('three-way')
+    const restored = files.store.get(target) as string
+    expect(restored).not.toBe(original)
+    expect((JSON.parse(restored) as Record<string, unknown>)['userNote']).toBe('edited by hand')
+  })
+
+  it('falls back to a semantic prune when the owned backup is missing (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original = '{\n\t"permissions": { "allow": ["Bash(ls)"] },\n\t"keep": 1\n}\n'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const manifest = JSON.parse(files.store.get(manifestPathForTarget(target)) as string) as Record<
+      string,
+      unknown
+    >
+    files.store.delete(manifest['backupPath'] as string)
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(JSON.parse(files.store.get(target) as string)).toEqual(JSON.parse(original))
+  })
+
+  it('does not trust a tampered backup during remove (F4)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original = '{\n  "permissions": { "allow": ["Bash(ls)"] },\n  "keep": true\n}\n'
+    const files = memoryFiles({ [target]: original })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const manifest = JSON.parse(files.store.get(manifestPathForTarget(target)) as string) as Record<
+      string,
+      unknown
+    >
+    files.store.set(manifest['backupPath'] as string, '{"evil":true}')
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    const restored = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
+    expect(restored).toEqual(JSON.parse(original))
+    expect(restored['evil']).toBeUndefined()
   })
 })

@@ -1,6 +1,8 @@
+import { realpath } from 'node:fs/promises'
 import { SessionIdSchema } from '../../contracts.js'
 import { CAPABILITY_MATRIX, ROUTING_AID_NOTICE } from './capabilities.js'
 import { planMerge, planRemove as planRemoveEntries, sha256Json } from './merge.js'
+import { assertSettingsPathWithinRoot } from './path-boundary.js'
 import {
   type ClaudeSettingsDocument,
   collectDenyAskRules,
@@ -37,6 +39,13 @@ export interface PlannerFileAccess {
   readonly readText: (path: string) => Promise<string | null>
   readonly writeText: (path: string, content: string) => Promise<void>
   readonly removePath?: (path: string) => Promise<void>
+  /**
+   * Optional link-resolving realpath. When provided (the live CLI always does),
+   * every plan operation refuses a settings target whose existing parents or
+   * target escape the expected project/user settings root through a directory
+   * junction, symlink, or Windows reparse point.
+   */
+  readonly realpath?: (path: string) => Promise<string>
   readonly now?: () => Date
 }
 
@@ -83,16 +92,42 @@ function stableStringify(document: ClaudeSettingsDocument): string {
   return `${JSON.stringify(document, null, 2)}\n`
 }
 
-/**
- * The selected Session is embedded verbatim into the installed hook command and
- * later parsed by the strict `ocbox exec` grammar. Validate it with the
- * canonical id schema up front so a mistyped id can never be installed (which
- * would make the hook fail open at route time) or reported healthy by doctor.
- */
-export function selectedSessionIssue(sessionId: string | null): string | null {
-  if (sessionId === null) return null
-  if (SessionIdSchema.safeParse(sessionId).success) return null
+function sessionIssueMessage(sessionId: string): string {
   return `Selected Session "${sessionId}" is not a valid Session ID (expected a UUID or ULID); run "ocbox session list" and re-run with a real --session value`
+}
+
+/**
+ * Canonicalize a supplied Session ID exactly once. `SessionIdSchema` trims and
+ * validates, so shell-padded values collapse to the canonical form that is then
+ * embedded in the owned hook command, recorded in the manifest, and compared by
+ * doctor and rotation. Refusing to canonicalize means a padded id could be
+ * installed raw, producing a hook the anchored parser cannot detect or remove.
+ */
+export function canonicalSessionId(sessionId: string | null): string | null {
+  if (sessionId === null) return null
+  try {
+    return SessionIdSchema.parse(sessionId)
+  } catch {
+    throw new Error(sessionIssueMessage(sessionId))
+  }
+}
+
+/**
+ * Doctor cannot throw on an invalid id because it must report findings, but it
+ * still canonicalizes through the same schema so its healthy/unhealthy verdict
+ * matches setup exactly.
+ */
+interface CanonicalSession {
+  readonly sessionId: string | null
+  readonly issue: string | null
+}
+
+function canonicalSessionIdSafely(sessionId: string | null): CanonicalSession {
+  try {
+    return { sessionId: canonicalSessionId(sessionId), issue: null }
+  } catch (error) {
+    return { sessionId: null, issue: errorMessage(error) }
+  }
 }
 
 async function rollbackTarget(
@@ -105,6 +140,11 @@ async function rollbackTarget(
     return
   }
   await files.writeText(targetPath, baseRaw).catch(() => undefined)
+}
+
+async function assertTargetBoundary(files: PlannerFileAccess, targetPath: string): Promise<void> {
+  if (files.realpath === undefined) return
+  await assertSettingsPathWithinRoot(targetPath, files.realpath)
 }
 
 async function loadDocument(
@@ -132,11 +172,28 @@ interface PolicyShadow {
   readonly polarity: 'deny' | 'ask'
 }
 
+interface PolicySourceIssue {
+  readonly kind: ClaudeSettingsSource
+  readonly path: string
+  readonly message: string
+  readonly atOrAboveTarget: boolean
+}
+
 interface PolicyEvaluation {
   readonly locks: readonly PolicyLock[]
   readonly shadowing: readonly PolicyShadow[]
   readonly deny: readonly string[]
   readonly ask: readonly string[]
+  readonly issues: readonly PolicySourceIssue[]
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : String(error)
+}
+
+function describePolicyIssue(issue: PolicySourceIssue): string {
+  const rank = issue.atOrAboveTarget ? 'at or above target' : 'below target'
+  return `${issue.kind} (${issue.path}, ${rank}): ${issue.message}`
 }
 
 // Read-only evaluation of every applicable settings source. Claude Code unions
@@ -147,6 +204,11 @@ interface PolicyEvaluation {
 // are a managed-policy gate, so they are honored only from sources at or above
 // the target. Write precedence governs which source the adapter may write, not
 // whether a rule blocks.
+//
+// A source that cannot be read or parsed is also a policy risk: its deny/ask may
+// be unknown, so setup fails closed instead of unioning an incomplete policy.
+// The distinction at/above vs below the target is preserved in the report so the
+// operator can see which layer must be repaired.
 async function evaluatePolicy(
   files: PlannerFileAccess,
   layout: ClaudeSettingsLayout,
@@ -158,11 +220,31 @@ async function evaluatePolicy(
   const shadowing: PolicyShadow[] = []
   const deny: string[] = []
   const ask: string[] = []
+  const issues: PolicySourceIssue[] = []
   for (const source of sources) {
-    const raw = await files.readText(source.path)
+    let raw: string | null
+    try {
+      raw = await files.readText(source.path)
+    } catch (error) {
+      issues.push({
+        kind: source.kind,
+        path: source.path,
+        atOrAboveTarget: source.precedence <= targetRank,
+        message: `unreadable: ${errorMessage(error)}`,
+      })
+      continue
+    }
     if (raw === null) continue
     const parsed = parseSettingsJson(source.path, raw)
-    if (parsed.issues.length > 0) continue
+    if (parsed.issues.length > 0) {
+      issues.push({
+        kind: source.kind,
+        path: source.path,
+        atOrAboveTarget: source.precedence <= targetRank,
+        message: parsed.issues.map((issue) => issue.message).join('; '),
+      })
+      continue
+    }
     if (source.precedence <= targetRank && hasManagedHookLock(parsed.document)) {
       locks.push({ kind: source.kind, path: source.path })
     }
@@ -180,7 +262,15 @@ async function evaluatePolicy(
       }
     }
   }
-  return { locks, shadowing, deny, ask }
+  return { locks, shadowing, deny, ask, issues }
+}
+
+function policySourceError(issues: readonly PolicySourceIssue[]): Error {
+  return new Error(
+    `Settings policy sources could not be read or validated; setup fails closed before writing (${issues
+      .map(describePolicyIssue)
+      .join('; ')}). Fix or remove the invalid source, then re-run setup.`,
+  )
 }
 
 function describeShadow(shadow: PolicyShadow): string {
@@ -211,19 +301,20 @@ function protectedRulesError(rules: readonly string[]): Error {
 export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
   const gate = gateClaudeVersion(options.claudeVersionRaw)
   if (!gate.supported) throw new Error(gate.remediation)
-  const sessionIssue = selectedSessionIssue(options.sessionId)
-  if (sessionIssue !== null) throw new Error(sessionIssue)
+  const sessionId = canonicalSessionId(options.sessionId)
   const targetPath = targetPathForScope(options.layout, options.scope)
+  await assertTargetBoundary(options.files, targetPath)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     throw new Error(`Target settings failed validation: ${current.issues.join('; ')}`)
   }
   const policy = await evaluatePolicy(options.files, options.layout, options.scope)
+  if (policy.issues.length > 0) throw policySourceError(policy.issues)
   if (policy.locks.length > 0) throw managedLockError(policy.locks)
   if (policy.shadowing.length > 0) throw shadowedRouterError(policy.shadowing)
   const manifestPath = manifestPathForTarget(targetPath)
   const existingManifest = parseManifestContent(await options.files.readText(manifestPath))
-  const merged = planMerge(current.document, options.sessionId, {
+  const merged = planMerge(current.document, sessionId, {
     higherDeny: policy.deny,
     higherAsk: policy.ask,
   })
@@ -234,14 +325,28 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
       targetPath,
       backupPath: null,
       manifestPath,
-      sessionId: options.sessionId,
+      sessionId,
       pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
       protectedRules: merged.protectedRules,
     }
   }
-  let backupPath: string | null = null
-  if (current.raw !== null) {
-    backupPath = backupPathForTarget(targetPath, options.files.now?.() ?? new Date())
+  const now = options.files.now?.() ?? new Date()
+  const currentBaseHash = sha256Json(current.document)
+  // The owned backup captures the *original* pre-ownership bytes. Re-setup (for
+  // example a Session rotation) must never overwrite it with the already-owned
+  // document, otherwise `remove` would restore the owned hook instead of the
+  // user's file. Only record a backup when the current bytes are proven to be
+  // the base snapshot, and reuse an existing backup when it is still present.
+  let backupPath: string | null = existingManifest?.backupPath ?? null
+  if (backupPath !== null && (await options.files.readText(backupPath)) === null) {
+    backupPath = null
+  }
+  if (
+    backupPath === null &&
+    current.raw !== null &&
+    (existingManifest === null || existingManifest.baseHash === currentBaseHash)
+  ) {
+    backupPath = backupPathForTarget(targetPath, now)
     await options.files.writeText(backupPath, current.raw)
   }
   const carriedPointers = existingManifest?.createdPointers ?? []
@@ -249,11 +354,11 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     adapter: 'claude-code',
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
     targetPath,
-    baseHash: existingManifest?.baseHash ?? sha256Json(current.document),
+    baseHash: existingManifest?.baseHash ?? currentBaseHash,
     appliedHash: hashDocument(merged.document),
     desiredHash: hashDocument(merged.document),
-    sessionId: options.sessionId,
-    updatedAt: (options.files.now?.() ?? new Date()).toISOString(),
+    sessionId,
+    updatedAt: now.toISOString(),
     backupPath,
     createdPointers: [...new Set([...carriedPointers, ...merged.createdPointers])],
     protectedRules: merged.protectedRules,
@@ -271,7 +376,7 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     targetPath,
     backupPath,
     manifestPath,
-    sessionId: options.sessionId,
+    sessionId,
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
     protectedRules: merged.protectedRules,
   }
@@ -288,6 +393,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       : gate.remediation,
   })
   const targetPath = targetPathForScope(options.layout, options.scope)
+  await assertTargetBoundary(options.files, targetPath)
   const ordered: Array<{ readonly source: string; readonly path: string | null }> = [
     { source: 'managed', path: options.layout.managedSettingsPath },
     ...options.layout.explicitSettingsPaths.map((path) => ({ source: 'explicit', path })),
@@ -305,7 +411,18 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
       continue
     }
-    const raw = await options.files.readText(entry.path)
+    let raw: string | null
+    try {
+      raw = await options.files.readText(entry.path)
+    } catch (error) {
+      corrupt = true
+      findings.push({
+        check: `settings-${entry.source}`,
+        ok: false,
+        detail: `${entry.source} unreadable at ${entry.path}: ${errorMessage(error)}`,
+      })
+      continue
+    }
     if (raw === null) {
       findings.push({
         check: `settings-${entry.source}`,
@@ -332,6 +449,16 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
     }
   }
   const policy = await evaluatePolicy(options.files, options.layout, options.scope)
+  findings.push({
+    check: 'policy-sources',
+    ok: policy.issues.length === 0,
+    detail:
+      policy.issues.length === 0
+        ? 'all policy-bearing settings sources are readable and schema-valid'
+        : `setup fails closed because a policy-bearing settings source cannot be read or validated: ${policy.issues
+            .map(describePolicyIssue)
+            .join('; ')}`,
+  })
   const lockedSources = policy.locks.map((lock) => `${lock.kind} (${lock.path})`).join(', ')
   const shadowingRules = policy.shadowing.map(describeShadow).join(', ')
   if (policy.locks.length > 0) {
@@ -364,6 +491,8 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
   }
   let installedSessionId: string | null = null
   let sessionMismatch = false
+  const canonical = canonicalSessionIdSafely(options.sessionId)
+  const sessionId = canonical.sessionId
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     findings.push({
@@ -372,9 +501,9 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       detail: `target invalid: ${current.issues.join('; ')}`,
     })
   } else {
-    const merged = planMerge(current.document, options.sessionId)
+    const merged = planMerge(current.document, sessionId)
     installedSessionId = merged.installedSessionId
-    sessionMismatch = merged.ownedHookPresent && merged.installedSessionId !== options.sessionId
+    sessionMismatch = merged.ownedHookPresent && merged.installedSessionId !== sessionId
     const manifestPath = manifestPathForTarget(targetPath)
     const manifestRaw = await options.files.readText(manifestPath)
     if (merged.ownedHookPresent && merged.ownedPermissionPresent) {
@@ -458,8 +587,8 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
     }
   }
-  const sessionIssue = selectedSessionIssue(options.sessionId)
-  const sessionSelected = options.sessionId !== null
+  const sessionIssue = canonical.issue
+  const sessionSelected = sessionId !== null
   findings.push({
     check: 'session',
     ok: sessionIssue === null && sessionSelected && !sessionMismatch,
@@ -469,8 +598,8 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
         : !sessionSelected
           ? 'no usable selected Session; covered Bash calls fail closed (blocked, exit 2) until a Session is selected'
           : sessionMismatch
-            ? `installed adapter routes through Session ${installedSessionId ?? '(none)'}, not the selected ${options.sessionId}; run remove then setup to change Sessions`
-            : `selected Session ${options.sessionId}; covered Bash calls route through ocbox exec`,
+            ? `installed adapter routes through Session ${installedSessionId ?? '(none)'}, not the selected ${sessionId}; run remove then setup to change Sessions`
+            : `selected Session ${sessionId}; covered Bash calls route through ocbox exec`,
   })
   findings.push({
     check: 'routing-boundary',
@@ -497,6 +626,7 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
 
 export async function planRemove(options: PlannerOptions): Promise<RemoveResult> {
   const targetPath = targetPathForScope(options.layout, options.scope)
+  await assertTargetBoundary(options.files, targetPath)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     return {
@@ -520,6 +650,32 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
     return { status: 'not-installed', targetPath, repairPlan: [], conflicts: [] }
   }
   const conflicts = removed.conflicts.map((conflict) => conflict.pointer)
+  // Byte-for-byte restoration: only for a pre-existing file that the manifest
+  // proves was owned by this adapter, that has no conflicting user edits, and
+  // whose current content prunes back to the recorded base snapshot. The
+  // recorded backup must itself hash to that same base snapshot, so a missing,
+  // replaced, or stale backup is never trusted. Any drift falls through to the
+  // non-destructive textual prune below, preserving the user's edits.
+  let restoredRaw: string | null = null
+  if (
+    manifest !== null &&
+    manifest.createdFile === false &&
+    conflicts.length === 0 &&
+    manifest.backupPath !== null &&
+    manifest.appliedHash === hashDocument(current.document) &&
+    sha256Json(removed.document) === manifest.baseHash
+  ) {
+    const candidate = await options.files.readText(manifest.backupPath)
+    if (candidate !== null) {
+      const parsedBackup = parseSettingsJson(manifest.backupPath, candidate)
+      if (
+        parsedBackup.issues.length === 0 &&
+        sha256Json(parsedBackup.document) === manifest.baseHash
+      ) {
+        restoredRaw = candidate
+      }
+    }
+  }
   const repairPlan: string[] = []
   if (manifestRaw !== null) {
     try {
@@ -544,8 +700,9 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   }
   // A fresh install created the whole settings file; when removing leaves it
   // empty, delete the adapter-created file instead of leaving `{}`. A target
-  // that existed before setup (createdFile false) is always rewritten so its
-  // original bytes survive.
+  // that existed before setup (createdFile false) is restored from the owned
+  // backup byte-for-byte when that is safe; otherwise it is rewritten from the
+  // pruned document so the original bytes still survive semantically.
   const deleteCreatedFile =
     manifest?.createdFile === true &&
     conflicts.length === 0 &&
@@ -553,6 +710,8 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   try {
     if (deleteCreatedFile && options.files.removePath !== undefined) {
       await options.files.removePath(targetPath)
+    } else if (restoredRaw !== null) {
+      await options.files.writeText(targetPath, restoredRaw)
     } else {
       await options.files.writeText(targetPath, stableStringify(removed.document))
     }
@@ -571,5 +730,6 @@ export function liveFileAccess(): PlannerFileAccess {
     readText: readTextIfPresent,
     writeText: writeFileAtomic,
     removePath: removePathIfPresent,
+    realpath,
   }
 }

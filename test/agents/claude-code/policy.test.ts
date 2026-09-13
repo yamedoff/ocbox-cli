@@ -483,3 +483,152 @@ describe('claude-code managed-lock and doctor diagnostics', () => {
     expect(files.store.has(targetPathForScope(layout, 'project'))).toBe(false)
   })
 })
+
+const PARTIAL_POLICY_JSON =
+  '{"permissions":{"deny":["Bash(ocbox exec:*)"]},"hooks":{"PreToolUse":"not-an-array"}}'
+const BROKEN_POLICY_JSON = '{ not json'
+
+interface PolicySourceCase {
+  readonly label: string
+  readonly scope: 'project' | 'local' | 'user'
+  readonly managedPath: string | null
+  readonly pick: (layout: ReturnType<typeof layoutFor>) => string
+}
+
+const policySourceCases: readonly PolicySourceCase[] = [
+  {
+    label: 'managed',
+    scope: 'project',
+    managedPath: '/fake/managed-settings.json',
+    pick: (layout) => layout.managedSettingsPath as string,
+  },
+  {
+    label: 'local-project',
+    scope: 'project',
+    managedPath: null,
+    pick: (layout) => layout.localProjectSettingsPath,
+  },
+  {
+    label: 'shared-project',
+    scope: 'user',
+    managedPath: null,
+    pick: (layout) => layout.sharedProjectSettingsPath,
+  },
+  {
+    label: 'user',
+    scope: 'project',
+    managedPath: null,
+    pick: (layout) => layout.userSettingsPath,
+  },
+]
+
+describe('claude-code fail-closed policy sources (F3)', () => {
+  it.each(policySourceCases)(
+    'fails closed and writes nothing when $label is schema-invalid',
+    async (testCase) => {
+      const layout = layoutFor(testCase.managedPath)
+      const sourcePath = testCase.pick(layout)
+      const target = targetPathForScope(layout, testCase.scope)
+      const files = memoryFiles({ [sourcePath]: PARTIAL_POLICY_JSON })
+      await expect(
+        planSetup({
+          layout,
+          scope: testCase.scope,
+          sessionId: SESSION_ID,
+          claudeVersionRaw: PINNED,
+          files,
+        }),
+      ).rejects.toThrow(/policy sources could not be read or validated/i)
+      expect(files.store.has(target)).toBe(false)
+    },
+  )
+
+  it.each(policySourceCases)(
+    'doctor agrees with setup on a corrupt $label source',
+    async (testCase) => {
+      const layout = layoutFor(testCase.managedPath)
+      const sourcePath = testCase.pick(layout)
+      const target = targetPathForScope(layout, testCase.scope)
+      const files = memoryFiles({ [sourcePath]: BROKEN_POLICY_JSON })
+      await expect(
+        planSetup({
+          layout,
+          scope: testCase.scope,
+          sessionId: SESSION_ID,
+          claudeVersionRaw: PINNED,
+          files,
+        }),
+      ).rejects.toThrow(/policy sources could not be read or validated/i)
+      const doctor = await planDoctor({
+        layout,
+        scope: testCase.scope,
+        sessionId: SESSION_ID,
+        claudeVersionRaw: PINNED,
+        files,
+      })
+      expect(doctor.ok).toBe(false)
+      const policyFinding = doctor.findings.find((entry) => entry.check === 'policy-sources')
+      expect(policyFinding?.ok).toBe(false)
+      expect(policyFinding?.detail).toContain(testCase.label)
+      expect(files.store.has(target)).toBe(false)
+    },
+  )
+
+  it('fails closed and agrees with doctor when a source cannot be read', async () => {
+    const layout = layoutFor()
+    const sourcePath = layout.localProjectSettingsPath
+    const target = targetPathForScope(layout, 'project')
+    const base = memoryFiles()
+    const files: PlannerFileAccess = {
+      ...base,
+      readText: async (path: string) => {
+        if (path === sourcePath) {
+          const error = new Error('EACCES: permission denied') as Error & { code?: string }
+          error.code = 'EACCES'
+          throw error
+        }
+        return base.readText(path)
+      },
+    }
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_ID,
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/policy sources could not be read or validated/i)
+    expect(base.store.has(target)).toBe(false)
+    const doctor = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_ID,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(doctor.ok).toBe(false)
+    const policyFinding = doctor.findings.find((entry) => entry.check === 'policy-sources')
+    expect(policyFinding?.ok).toBe(false)
+    expect(policyFinding?.detail).toContain('local-project')
+    expect(policyFinding?.detail).toContain('unreadable')
+    expect(base.store.has(target)).toBe(false)
+  })
+
+  it('keeps unioning deny/ask from valid lower-precedence sources', async () => {
+    const layout = layoutFor()
+    const files = memoryFiles({
+      [layout.userSettingsPath]: '{"permissions":{"deny":["Bash(ocbox exec:*)"]}}',
+    })
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_ID,
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/shadows the owned router/i)
+    expect(files.store.has(targetPathForScope(layout, 'project'))).toBe(false)
+  })
+})

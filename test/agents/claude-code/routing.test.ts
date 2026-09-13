@@ -10,7 +10,11 @@ import {
   CLAUDE_HOOK_EVENTS,
   CLAUDE_TOOL_MATCHERS,
 } from '../../../src/agents/claude-code/version.js'
-import { buildHookCommand, decideRouting } from '../../../src/agents/claude-code/routing.js'
+import {
+  buildHookCommand,
+  decideRouting,
+  parseOwnedHookCommand,
+} from '../../../src/agents/claude-code/routing.js'
 import { OWNED_HOOK_COMMAND_FRAGMENT } from '../../../src/agents/claude-code/settings-model.js'
 
 describe('claude-code routing and capability matrix', () => {
@@ -73,6 +77,19 @@ describe('claude-code routing and capability matrix', () => {
     expect(withSession).toContain('--session sess-1')
     expect(withSession).not.toContain('CLAUDE_TOOL_COMMAND')
     expect(buildHookCommand(null)).toBe(OWNED_HOOK_COMMAND_FRAGMENT)
+  })
+
+  it('round-trips every built hook back through the anchored parser (F2)', () => {
+    const session = '11111111-1111-4111-8111-111111111111'
+    expect(parseOwnedHookCommand(buildHookCommand(session))).toEqual({ sessionId: session })
+    expect(parseOwnedHookCommand(buildHookCommand(null))).toEqual({ sessionId: null })
+  })
+
+  it('refuses a Session that would build an undetectable owned hook (F2)', () => {
+    expect(() => buildHookCommand('  sess-1  ')).toThrow(/undetectable owned hook/i)
+    expect(() => buildHookCommand('sess 1')).toThrow(/undetectable owned hook/i)
+    expect(() => buildHookCommand('sess-1\n')).toThrow(/undetectable owned hook/i)
+    expect(() => buildHookCommand('')).toThrow(/undetectable owned hook/i)
   })
 
   it('publishes an exact covered/uncovered matrix in routing-aid language', () => {
