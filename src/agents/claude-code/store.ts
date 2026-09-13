@@ -47,7 +47,7 @@ export async function readTextIfPresent(path: string): Promise<string | null> {
   }
 }
 
-const DEFAULT_FILE_MODE = 0o600
+<const DEFAULT_FILE_MODE = 0o600
 
 async function resolveTargetMode(path: string): Promise<number> {
   try {
@@ -73,6 +73,10 @@ async function fsyncParentDirectory(directory: string): Promise<void> {
   } finally {
     await handle.close()
   }
+}
+
+export async function removePathIfPresent(path: string): Promise<void> {
+  await rm(path, { force: true })
 }
 
 export async function writeFileAtomic(path: string, content: string): Promise<void> {

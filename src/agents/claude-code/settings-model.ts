@@ -145,8 +145,25 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
   return { path, present: true, document, issues }
 }
 
+<const OWNED_HOOK_COMMAND_PATTERN =
+  /^ocbox agent hook claude-code(?: --session (\S+))?$/
+
+export function parseOwnedHookCommand(
+  command: unknown,
+): { readonly sessionId: string | null } | null {
+  if (typeof command !== 'string') return null
+  const match = OWNED_HOOK_COMMAND_PATTERN.exec(command)
+  if (match === null) return null
+  return { sessionId: match[1] ?? null }
+}
+
 export function isOwnedHookCommand(command: unknown): boolean {
-  return typeof command === 'string' && command.includes(OWNED_HOOK_COMMAND_FRAGMENT)
+  return parseOwnedHookCommand(command) !== null
+}
+
+export function hookObjectOwned(hook: unknown): boolean {
+  if (hook === null || typeof hook !== 'object' || Array.isArray(hook)) return false
+  return isOwnedHookCommand((hook as ClaudeHookRecord).command)
 }
 
 export function hookEntryOwned(entry: unknown): boolean {
@@ -154,10 +171,7 @@ export function hookEntryOwned(entry: unknown): boolean {
   const record = entry as ClaudeHookRecord
   const hooks = record.hooks
   if (!Array.isArray(hooks)) return false
-  return hooks.some((item) => {
-    if (item === null || typeof item !== 'object' || Array.isArray(item)) return false
-    return isOwnedHookCommand((item as ClaudeHookRecord).command)
-  })
+  return hooks.some(hookObjectOwned)
 }
 
 export function permissionRuleOwned(rule: unknown): boolean {

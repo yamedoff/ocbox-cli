@@ -22,7 +22,7 @@ export {
   stableStringify,
 } from './json.js'
 export type { JsonObject, JsonPrimitive, JsonValue } from './json.js'
-export { hashOwnedValue, planMerge, planRemove, sha256Json } from './merge.js'
+<export { hashOwnedValue, ownedEntriesStatus, planMerge, planRemove, sha256Json } from './merge.js'
 export type { MergePlan, PlanMergeOptions, RemovePlan } from './merge.js'
 export type {
   DoctorResult,
@@ -38,6 +38,8 @@ export {
   ADAPTER_ID_ENV,
   buildHookCommand,
   decideRouting,
+  isOwnedHookCommand,
+  parseOwnedHookCommand,
   RECURSION_GUARD_ENV,
   recursionGuardArgs,
 } from './routing.js'
@@ -47,7 +49,7 @@ export {
   COVERED_HOOK_MATCHER,
   hasManagedHookLock,
   hookEntryOwned,
-  isOwnedHookCommand,
+  hookObjectOwned,
   OWNED_HOOK_COMMAND_FRAGMENT,
   OWNED_MARKER,
   OWNED_PERMISSION_ALLOW,
@@ -77,6 +79,7 @@ export {
   manifestPathForTarget,
   parseManifestContent,
   readManifest,
+  removePathIfPresent,
   rollbackWrite,
 } from './store.js'
 export type { OwnedManifest } from './store.js'

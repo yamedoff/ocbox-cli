@@ -17,6 +17,7 @@ import {
   type OwnedManifest,
   parseManifestContent,
   readTextIfPresent,
+  removePathIfPresent,
   writeFileAtomic,
 } from './store.js'
 import { gateClaudeVersion, PINNED_CLAUDE_CODE_VERSION } from './version.js'
@@ -145,6 +146,7 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     throw new Error(`Target settings failed validation: ${current.issues.join('; ')}`)
   }
   const manifestPath = manifestPathForTarget(targetPath)
+  const existingManifest = parseManifestContent(await options.files.readText(manifestPath))
   const merged = planMerge(current.document, options.sessionId, {
     higherDeny: higher.deny,
     higherAsk: higher.ask,
@@ -170,17 +172,18 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     backupPath = backupPathForTarget(targetPath, options.files.now?.() ?? new Date())
     await options.files.writeText(backupPath, current.raw)
   }
+  const carriedPointers = existingManifest?.createdPointers ?? []
   const nextManifest: OwnedManifest = {
     adapter: 'claude-code',
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
     targetPath,
-    baseHash: sha256Json(current.document),
+    baseHash: existingManifest?.baseHash ?? sha256Json(current.document),
     appliedHash: hashDocument(merged.document),
     desiredHash: hashDocument(merged.document),
     sessionId: options.sessionId,
     updatedAt: (options.files.now?.() ?? new Date()).toISOString(),
     backupPath,
-    createdPointers: merged.createdPointers,
+    createdPointers: [...new Set([...carriedPointers, ...merged.createdPointers])],
     protectedRules: merged.protectedRules,
   }
   try {
@@ -255,6 +258,8 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
       })
     }
   }
+  let installedSessionId: string | null = null
+  let sessionMismatch = false
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     findings.push({
@@ -264,68 +269,100 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
     })
   } else {
     const merged = planMerge(current.document, options.sessionId)
-    findings.push({
-      check: 'owned-entries',
-      ok: merged.alreadyApplied,
-      detail: merged.alreadyApplied
-        ? `owned PreToolUse Bash hook and ${OWNED_PERMISSION_ALLOW} rule present under the hooks key at ${targetPath}`
-        : `owned entries missing at ${targetPath}; run setup`,
-    })
+    installedSessionId = merged.installedSessionId
+    sessionMismatch = merged.ownedHookPresent && merged.installedSessionId !== options.sessionId
     const manifestPath = manifestPathForTarget(targetPath)
     const manifestRaw = await options.files.readText(manifestPath)
-    if (manifestRaw === null) {
+    if (merged.ownedHookPresent && merged.ownedPermissionPresent) {
       findings.push({
-        check: 'manifest',
-        ok: false,
-        detail: `owned manifest missing at ${manifestPath}`,
+        check: 'owned-entries',
+        ok: true,
+        detail: `owned PreToolUse Bash hook and ${OWNED_PERMISSION_ALLOW} rule present under the hooks key at ${targetPath}`,
       })
-    } else {
+      if (manifestRaw === null) {
+        findings.push({
+          check: 'manifest',
+          ok: false,
+          detail: `owned manifest missing at ${manifestPath}`,
+        })
+      } else {
+        findings.push({
+          check: 'manifest',
+          ok: true,
+          detail: `owned manifest present at ${manifestPath}`,
+        })
+        try {
+          const manifest = JSON.parse(manifestRaw) as OwnedManifest
+          if (
+            manifest.baseHash !== sha256Json(current.document) &&
+            manifest.appliedHash !== hashDocument(current.document)
+          ) {
+            findings.push({
+              check: 'drift',
+              ok: false,
+              detail:
+                'target differs from both manifest base and applied snapshots; user edits preserved, run remove for a three-way repair plan',
+            })
+          } else if (manifest.appliedHash !== hashDocument(current.document)) {
+            findings.push({
+              check: 'drift',
+              ok: false,
+              detail: 'owned entries changed after apply; repair plan available via remove',
+            })
+          } else {
+            findings.push({
+              check: 'drift',
+              ok: true,
+              detail: 'target matches the applied manifest snapshot',
+            })
+          }
+        } catch {
+          findings.push({
+            check: 'drift',
+            ok: false,
+            detail: `manifest at ${manifestPath} is corrupt; back up target before repairing`,
+          })
+        }
+      }
+    } else if (!merged.ownedHookPresent && !merged.ownedPermissionPresent) {
+      findings.push({
+        check: 'owned-entries',
+        ok: true,
+        detail: `owned entries absent at ${targetPath}; adapter reports a removed state`,
+      })
       findings.push({
         check: 'manifest',
         ok: true,
-        detail: `owned manifest present at ${manifestPath}`,
+        detail:
+          manifestRaw === null
+            ? `no owned manifest at ${manifestPath}; adapter is removed`
+            : `stale manifest at ${manifestPath} with no owned entries; treated as removed`,
       })
-      try {
-        const manifest = JSON.parse(manifestRaw) as OwnedManifest
-        if (
-          manifest.baseHash !== sha256Json(current.document) &&
-          manifest.appliedHash !== hashDocument(current.document)
-        ) {
-          findings.push({
-            check: 'drift',
-            ok: false,
-            detail:
-              'target differs from both manifest base and applied snapshots; user edits preserved, run remove for a three-way repair plan',
-          })
-        } else if (manifest.appliedHash !== hashDocument(current.document)) {
-          findings.push({
-            check: 'drift',
-            ok: false,
-            detail: 'owned entries changed after apply; repair plan available via remove',
-          })
-        } else {
-          findings.push({
-            check: 'drift',
-            ok: true,
-            detail: 'target matches the applied manifest snapshot',
-          })
-        }
-      } catch {
-        findings.push({
-          check: 'drift',
-          ok: false,
-          detail: `manifest at ${manifestPath} is corrupt; back up target before repairing`,
-        })
-      }
+    } else {
+      findings.push({
+        check: 'owned-entries',
+        ok: false,
+        detail: `partial adapter state at ${targetPath} (${merged.ownedHookPresent ? 'hook present, permission missing' : 'permission present, hook missing'}); run setup or remove`,
+      })
+      findings.push({
+        check: 'manifest',
+        ok: manifestRaw !== null,
+        detail:
+          manifestRaw === null
+            ? `owned manifest missing at ${manifestPath}`
+            : `owned manifest present at ${manifestPath}`,
+      })
     }
   }
+  const sessionUsable = options.sessionId !== null && options.sessionId.length > 0
   findings.push({
     check: 'session',
-    ok: options.sessionId !== null && options.sessionId.length > 0,
-    detail:
-      options.sessionId !== null && options.sessionId.length > 0
-        ? `selected Session ${options.sessionId}; covered Bash calls route through ocbox exec`
-        : 'no usable selected Session; covered Bash calls fail closed (blocked, exit 2) until a Session is selected',
+    ok: sessionUsable && !sessionMismatch,
+    detail: !sessionUsable
+      ? 'no usable selected Session; covered Bash calls fail closed (blocked, exit 2) until a Session is selected'
+      : sessionMismatch
+        ? `installed adapter routes through Session ${installedSessionId ?? '(none)'}, not the selected ${options.sessionId}; run remove then setup to change Sessions`
+        : `selected Session ${options.sessionId}; covered Bash calls route through ocbox exec`,
   })
   findings.push({
     check: 'routing-boundary',
@@ -369,6 +406,9 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   const manifest = parseManifestContent(manifestRaw)
   const removed = planRemoveEntries(current.document, manifest?.createdPointers ?? [])
   if (removed.removedHooks === 0 && removed.removedPermissions === 0 && !removed.changed) {
+    if (manifestRaw !== null && options.files.removePath !== undefined) {
+      await options.files.removePath(manifestPath).catch(() => undefined)
+    }
     return { status: 'not-installed', targetPath, repairPlan: [], conflicts: [] }
   }
   const conflicts = removed.conflicts.map((conflict) => conflict.pointer)
@@ -396,6 +436,9 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   }
   try {
     await options.files.writeText(targetPath, stableStringify(removed.document))
+    if (conflicts.length === 0 && manifestRaw !== null && options.files.removePath !== undefined) {
+      await options.files.removePath(manifestPath).catch(() => undefined)
+    }
   } catch (error) {
     await rollbackTarget(options.files, targetPath, current.raw)
     throw error
@@ -407,5 +450,6 @@ export function liveFileAccess(): PlannerFileAccess {
   return {
     readText: readTextIfPresent,
     writeText: writeFileAtomic,
+    removePath: removePathIfPresent,
   }
 }

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { getAtPointer, hashJson, stableStringify } from './json.js'
-import { buildHookCommand } from './routing.js'
+import { buildHookCommand, parseOwnedHookCommand } from './routing.js'
 import {
+  type ClaudeHookRecord,
   type ClaudeSettingsDocument,
   type MutableClaudePermissions,
   type MutableClaudeSettings,
@@ -9,6 +10,7 @@ import {
   COVERED_HOOK_EVENT,
   COVERED_HOOK_MATCHER,
   hookEntryOwned,
+  hookObjectOwned,
   OWNED_PERMISSION_ALLOW,
   permissionRuleOwned,
 } from './settings-model.js'
@@ -25,6 +27,10 @@ export interface MergePlan {
   readonly protectedRules: readonly string[]
   readonly readOnlySource: boolean
   readonly changed: boolean
+  readonly ownedHookPresent: boolean
+  readonly ownedPermissionPresent: boolean
+  readonly installedSessionId: string | null
+  readonly sessionChanged: boolean
 }
 
 export interface PlanMergeOptions {
@@ -69,6 +75,40 @@ function stringRules(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
+function hookCommand(hook: unknown): unknown {
+  if (hook === null || typeof hook !== 'object' || Array.isArray(hook)) return undefined
+  return (hook as ClaudeHookRecord).command
+}
+
+export function ownedEntriesStatus(document: ClaudeSettingsDocument): {
+  readonly hook: boolean
+  readonly permission: boolean
+} {
+  const hooksContainer = asMutableSettings<MutableHookEvents>(document.hooks)
+  const entries = hooksContainer?.[COVERED_HOOK_EVENT]
+  const hook = Array.isArray(entries) && entries.some(hookEntryOwned)
+  const permissionsContainer = asMutableSettings<MutableClaudePermissions>(document.permissions)
+  const allow = permissionsContainer?.allow
+  const permission = Array.isArray(allow) && allow.some(permissionRuleOwned)
+  return { hook, permission }
+}
+
+function installedOwnedSessionId(document: ClaudeSettingsDocument): string | null {
+  const hooksContainer = asMutableSettings<MutableHookEvents>(document.hooks)
+  const entries = hooksContainer?.[COVERED_HOOK_EVENT]
+  if (!Array.isArray(entries)) return null
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const hooks = (entry as ClaudeHookRecord).hooks
+    if (!Array.isArray(hooks)) continue
+    for (const hook of hooks) {
+      const parsed = parseOwnedHookCommand(hookCommand(hook))
+      if (parsed !== null) return parsed.sessionId
+    }
+  }
+  return null
+}
+
 export function planMerge(
   document: ClaudeSettingsDocument,
   sessionId: string | null,
@@ -79,6 +119,8 @@ export function planMerge(
   const createdPointers: string[] = []
   const protectedRules: string[] = []
   const readOnlySource = options.readOnlySource === true
+  const ownedStatus = ownedEntriesStatus(document)
+  const installedSessionId = installedOwnedSessionId(document)
 
   const permissionsBefore = asMutableSettings<MutableClaudePermissions>(
     (document as Record<string, unknown>)['permissions'],
@@ -93,6 +135,7 @@ export function planMerge(
 
   let addedHook = false
   let addedPermission = false
+  let sessionChanged = false
 
   if (!readOnlySource) {
     const hadHooks = next.hooks !== undefined
@@ -104,9 +147,25 @@ export function planMerge(
     if (existing !== undefined && !Array.isArray(existing)) {
       protectedRules.push('/hooks/PreToolUse')
     } else {
-      const entries: unknown[] = Array.isArray(existing) ? [...existing] : []
+      const entries: unknown[] = Array.isArray(existing) ? existing : []
       hooksContainer[COVERED_HOOK_EVENT] = entries
-      if (!entries.some(hookEntryOwned)) {
+      if (ownedStatus.hook) {
+        // Same Session means idempotent; a different Session is rotated in
+        // place so commands never silently keep routing to an old Session.
+        for (const entry of entries) {
+          if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+          const record = entry as ClaudeHookRecord
+          if (!Array.isArray(record.hooks)) continue
+          for (const hook of record.hooks) {
+            const parsed = parseOwnedHookCommand(hookCommand(hook))
+            if (parsed === null) continue
+            if (parsed.sessionId !== sessionId) {
+              ;(hook as { command?: unknown }).command = buildHookCommand(sessionId)
+              sessionChanged = true
+            }
+          }
+        }
+      } else {
         entries.push({
           matcher: COVERED_HOOK_MATCHER,
           hooks: [{ type: 'command', command: buildHookCommand(sessionId) }],
@@ -143,15 +202,15 @@ export function planMerge(
       if (addedPermission && !hadAllow) createdPointers.push('/permissions/allow')
       if (addedPermission && !hadPermissions) createdPointers.push('/permissions')
     }
-    if (permissionsContainer.deny === undefined) permissionsContainer.deny = []
-    if (permissionsContainer.ask === undefined) permissionsContainer.ask = []
+    // `deny`/`ask` are never synthesized: the adapter does not read them, and
+    // fabricating empty arrays breaks exact restoration on `remove`.
   } else {
     protectedRules.push(OWNED_PERMISSION_ALLOW, '/hooks/PreToolUse')
   }
 
-  const changed = addedHook || addedPermission
+  const changed = addedHook || addedPermission || sessionChanged
   return {
-    alreadyApplied: !addedHook && !addedPermission,
+    alreadyApplied: !changed,
     addedHook,
     addedPermission,
     document: next,
@@ -162,6 +221,10 @@ export function planMerge(
     protectedRules,
     readOnlySource,
     changed,
+    ownedHookPresent: ownedStatus.hook,
+    ownedPermissionPresent: ownedStatus.permission,
+    installedSessionId,
+    sessionChanged,
   }
 }
 
@@ -225,15 +288,36 @@ export function planRemove(
     if (entries !== undefined && !Array.isArray(entries)) {
       conflicts.push({ pointer: '/hooks/PreToolUse', reason: 'container-invalid' })
     } else if (Array.isArray(entries)) {
-      const kept = entries.filter((entry) => {
-        if (hookEntryOwned(entry)) {
-          removedHooks += 1
-          return false
+      const keptEntries: unknown[] = []
+      let hooksChanged = false
+      for (const entry of entries) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          keptEntries.push(entry)
+          continue
         }
-        return true
-      })
-      if (kept.length !== entries.length) {
-        hooksContainer[COVERED_HOOK_EVENT] = kept
+        const hooks = (entry as ClaudeHookRecord).hooks
+        if (!Array.isArray(hooks)) {
+          keptEntries.push(entry)
+          continue
+        }
+        const keptHooks = hooks.filter((hook) => {
+          if (hookObjectOwned(hook)) {
+            removedHooks += 1
+            return false
+          }
+          return true
+        })
+        if (keptHooks.length === hooks.length) {
+          keptEntries.push(entry)
+          continue
+        }
+        hooksChanged = true
+        if (keptHooks.length > 0) {
+          keptEntries.push({ ...(entry as Record<string, unknown>), hooks: keptHooks })
+        }
+      }
+      if (hooksChanged) {
+        hooksContainer[COVERED_HOOK_EVENT] = keptEntries
         affected.push('/hooks/PreToolUse')
       }
     }

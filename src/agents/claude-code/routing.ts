@@ -40,6 +40,29 @@ export function recursionGuardArgs(): readonly string[] {
   ]
 }
 
+/**
+ * Exact-shape matcher for the adapter-owned router command. Ownership is never
+ * inferred from substrings: a user command that merely mentions `ocbox agent
+ * hook claude-code` as a substring must still survive `remove` untouched unless
+ * it matches the exact emitted shape. The Session varies, so the only variable
+ * segment is the optional `--session <id>` token.
+ */
+const OWNED_HOOK_COMMAND_PATTERN =
+  /^ocbox agent hook claude-code(?: --session (\S+))?$/
+
+export function parseOwnedHookCommand(
+  command: unknown,
+): { readonly sessionId: string | null } | null {
+  if (typeof command !== 'string') return null
+  const match = OWNED_HOOK_COMMAND_PATTERN.exec(command)
+  if (match === null) return null
+  return { sessionId: match[1] ?? null }
+}
+
+export function isOwnedHookCommand(command: unknown): boolean {
+  return parseOwnedHookCommand(command) !== null
+}
+
 export function decideRouting(input: RoutingInput): RoutingDecision {
   const routed = input.environment[RECURSION_GUARD_ENV]
   const adapter = input.environment[ADAPTER_ID_ENV]

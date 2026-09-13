@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   type PlannerFileAccess,
+  liveFileAccess,
   planDoctor,
   planRemove,
   planSetup,
@@ -12,7 +13,11 @@ import {
   resolveClaudeSettingsLayout,
   targetPathForScope,
 } from '../../../src/agents/claude-code/settings-sources.js'
-import { backupPathForTarget } from '../../../src/agents/claude-code/store.js'
+import {
+  backupPathForTarget,
+  MANIFEST_FILENAME,
+  manifestPathForTarget,
+} from '../../../src/agents/claude-code/store.js'
 
 const PINNED = '2.0.51 (Claude Code)'
 
@@ -26,8 +31,20 @@ function memoryFiles(
     writeText: async (path: string, content: string) => {
       store.set(path, content)
     },
+    removePath: async (path: string) => {
+      store.delete(path)
+    },
     now: () => new Date('2026-09-12T00:00:00.000Z'),
   }
+}
+
+function projectLayout(root: string) {
+  return resolveClaudeSettingsLayout({
+    homeDirectory: join(root, 'home'),
+    projectDirectory: join(root, 'proj'),
+    platformOverride: process.platform,
+    managedPathOverride: null,
+  })
 }
 
 describe('claude-code setup/doctor/remove lifecycle', () => {
@@ -201,7 +218,6 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     expect(backupPathForTarget(targetPathForScope(layout, 'project')).endsWith('.json')).toBe(true)
     const backup = files.store.get(setup.backupPath as string)
     expect(backup).toContain('permissions')
-    await readFile(new URL('../../../package.json', import.meta.url), 'utf8')
   })
 
   it('fails closed when an explicit overlay denies the owned router', async () => {
@@ -279,7 +295,155 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     })
     expect(removed.status).toBe('removed')
     const restored = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
-    expect(restored['permissions']).toEqual({ deny: [], ask: [] })
+    expect(restored['permissions']).toBeUndefined()
     expect(restored['hooks']).toBeUndefined()
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+  })
+
+  it('restores exact user bytes on setup-remove, including absent deny/ask (H6)', async () => {
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    const original = {
+      alwaysThinkingEnabled: true,
+      permissions: { allow: ['Bash(npm test *)'] },
+      custom: { nested: [1, 2, 3] },
+    }
+    const originalRaw = `${JSON.stringify(original, null, 2)}\n`
+    const files = memoryFiles({ [target]: originalRaw })
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const installed = JSON.parse(files.store.get(target) as string) as Record<string, unknown>
+    const installedPermissions = installed['permissions'] as Record<string, unknown>
+    expect(installedPermissions['deny']).toBeUndefined()
+    expect(installedPermissions['ask']).toBeUndefined()
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.get(target)).toBe(originalRaw)
+  })
+
+  it('removes the orphan target file on fresh-install rollback with live access (H7)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ocbox-t11-live-'))
+    try {
+      const layout = projectLayout(root)
+      const target = targetPathForScope(layout, 'project')
+      const live = liveFileAccess()
+      const files: PlannerFileAccess = {
+        readText: live.readText,
+        removePath: async (path) => {
+          await live.removePath?.(path)
+        },
+        writeText: async (path, content) => {
+          if (path.endsWith(MANIFEST_FILENAME)) throw new Error('manifest boom')
+          await live.writeText(path, content)
+        },
+      }
+      await expect(
+        planSetup({
+          layout,
+          scope: 'project',
+          sessionId: 'sess-1',
+          claudeVersionRaw: PINNED,
+          files,
+        }),
+      ).rejects.toThrow(/manifest boom/)
+      expect(await live.readText(target)).toBeNull()
+      expect(await live.readText(manifestPathForTarget(target))).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a healthy removed state in doctor after a clean remove (H8)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('removed')
+    expect(files.store.has(manifestPathForTarget(target))).toBe(false)
+    const doctor = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(doctor.ok).toBe(true)
+    expect(
+      doctor.findings.some(
+        (finding) =>
+          finding.check === 'owned-entries' && finding.ok && finding.detail.includes('removed'),
+      ),
+    ).toBe(true)
+    expect(doctor.findings.some((finding) => finding.check === 'drift')).toBe(false)
+  })
+
+  it('rotates to a new Session on re-setup and flags a stale Session in doctor (H9)', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    const target = targetPathForScope(layout, 'project')
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const rotated = await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-2',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(rotated.status).toBe('applied')
+    const document = files.store.get(target) as string
+    expect(document).toContain('--session sess-2')
+    expect(document).not.toContain('--session sess-1')
+    const manifest = JSON.parse(files.store.get(manifestPathForTarget(target)) as string) as Record<
+      string,
+      unknown
+    >
+    expect(manifest['sessionId']).toBe('sess-2')
+    const healthy = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-2',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(healthy.ok).toBe(true)
+    const stale = await planDoctor({
+      layout,
+      scope: 'project',
+      sessionId: 'sess-1',
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(stale.ok).toBe(false)
+    expect(stale.findings.some((finding) => finding.check === 'session' && !finding.ok)).toBe(true)
   })
 })

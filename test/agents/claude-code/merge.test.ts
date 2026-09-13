@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import { planMerge, planRemove } from '../../../src/agents/claude-code/merge.js'
+import { buildHookCommand } from '../../../src/agents/claude-code/routing.js'
 import {
   collectDenyAskRules,
   hasManagedHookLock,
@@ -122,7 +123,77 @@ describe('claude-code settings model and merge', () => {
     const removed = planRemove(merged.document, merged.createdPointers)
     expect(removed.removedHooks).toBe(1)
     expect(removed.removedPermissions).toBe(1)
-    expect(removed.document).toEqual({ permissions: { deny: [], ask: [] } })
+    expect(removed.document).toEqual({})
+  })
+
+  it('removes only adapter-owned hook objects from a mixed matcher entry (H5)', () => {
+    const userHook = { type: 'command', command: '/home/user/my-own-hook.sh' }
+    const document = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: buildHookCommand('sess-1') }, userHook],
+          },
+        ],
+      },
+    }
+    const removed = planRemove(document)
+    expect(removed.removedHooks).toBe(1)
+    const hooks = (removed.document as Record<string, unknown>)['hooks'] as Record<
+      string,
+      unknown[]
+    >
+    const entries = hooks['PreToolUse'] as Array<Record<string, unknown>>
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.['matcher']).toBe('Bash')
+    expect(entries[0]?.['hooks']).toEqual([userHook])
+  })
+
+  it('never treats a user command that mentions owned fragments as adapter-owned (H5)', () => {
+    const userCommand = 'echo "ocbox exec ocbox-claude-code"'
+    const entry = { matcher: 'Bash', hooks: [{ type: 'command', command: userCommand }] }
+    expect(hookEntryOwned(entry)).toBe(false)
+    const removed = planRemove({ hooks: { PreToolUse: [entry] } })
+    expect(removed.removedHooks).toBe(0)
+    const hooks = (removed.document as Record<string, unknown>)['hooks'] as Record<
+      string,
+      unknown[]
+    >
+    expect((hooks['PreToolUse'] as Array<Record<string, unknown>>)[0]?.['hooks']).toEqual([
+      { type: 'command', command: userCommand },
+    ])
+  })
+
+  it('restores exact user content without synthesizing deny/ask arrays (H6)', () => {
+    const original = {
+      alwaysThinkingEnabled: true,
+      permissions: { allow: ['Bash(npm test *)'] },
+      custom: { nested: [1, 2, 3] },
+    }
+    const merged = planMerge(original, 'sess-1')
+    const permissions = merged.document['permissions'] as Record<string, unknown>
+    expect(permissions['deny']).toBeUndefined()
+    expect(permissions['ask']).toBeUndefined()
+    const removed = planRemove(merged.document, merged.createdPointers)
+    expect(removed.document).toEqual(original)
+  })
+
+  it('rotates an installed Session in place instead of silently retaining it (H9)', () => {
+    const first = planMerge({}, 'sess-1')
+    expect(first.installedSessionId).toBeNull()
+    const rotated = planMerge(first.document, 'sess-2')
+    expect(rotated.alreadyApplied).toBe(false)
+    expect(rotated.sessionChanged).toBe(true)
+    expect(rotated.addedHook).toBe(false)
+    expect(rotated.addedPermission).toBe(false)
+    expect(rotated.installedSessionId).toBe('sess-1')
+    const document = rotated.document as unknown as {
+      hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> }
+    }
+    const installed = document.hooks.PreToolUse[0]?.hooks[0]?.command
+    expect(installed).toContain('--session sess-2')
+    expect(installed).not.toContain('--session sess-1')
   })
 
   it('reports container-invalid conflicts instead of overwriting user types', () => {
