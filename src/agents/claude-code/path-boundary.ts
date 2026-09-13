@@ -23,14 +23,42 @@ function errorCode(error: unknown): string | null {
 }
 
 /**
+ * Minimal shape of the `lstat` stat object this module needs.
+ *
+ * Cross-platform note: Node reports POSIX symlinks and Windows directory
+ * junctions with `isSymbolicLink() === true`, which is how a dangling link is
+ * recognized. Other Windows reparse points (for example volume mount points or
+ * AppExec links) are not distinguishable through the portable `fs.Stats` API;
+ * this check covers symlinks and junctions, and a dangling non-junction reparse
+ * point still fails closed through the typed write path rather than resolving
+ * as if it were absent. POSIX file symlinks are refused here; the committed
+ * file-symlink test is skipped on Windows because non-privileged Windows hosts
+ * cannot create file symlinks. Junction/symlink directory tests run on both
+ * Windows and POSIX.
+ */
+export interface ClaudeSettingsLinkStats {
+  isSymbolicLink(): boolean
+}
+
+export type ClaudeSettingsLstat = (path: string) => Promise<ClaudeSettingsLinkStats>
+
+/**
  * Resolves a possibly-not-yet-created path by walking up to the deepest existing
  * ancestor, taking its real (link-resolved) path, then re-appending the missing
  * segments. This is what lets the boundary check reason about a target file that
  * setup is about to create inside a directory that may itself be a link.
+ *
+ * A `realpath` failure normally means the segment does not exist yet, so the
+ * walk continues upward. But a *dangling* symlink/junction/reparse point also
+ * fails `realpath` (ENOENT) while still existing as a link entry, and walking
+ * past it would let a path resolve as if the link were absent. When `lstat` is
+ * supplied, the link entry is detected and refused with the typed boundary
+ * error instead of producing a raw `ENOENT` write later.
  */
 async function resolveExistingAncestor(
   path: string,
   realpath: (path: string) => Promise<string>,
+  lstat?: ClaudeSettingsLstat,
 ): Promise<string> {
   const absolute = resolve(path)
   const tail: string[] = []
@@ -42,6 +70,13 @@ async function resolveExistingAncestor(
     } catch (error) {
       const code = errorCode(error)
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+      const stat = lstat === undefined ? null : await lstat(cursor).catch(() => null)
+      if (stat?.isSymbolicLink()) {
+        throw new ClaudeSettingsPathBoundaryError(
+          `Refusing to operate on "${path}": "${cursor}" is a symlink, junction, or reparse point whose target cannot be resolved (dangling link). ` +
+            'A ".claude" directory or settings file that is a dangling link is not followed.',
+        )
+      }
       const parent = dirname(cursor)
       if (parent === cursor) return absolute
       tail.unshift(basename(cursor))
@@ -62,12 +97,13 @@ async function resolveExistingAncestor(
 export async function assertSettingsPathWithinRoot(
   targetPath: string,
   realpath: (path: string) => Promise<string>,
+  lstat?: ClaudeSettingsLstat,
 ): Promise<void> {
   const settingsRoot = dirname(targetPath)
   const anchor = dirname(settingsRoot)
   const [realAnchor, realTarget] = await Promise.all([
-    resolveExistingAncestor(anchor, realpath),
-    resolveExistingAncestor(targetPath, realpath),
+    resolveExistingAncestor(anchor, realpath, lstat),
+    resolveExistingAncestor(targetPath, realpath, lstat),
   ])
   const expectedRoot = join(realAnchor, basename(settingsRoot))
   if (!isWithin(realTarget, expectedRoot)) {

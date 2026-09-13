@@ -8,6 +8,7 @@ import {
 import {
   OWNED_PERMISSION_ALLOW,
   parsePermissionRule,
+  parseSettingsJson,
   permissionRuleMatchesCommand,
   permissionRulesOverlap,
 } from '../../../src/agents/claude-code/settings-model.js'
@@ -630,5 +631,135 @@ describe('claude-code fail-closed policy sources (F3)', () => {
       }),
     ).rejects.toThrow(/shadows the owned router/i)
     expect(files.store.has(targetPathForScope(layout, 'project'))).toBe(false)
+  })
+})
+
+interface MalformedPolicyCase {
+  readonly label: string
+  readonly json: string
+  readonly expectedFragment: string
+}
+
+// Each fixture is a settings source Claude Code's own schema can reject but that
+// the pre-F9 parser accepted: non-string rule elements and structurally invalid
+// nested hook entries. `parseSettingsJson` must flag all of them so setup and
+// doctor fail closed on the same source-level issue.
+const malformedPolicyCases: readonly MalformedPolicyCase[] = [
+  {
+    label: 'number deny element',
+    json: '{"permissions":{"deny":[123]}}',
+    expectedFragment: '"permissions.deny" elements must be rule strings',
+  },
+  {
+    label: 'null ask element',
+    json: '{"permissions":{"ask":["Bash(ocbox exec:*)",null]}}',
+    expectedFragment: '"permissions.ask" elements must be rule strings',
+  },
+  {
+    label: 'object allow element',
+    json: '{"permissions":{"allow":[{"rule":"Bash"}]}}',
+    expectedFragment: '"permissions.allow" elements must be rule strings',
+  },
+  {
+    label: 'non-object nested hook entry',
+    json: '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":["not-an-object"]}]}}',
+    expectedFragment: '"hooks.PreToolUse" entry "hooks" elements must be command objects',
+  },
+  {
+    label: 'non-string hook command',
+    json: '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":42}]}]}}',
+    expectedFragment: '"hooks.PreToolUse" hook "command" must be a string',
+  },
+  {
+    label: 'non-string hook type',
+    json: '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":7}]}]}}',
+    expectedFragment: '"hooks.PreToolUse" hook "type" must be a string',
+  },
+]
+
+describe('claude-code fail-closed policy element types (F9)', () => {
+  it.each(malformedPolicyCases)(
+    'parseSettingsJson flags a $label as a source issue',
+    ({ json, expectedFragment }) => {
+      const parsed = parseSettingsJson('/fake/source.json', json)
+      expect(parsed.issues.some((issue) => issue.message.includes(expectedFragment))).toBe(true)
+    },
+  )
+
+  it.each(malformedPolicyCases)(
+    '$label fails setup closed and doctor reports the identical source issue',
+    async ({ json, expectedFragment }) => {
+      const managed = '/fake/managed-settings.json'
+      const layout = layoutFor(managed)
+      const target = targetPathForScope(layout, 'project')
+      const files = memoryFiles({ [managed]: json })
+
+      let thrown: unknown
+      try {
+        await planSetup({
+          layout,
+          scope: 'project',
+          sessionId: SESSION_ID,
+          claudeVersionRaw: PINNED,
+          files,
+        })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(Error)
+      const message = thrown instanceof Error ? thrown.message : ''
+      expect(message).toMatch(/policy sources could not be read or validated/i)
+      expect(message).toContain(expectedFragment)
+      expect(files.store.has(target)).toBe(false)
+
+      const doctor = await planDoctor({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_ID,
+        claudeVersionRaw: PINNED,
+        files,
+      })
+      expect(doctor.ok).toBe(false)
+      const policyFinding = doctor.findings.find((entry) => entry.check === 'policy-sources')
+      expect(policyFinding?.ok).toBe(false)
+      expect(policyFinding?.detail).toContain('managed')
+      expect(policyFinding?.detail).toContain(expectedFragment)
+      const sourceFinding = doctor.findings.find((entry) => entry.check === 'settings-managed')
+      expect(sourceFinding?.ok).toBe(false)
+      expect(sourceFinding?.detail).toContain(expectedFragment)
+      expect(files.store.has(target)).toBe(false)
+    },
+  )
+
+  it('still accepts well-formed string rule and command hook structures', () => {
+    const parsed = parseSettingsJson(
+      '/fake/good.json',
+      JSON.stringify({
+        permissions: { allow: ['Bash(ls)'], deny: ['Read(./secrets/**)'], ask: ['Bash'] },
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: 'node ./hook.js' }] },
+          ],
+        },
+      }),
+    )
+    expect(parsed.issues).toEqual([])
+  })
+
+  it('fails setup when the target file itself carries a non-string rule element', async () => {
+    const layout = layoutFor()
+    const target = targetPathForScope(layout, 'project')
+    const before = '{"permissions":{"allow":[123]}}'
+    const files = memoryFiles({ [target]: before })
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: SESSION_ID,
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/Target settings failed validation/i)
+    expect(files.store.get(target)).toBe(before)
   })
 })

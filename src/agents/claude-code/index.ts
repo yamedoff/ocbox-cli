@@ -126,3 +126,10 @@ export {
   TEST_HARNESS_ENV,
 } from './version.js'
 export type { ClaudeCodeVersionDescriptor, ClaudeHookEvent } from './version.js'
+export {
+  assertClaudeHookTimeoutOrdering,
+  CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS,
+  CLAUDE_CODE_HOOK_TIMEOUT_SAFETY_MARGIN_MILLISECONDS,
+  CLAUDE_CODE_HOOK_TIMEOUT_SECONDS,
+  MILLISECONDS_PER_SECOND,
+} from './timeouts.js'

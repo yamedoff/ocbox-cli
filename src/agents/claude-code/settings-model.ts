@@ -7,6 +7,8 @@ export const COVERED_HOOK_MATCHER = 'Bash' as const
 export interface OwnedHookEntry {
   readonly type: 'command'
   readonly command: string
+  /** Explicit Claude Code command-hook timeout in seconds (F7 timer contract). */
+  readonly timeout?: number
 }
 
 export interface OwnedHookMatcher {
@@ -67,6 +69,12 @@ export interface ParsedSettingsFile {
   readonly issues: readonly SettingsParseIssue[]
 }
 
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
 export function parseSettingsJson(path: string, raw: string | null): ParsedSettingsFile {
   if (raw === null) {
     return { path, present: false, document: {}, issues: [] }
@@ -124,6 +132,35 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
         }
         if (record.hooks !== undefined && !Array.isArray(record.hooks)) {
           issues.push({ path, message: `"hooks.${event}" entry "hooks" must be an array` })
+        } else if (Array.isArray(record.hooks)) {
+          for (const hook of record.hooks) {
+            if (hook === null || typeof hook !== 'object' || Array.isArray(hook)) {
+              issues.push({
+                path,
+                message: `"hooks.${event}" entry "hooks" elements must be command objects (found ${jsonTypeOf(
+                  hook,
+                )})`,
+              })
+              continue
+            }
+            const hookRecord = hook as ClaudeHookRecord
+            if (hookRecord.type !== undefined && typeof hookRecord.type !== 'string') {
+              issues.push({
+                path,
+                message: `"hooks.${event}" hook "type" must be a string (found ${jsonTypeOf(
+                  hookRecord.type,
+                )})`,
+              })
+            }
+            if (hookRecord.command !== undefined && typeof hookRecord.command !== 'string') {
+              issues.push({
+                path,
+                message: `"hooks.${event}" hook "command" must be a string (found ${jsonTypeOf(
+                  hookRecord.command,
+                )})`,
+              })
+            }
+          }
         }
       }
     }
@@ -137,8 +174,20 @@ export function parseSettingsJson(path: string, raw: string | null): ParsedSetti
   } else if (permissions !== undefined && typeof permissions === 'object' && permissions !== null) {
     for (const key of ['allow', 'deny', 'ask']) {
       const value = (permissions as Record<string, unknown>)[key]
-      if (value !== undefined && !Array.isArray(value)) {
+      if (value === undefined) continue
+      if (!Array.isArray(value)) {
         issues.push({ path, message: `"permissions.${key}" must be an array of rule strings` })
+        continue
+      }
+      for (const element of value) {
+        if (typeof element !== 'string') {
+          issues.push({
+            path,
+            message: `"permissions.${key}" elements must be rule strings (found ${jsonTypeOf(
+              element,
+            )})`,
+          })
+        }
       }
     }
   }

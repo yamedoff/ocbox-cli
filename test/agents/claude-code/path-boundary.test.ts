@@ -182,4 +182,112 @@ describe('claude-code settings path boundary', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  it.skipIf(!CAN_DIRECTORY_LINK)(
+    'refuses a dangling .claude directory link with the typed boundary error (F10)',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'ocbox-t11-dangling-dir-'))
+      try {
+        const project = join(root, 'proj')
+        const outside = join(root, 'outside')
+        await mkdir(project, { recursive: true })
+        await mkdir(outside, { recursive: true })
+        // Create the link first, then delete its target: the link entry still
+        // exists but `realpath` reports ENOENT. The boundary check must see the
+        // dangling link via lstat and refuse, not fall through to a raw mkdir
+        // ENOENT during the write.
+        await symlink(outside, join(project, '.claude'), 'junction')
+        await rm(outside, { recursive: true, force: true })
+
+        await expect(planSetup(optionsFor(root))).rejects.toThrow(ClaudeSettingsPathBoundaryError)
+        await expect(planDoctor(optionsFor(root))).rejects.toThrow(ClaudeSettingsPathBoundaryError)
+        await expect(planRemove({ ...optionsFor(root), sessionId: null })).rejects.toThrow(
+          ClaudeSettingsPathBoundaryError,
+        )
+        expect(await exists(join(project, '.claude', 'settings.json'))).toBe(false)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.skipIf(process.platform === 'win32' || !CAN_FILE_LINK)(
+    'refuses a dangling symlinked settings file with the typed boundary error (POSIX, F10)',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'ocbox-t11-dangling-file-'))
+      try {
+        const project = join(root, 'proj')
+        await mkdir(join(project, '.claude'), { recursive: true })
+        await symlink(
+          join(root, 'missing-secret.json'),
+          join(project, '.claude', 'settings.json'),
+          'file',
+        )
+
+        await expect(planSetup(optionsFor(root))).rejects.toThrow(ClaudeSettingsPathBoundaryError)
+        await expect(planDoctor(optionsFor(root))).rejects.toThrow(ClaudeSettingsPathBoundaryError)
+        await expect(planRemove({ ...optionsFor(root), sessionId: null })).rejects.toThrow(
+          ClaudeSettingsPathBoundaryError,
+        )
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('maps a residual target-write ENOENT to the typed boundary error (F10 backstop)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ocbox-t11-write-backstop-'))
+    try {
+      const project = join(root, 'proj')
+      await mkdir(project, { recursive: true })
+      const layout = layoutFor(root)
+      const base = liveFileAccess()
+      const files = {
+        ...base,
+        writeText: async (path: string, content: string) => {
+          if (path === targetPathForScope(layout, 'project')) {
+            const error = new Error('ENOENT: no such file or directory') as Error & {
+              code?: string
+            }
+            error.code = 'ENOENT'
+            throw error
+          }
+          return base.writeText(path, content)
+        },
+      }
+      await expect(
+        planSetup({
+          layout,
+          scope: 'project',
+          sessionId: SESSION,
+          claudeVersionRaw: PINNED,
+          files,
+        }),
+      ).rejects.toThrow(ClaudeSettingsPathBoundaryError)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!CAN_DIRECTORY_LINK)(
+    'still applies a normal .claude under a project reached through a linked ancestor',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'ocbox-t11-linked-ancestor-'))
+      try {
+        const realProject = join(root, 'real-proj')
+        await mkdir(join(realProject, '.claude'), { recursive: true })
+        // The project directory itself is a link. The anchor realpath resolves
+        // it, so a normal `.claude` beneath it stays inside the expected root.
+        await symlink(realProject, join(root, 'proj'), 'junction')
+
+        const setup = await planSetup(optionsFor(root))
+        expect(setup.status).toBe('applied')
+        const target = targetPathForScope(layoutFor(root), 'project')
+        expect(await exists(join(realProject, '.claude', 'settings.json'))).toBe(true)
+        expect(await readFile(target, 'utf8')).toContain('ocbox agent hook claude-code')
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
 })

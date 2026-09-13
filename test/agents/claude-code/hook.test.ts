@@ -13,6 +13,7 @@ import {
   RECURSION_GUARD_ENV,
   recursionGuardArgs,
 } from '../../../src/agents/claude-code/routing.js'
+import { CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from '../../../src/agents/claude-code/timeouts.js'
 import {
   isOwnedHookCommand,
   OWNED_HOOK_COMMAND_FRAGMENT,
@@ -113,6 +114,8 @@ describe('claude-code hook entrypoint', () => {
         'exec',
         '--session',
         'sess-1',
+        '--timeout',
+        String(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
         '--shell',
         'npm test',
         '--env',

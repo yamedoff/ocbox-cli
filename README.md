@@ -20,7 +20,10 @@ exit behavior, and the deliberately local fake-provider harness. See
 [docs/sync.md](docs/sync.md) for the manifest, path/secret policy, three-way
 planner, deletion confirmation, and staging/recovery contract. See
 [docs/auth.md](docs/auth.md) for the OAuth 2.1 PKCE login/logout/status contract,
-token lifecycle, and the pinned hosted OpenAPI artifact.
+token lifecycle, and the pinned hosted OpenAPI artifact. See
+[docs/claude-code-adapter.md](docs/claude-code-adapter.md) for the Claude Code
+routing adapter's setup/remove behavior and its manifest-loss reconstruction
+limits.
 
 ## Toolchain
 

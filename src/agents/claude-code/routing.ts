@@ -1,4 +1,5 @@
-import { OWNED_HOOK_COMMAND_FRAGMENT, OWNED_MARKER } from './settings-model.js'
+import { OWNED_HOOK_COMMAND_FRAGMENT } from './settings-model.js'
+import { CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from './timeouts.js'
 
 export const RECURSION_GUARD_ENV = 'OCBOX_AGENT_ROUTED' as const
 export const ADAPTER_ID_ENV = 'OCBOX_AGENT_ADAPTER' as const
@@ -91,13 +92,16 @@ export function decideRouting(input: RoutingInput): RoutingDecision {
       execArgv: null,
     }
   }
-  if (
-    input.command.includes(OWNED_HOOK_COMMAND_FRAGMENT) ||
-    (input.command.includes('ocbox exec') && input.command.includes(OWNED_MARKER))
-  ) {
+  // Anti-recursion recognizes only the exact owned invocation grammar, never a
+  // substring. A covered command that merely *contains* the owned fragment (or
+  // the `ocbox`/adapter marker text) is a repository-controllable bypass and
+  // must still route; only a command that `parseOwnedHookCommand` recovers
+  // exactly is left local. Genuine nested adapter-owned calls are covered by the
+  // environment recursion markers checked above.
+  if (isOwnedHookCommand(input.command)) {
     return {
       action: 'allow-local',
-      reason: 'adapter-owned router invocation; not re-routed',
+      reason: 'exact adapter-owned router invocation; not re-routed',
       execArgv: null,
     }
   }
@@ -112,6 +116,17 @@ export function decideRouting(input: RoutingInput): RoutingDecision {
   return {
     action: 'route',
     reason: `covered Bash call routed to selected Session through ocbox exec; source moves only via explicit ocbox sync`,
-    execArgv: ['exec', '--session', input.sessionId, '--shell', input.command],
+    // The remote run is bounded strictly below the installed hook `timeout` so
+    // the runner returns a timeout outcome and the hook emits its blocking
+    // denial before Claude Code cancels the hook (F7).
+    execArgv: [
+      'exec',
+      '--session',
+      input.sessionId,
+      '--timeout',
+      String(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
+      '--shell',
+      input.command,
+    ],
   }
 }

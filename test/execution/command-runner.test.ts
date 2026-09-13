@@ -314,6 +314,18 @@ describe('execution command runner', () => {
     expect(result.outcome.kind).toBe('remote_result')
   })
 
+  it('maps a bounded --timeout remote run to a timeout outcome (F7)', async () => {
+    const output = io()
+    const result = await runExecutionCommandResult(
+      ['--timeout', '100', '--', process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      () => target(),
+      output,
+    )
+    expect(result.started).toBe(true)
+    expect(result.outcome.kind).toBe('timeout')
+    expect(result.exitCode).toBe(124)
+  })
+
   it('marks a pre-start failure started:false while keeping the honest exit code', async () => {
     const output = io()
     const result = await runExecutionCommandResult(

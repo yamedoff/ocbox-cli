@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { getAtPointer, hashJson, stableStringify } from './json.js'
 import { buildHookCommand, parseOwnedHookCommand } from './routing.js'
+import { CLAUDE_CODE_HOOK_TIMEOUT_SECONDS } from './timeouts.js'
 import {
   type ClaudeHookRecord,
   type ClaudeSettingsDocument,
@@ -32,6 +33,12 @@ export interface MergePlan {
   readonly ownedPermissionPresent: boolean
   readonly installedSessionId: string | null
   readonly sessionChanged: boolean
+  /**
+   * True when an already-owned hook was missing the explicit F7 hook `timeout`
+   * (or carried a different one) and was reconciled to the current contract.
+   * Treated as a change so re-running setup heals an install made before F7.
+   */
+  readonly reconciledHookTimeout: boolean
 }
 
 export interface PlanMergeOptions {
@@ -135,6 +142,7 @@ export function planMerge(
   let addedHook = false
   let addedPermission = false
   let sessionChanged = false
+  let reconciledHookTimeout = false
 
   if (!readOnlySource) {
     const hadHooks = next.hooks !== undefined
@@ -162,12 +170,25 @@ export function planMerge(
               ;(hook as { command?: unknown }).command = buildHookCommand(sessionId)
               sessionChanged = true
             }
+            // Reconcile the explicit F7 hook timeout on pre-existing owned
+            // hooks so an install made before the timeout contract heals on the
+            // next setup instead of staying fail-open at the implicit default.
+            if ((hook as { timeout?: unknown }).timeout !== CLAUDE_CODE_HOOK_TIMEOUT_SECONDS) {
+              ;(hook as { timeout?: unknown }).timeout = CLAUDE_CODE_HOOK_TIMEOUT_SECONDS
+              reconciledHookTimeout = true
+            }
           }
         }
       } else {
         entries.push({
           matcher: COVERED_HOOK_MATCHER,
-          hooks: [{ type: 'command', command: buildHookCommand(sessionId) }],
+          hooks: [
+            {
+              type: 'command',
+              command: buildHookCommand(sessionId),
+              timeout: CLAUDE_CODE_HOOK_TIMEOUT_SECONDS,
+            },
+          ],
         })
         addedHook = true
         additions.push('/hooks/PreToolUse')
@@ -210,7 +231,7 @@ export function planMerge(
     protectedRules.push(OWNED_PERMISSION_ALLOW, '/hooks/PreToolUse')
   }
 
-  const changed = addedHook || addedPermission || sessionChanged
+  const changed = addedHook || addedPermission || sessionChanged || reconciledHookTimeout
   return {
     alreadyApplied: !changed,
     addedHook,
@@ -227,6 +248,7 @@ export function planMerge(
     ownedPermissionPresent: ownedStatus.permission,
     installedSessionId,
     sessionChanged,
+    reconciledHookTimeout,
   }
 }
 
@@ -236,7 +258,25 @@ export interface RemovePlan {
   readonly document: ClaudeSettingsDocument
   readonly affected: readonly string[]
   readonly conflicts: readonly { readonly pointer: string; readonly reason: 'container-invalid' }[]
+  /**
+   * Containers that held only exact-owned entries and became empty once those
+   * entries were removed (for example `/hooks/PreToolUse` and its `/hooks`
+   * parent). Unlike `createdPointers`, this is derived purely from the exact
+   * owned shapes present, so it can drive pruning when the manifest is lost.
+   */
+  readonly emptiedOwnedContainers: readonly string[]
+  /** Pointers actually deleted from the document by pruning (empty only). */
+  readonly prunedPointers: readonly string[]
   readonly changed: boolean
+}
+
+export interface RemoveOptions {
+  /**
+   * Also prune containers emptied solely by removing owned entries, without a
+   * manifest's `createdPointers`. Used when the manifest is missing so an
+   * adapter-owned-only document can collapse back to `{}` (or be deleted).
+   */
+  readonly pruneEmptiedOwned?: boolean
 }
 
 function pruneEmptyCreatedPointers(
@@ -278,12 +318,14 @@ function pruneEmptyCreatedPointers(
 export function planRemove(
   document: ClaudeSettingsDocument,
   createdPointers: readonly string[] = [],
+  options: RemoveOptions = {},
 ): RemovePlan {
   const next = cloneDocument(document)
   let removedHooks = 0
   let removedPermissions = 0
   const affected: string[] = []
   const conflicts: { pointer: string; reason: 'container-invalid' }[] = []
+  const emptiedOwnedContainers: string[] = []
   const hooksContainer = asMutableSettings<MutableHookEvents>(next.hooks)
   if (hooksContainer !== null) {
     const entries = hooksContainer[COVERED_HOOK_EVENT]
@@ -321,6 +363,12 @@ export function planRemove(
       if (hooksChanged) {
         hooksContainer[COVERED_HOOK_EVENT] = keptEntries
         affected.push('/hooks/PreToolUse')
+        // Every entry in the event was exact-owned, so the event array and its
+        // `/hooks` parent became empty solely through owned removal. The parent
+        // pointer is only deleted if it is also empty after pruning.
+        if (keptEntries.length === 0) {
+          emptiedOwnedContainers.push('/hooks/PreToolUse', '/hooks')
+        }
       }
     }
   }
@@ -340,16 +388,25 @@ export function planRemove(
       if (kept.length !== allow.length) {
         permissionsContainer.allow = kept
         affected.push('/permissions/allow')
+        if (kept.length === 0) {
+          emptiedOwnedContainers.push('/permissions/allow', '/permissions')
+        }
       }
     }
   }
-  const pruned = pruneEmptyCreatedPointers(next, createdPointers)
+  const pointers =
+    options.pruneEmptiedOwned === true
+      ? [...createdPointers, ...emptiedOwnedContainers]
+      : createdPointers
+  const pruned = pruneEmptyCreatedPointers(next, pointers)
   return {
     removedHooks,
     removedPermissions,
     document: pruned.document,
     affected: [...affected, ...pruned.removed],
     conflicts,
+    emptiedOwnedContainers,
+    prunedPointers: pruned.removed,
     changed: removedHooks > 0 || removedPermissions > 0 || pruned.removed.length > 0,
   }
 }

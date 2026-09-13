@@ -15,10 +15,16 @@ import {
   decideRouting,
   parseOwnedHookCommand,
 } from '../../../src/agents/claude-code/routing.js'
+import {
+  CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS,
+  CLAUDE_CODE_HOOK_TIMEOUT_SAFETY_MARGIN_MILLISECONDS,
+  CLAUDE_CODE_HOOK_TIMEOUT_SECONDS,
+  MILLISECONDS_PER_SECOND,
+} from '../../../src/agents/claude-code/timeouts.js'
 import { OWNED_HOOK_COMMAND_FRAGMENT } from '../../../src/agents/claude-code/settings-model.js'
 
 describe('claude-code routing and capability matrix', () => {
-  it('routes covered Bash through ocbox exec with a session', () => {
+  it('routes covered Bash through ocbox exec bounded below the hook deadline (F7)', () => {
     const decision = decideRouting({
       toolName: 'Bash',
       command: 'npm test',
@@ -26,7 +32,25 @@ describe('claude-code routing and capability matrix', () => {
       environment: {},
     })
     expect(decision.action).toBe('route')
-    expect(decision.execArgv).toEqual(['exec', '--session', 'sess-9', '--shell', 'npm test'])
+    expect(decision.execArgv).toEqual([
+      'exec',
+      '--session',
+      'sess-9',
+      '--timeout',
+      String(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
+      '--shell',
+      'npm test',
+    ])
+  })
+
+  it('orders the remote timeout strictly inside the emitted hook deadline (F7)', () => {
+    const hookDeadlineMilliseconds = CLAUDE_CODE_HOOK_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND
+    expect(CLAUDE_CODE_HOOK_TIMEOUT_SAFETY_MARGIN_MILLISECONDS).toBeGreaterThan(0)
+    expect(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS).toBeGreaterThan(0)
+    expect(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS).toBeLessThan(hookDeadlineMilliseconds)
+    expect(hookDeadlineMilliseconds - CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS).toBe(
+      CLAUDE_CODE_HOOK_TIMEOUT_SAFETY_MARGIN_MILLISECONDS,
+    )
   })
 
   it('fails closed on covered Bash without a session', () => {
@@ -105,6 +129,12 @@ describe('claude-code routing and capability matrix', () => {
     for (const required of ['Edit', 'WebFetch', 'MCP', 'subagent']) {
       expect(names).toContain(required)
     }
+    expect(names).toContain('timeout/cancel race')
+    const bashRow = covered.find((row) => row.capability.includes('Bash tool calls'))
+    expect(bashRow?.detail).toContain('SECONDS')
+    expect(bashRow?.detail).toContain('MILLISECONDS')
+    expect(bashRow?.detail).toContain('NOT a live Claude Code result')
+    expect(bashRow?.detail).toContain('live pin gate')
   })
 
   it('references exactly one pinned hook/tool surface', () => {
@@ -114,5 +144,84 @@ describe('claude-code routing and capability matrix', () => {
     expect(HOOK_EVENTS).toContain('PreToolUse')
     expect(PINNED_SURFACE_SUMMARY).toContain('single pinned surface')
     expect(CAPABILITY_MATRIX[0]?.detail).toContain('single pinned surface')
+  })
+})
+
+describe('claude-code exact anti-recursion grammar (F11)', () => {
+  const SESSION = 'sess-9'
+
+  it('leaves only the exact owned invocation grammar local', () => {
+    for (const command of [
+      'ocbox agent hook claude-code',
+      'ocbox agent hook claude-code --session sess-9',
+      'ocbox agent hook claude-code --session other-session',
+    ]) {
+      const decision = decideRouting({
+        toolName: 'Bash',
+        command,
+        sessionId: SESSION,
+        environment: {},
+      })
+      expect(decision.action, command).toBe('allow-local')
+      expect(decision.execArgv, command).toBeNull()
+    }
+  })
+
+  it('routes a covered command that merely contains the owned fragment or marker text', () => {
+    const commands = [
+      'echo ocbox agent hook claude-code',
+      "printf '%s' 'ocbox agent hook claude-code'",
+      'echo ocbox-claude-code',
+      "ocbox exec --session s --shell 'echo ocbox-claude-code'",
+      'true && ocbox agent hook claude-code --session sess-9 extra',
+    ]
+    for (const command of commands) {
+      const decision = decideRouting({
+        toolName: 'Bash',
+        command,
+        sessionId: SESSION,
+        environment: {},
+      })
+      expect(decision.action, command).toBe('route')
+      expect(decision.execArgv, command).toEqual([
+        'exec',
+        '--session',
+        SESSION,
+        '--timeout',
+        String(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
+        '--shell',
+        command,
+      ])
+    }
+  })
+
+  it('does not treat recursion marker text inside a command as a guard', () => {
+    const decision = decideRouting({
+      toolName: 'Bash',
+      command: 'env OCBOX_AGENT_ROUTED=1 OCBOX_AGENT_ADAPTER=claude-code bash',
+      sessionId: SESSION,
+      environment: {},
+    })
+    expect(decision.action).toBe('route')
+    expect(decision.execArgv).toEqual([
+      'exec',
+      '--session',
+      SESSION,
+      '--timeout',
+      String(CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
+      '--shell',
+      'env OCBOX_AGENT_ROUTED=1 OCBOX_AGENT_ADAPTER=claude-code bash',
+    ])
+  })
+
+  it('still honors the real environment recursion markers', () => {
+    const decision = decideRouting({
+      toolName: 'Bash',
+      command: 'npm test',
+      sessionId: SESSION,
+      environment: { OCBOX_AGENT_ROUTED: '1', OCBOX_AGENT_ADAPTER: 'claude-code' },
+    })
+    expect(decision.action).toBe('allow-local')
+    expect(decision.reason).toContain('recursion guard')
   })
 })

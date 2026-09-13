@@ -1,8 +1,8 @@
-import { realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import { SessionIdSchema } from '../../contracts.js'
 import { CAPABILITY_MATRIX, ROUTING_AID_NOTICE } from './capabilities.js'
 import { planMerge, planRemove as planRemoveEntries, sha256Json } from './merge.js'
-import { assertSettingsPathWithinRoot } from './path-boundary.js'
+import { assertSettingsPathWithinRoot, ClaudeSettingsPathBoundaryError } from './path-boundary.js'
 import {
   type ClaudeSettingsDocument,
   collectDenyAskRules,
@@ -46,6 +46,13 @@ export interface PlannerFileAccess {
    * junction, symlink, or Windows reparse point.
    */
   readonly realpath?: (path: string) => Promise<string>
+  /**
+   * Optional `lstat` companion to `realpath`. When present it lets the boundary
+   * check recognize a dangling symlink/junction/reparse point (which `realpath`
+   * reports as absent) and refuse it with the typed boundary error instead of
+   * surfacing a raw ENOENT during the write.
+   */
+  readonly lstat?: (path: string) => Promise<{ readonly isSymbolicLink: () => boolean }>
   readonly now?: () => Date
 }
 
@@ -130,6 +137,30 @@ function canonicalSessionIdSafely(sessionId: string | null): CanonicalSession {
   }
 }
 
+interface ReconstructedOwnership {
+  readonly baseDocument: ClaudeSettingsDocument
+  readonly createdPointers: readonly string[]
+  readonly createdFile: boolean
+}
+
+/**
+ * Best-effort reconstruction of the pre-ownership document and the manifest
+ * metadata derivable from *exact* owned shapes when the manifest is absent.
+ * Only the anchored owned hook command and the exact owned permission rule are
+ * removed, and only containers those removals emptied are pruned, so co-located
+ * user hooks/rules survive. The true original bytes and whether the adapter
+ * created the file cannot be recovered; `docs/claude-code-adapter.md` records
+ * these limits.
+ */
+function reconstructOwnedBase(document: ClaudeSettingsDocument): ReconstructedOwnership {
+  const removal = planRemoveEntries(document, [], { pruneEmptiedOwned: true })
+  return {
+    baseDocument: removal.document,
+    createdPointers: removal.prunedPointers,
+    createdFile: Object.keys(removal.document).length === 0,
+  }
+}
+
 async function rollbackTarget(
   files: PlannerFileAccess,
   targetPath: string,
@@ -144,7 +175,28 @@ async function rollbackTarget(
 
 async function assertTargetBoundary(files: PlannerFileAccess, targetPath: string): Promise<void> {
   if (files.realpath === undefined) return
-  await assertSettingsPathWithinRoot(targetPath, files.realpath)
+  await assertSettingsPathWithinRoot(targetPath, files.realpath, files.lstat)
+}
+
+function errorCode(error: unknown): string | null {
+  return error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : null
+}
+
+/**
+ * Backstop for a symlink/junction/reparse point that the portable `lstat` check
+ * cannot recognize (for example a non-junction Windows reparse point). A
+ * residual ENOENT/ENOTDIR/ELOOP while writing the settings target is a path
+ * resolution failure, not a generic IO error, so surface the typed boundary
+ * refusal instead of a raw filesystem error.
+ */
+function wrapTargetWriteError(targetPath: string, error: unknown): unknown {
+  const code = errorCode(error)
+  if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP') {
+    return new ClaudeSettingsPathBoundaryError(
+      `Refusing to write "${targetPath}": the settings path could not be resolved (${code}), which indicates a dangling or unsupported symlink, junction, or reparse point.`,
+    )
+  }
+  return error
 }
 
 async function loadDocument(
@@ -319,7 +371,41 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     higherAsk: policy.ask,
   })
   if (merged.protectedRules.length > 0) throw protectedRulesError(merged.protectedRules)
+  const alreadyOwned = merged.ownedHookPresent || merged.ownedPermissionPresent
   if (merged.alreadyApplied) {
+    if (existingManifest !== null) {
+      return {
+        status: 'already-applied',
+        targetPath,
+        backupPath: null,
+        manifestPath,
+        sessionId,
+        pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
+        protectedRules: merged.protectedRules,
+      }
+    }
+    // Owned entries are already applied but the manifest was lost (hard crash
+    // between the target write and the manifest write, or manual deletion).
+    // Rebuild a truthful manifest from exact owned shapes only. The target is
+    // untouched and no backup is written because the original bytes are unknown;
+    // `backupPath: null` makes `remove` refuse byte-for-byte restoration.
+    const healedAt = options.files.now?.() ?? new Date()
+    const reconstructed = reconstructOwnedBase(current.document)
+    const healedManifest: OwnedManifest = {
+      adapter: 'claude-code',
+      pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
+      targetPath,
+      baseHash: sha256Json(reconstructed.baseDocument),
+      appliedHash: hashDocument(current.document),
+      desiredHash: hashDocument(current.document),
+      sessionId,
+      updatedAt: healedAt.toISOString(),
+      backupPath: null,
+      createdPointers: reconstructed.createdPointers,
+      protectedRules: merged.protectedRules,
+      createdFile: reconstructed.createdFile,
+    }
+    await options.files.writeText(manifestPath, `${JSON.stringify(healedManifest, null, 2)}\n`)
     return {
       status: 'already-applied',
       targetPath,
@@ -341,20 +427,40 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
   if (backupPath !== null && (await options.files.readText(backupPath)) === null) {
     backupPath = null
   }
+  let baseHash: string
+  let carriedPointers: readonly string[]
+  let createdFile: boolean
+  if (existingManifest !== null) {
+    baseHash = existingManifest.baseHash
+    carriedPointers = existingManifest.createdPointers
+    createdFile = existingManifest.createdFile
+  } else if (alreadyOwned) {
+    // Manifest lost while a rotation or a partial owned state is being applied:
+    // reconstruct the base from exact owned shapes so the already-owned document
+    // is never recorded as the base or captured as the original backup.
+    const reconstructed = reconstructOwnedBase(current.document)
+    baseHash = sha256Json(reconstructed.baseDocument)
+    carriedPointers = reconstructed.createdPointers
+    createdFile = reconstructed.createdFile
+    backupPath = null
+  } else {
+    baseHash = currentBaseHash
+    carriedPointers = []
+    createdFile = current.raw === null
+  }
   if (
     backupPath === null &&
     current.raw !== null &&
-    (existingManifest === null || existingManifest.baseHash === currentBaseHash)
+    (existingManifest === null ? !alreadyOwned : existingManifest.baseHash === currentBaseHash)
   ) {
     backupPath = backupPathForTarget(targetPath, now)
     await options.files.writeText(backupPath, current.raw)
   }
-  const carriedPointers = existingManifest?.createdPointers ?? []
   const nextManifest: OwnedManifest = {
     adapter: 'claude-code',
     pinnedVersion: PINNED_CLAUDE_CODE_VERSION,
     targetPath,
-    baseHash: existingManifest?.baseHash ?? currentBaseHash,
+    baseHash,
     appliedHash: hashDocument(merged.document),
     desiredHash: hashDocument(merged.document),
     sessionId,
@@ -362,10 +468,15 @@ export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
     backupPath,
     createdPointers: [...new Set([...carriedPointers, ...merged.createdPointers])],
     protectedRules: merged.protectedRules,
-    createdFile: existingManifest?.createdFile ?? current.raw === null,
+    createdFile,
   }
   try {
     await options.files.writeText(targetPath, stableStringify(merged.document))
+  } catch (error) {
+    await rollbackTarget(options.files, targetPath, current.raw)
+    throw wrapTargetWriteError(targetPath, error)
+  }
+  try {
     await options.files.writeText(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`)
   } catch (error) {
     await rollbackTarget(options.files, targetPath, current.raw)
@@ -642,7 +753,12 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   const manifestPath = manifestPathForTarget(targetPath)
   const manifestRaw = await options.files.readText(manifestPath)
   const manifest = parseManifestContent(manifestRaw)
-  const removed = planRemoveEntries(current.document, manifest?.createdPointers ?? [])
+  // With a manifest, prune exactly the containers it recorded as created. With
+  // the manifest lost, fall back to pruning containers that exact-owned removal
+  // emptied; nothing else is touched, so co-located user content survives.
+  const removed = planRemoveEntries(current.document, manifest?.createdPointers ?? [], {
+    pruneEmptiedOwned: manifest === null,
+  })
   if (removed.removedHooks === 0 && removed.removedPermissions === 0 && !removed.changed) {
     if (manifestRaw !== null && options.files.removePath !== undefined) {
       await options.files.removePath(manifestPath).catch(() => undefined)
@@ -702,11 +818,16 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   // empty, delete the adapter-created file instead of leaving `{}`. A target
   // that existed before setup (createdFile false) is restored from the owned
   // backup byte-for-byte when that is safe; otherwise it is rewritten from the
-  // pruned document so the original bytes still survive semantically.
+  // pruned document so the original bytes still survive semantically. When the
+  // manifest is lost, an empty result can only have been produced by owned
+  // removals, so the owned-only file is deleted too (the reconstruction limit
+  // below cannot distinguish this from a pre-existing empty file).
+  const becameEmpty = Object.keys(removed.document).length === 0
+  const removedOwnedEntries = removed.removedHooks > 0 || removed.removedPermissions > 0
   const deleteCreatedFile =
-    manifest?.createdFile === true &&
     conflicts.length === 0 &&
-    Object.keys(removed.document).length === 0
+    becameEmpty &&
+    (manifest?.createdFile === true || (manifest === null && removedOwnedEntries))
   try {
     if (deleteCreatedFile && options.files.removePath !== undefined) {
       await options.files.removePath(targetPath)
@@ -720,7 +841,7 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
     }
   } catch (error) {
     await rollbackTarget(options.files, targetPath, current.raw)
-    throw error
+    throw wrapTargetWriteError(targetPath, error)
   }
   return { status: 'removed', targetPath, repairPlan, conflicts }
 }
@@ -731,5 +852,6 @@ export function liveFileAccess(): PlannerFileAccess {
     writeText: writeFileAtomic,
     removePath: removePathIfPresent,
     realpath,
+    lstat,
   }
 }
