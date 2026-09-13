@@ -775,13 +775,27 @@ export async function planRemove(options: PlannerOptions): Promise<RemoveResult>
   const removed = planRemoveEntries(current.document, manifest?.createdPointers ?? [], {
     pruneEmptiedOwned: manifest === null,
   })
+  const conflicts = removed.conflicts.map((conflict) => conflict.pointer)
   if (removed.removedHooks === 0 && removed.removedPermissions === 0 && !removed.changed) {
+    if (conflicts.length > 0) {
+      // A user replaced an owned container with a different type, so nothing
+      // exact-owned could be removed. Retain the manifest and surface the
+      // conflict instead of reporting a clean `not-installed`.
+      return {
+        status: 'not-installed',
+        targetPath,
+        repairPlan: [
+          `container-invalid at ${conflicts.join(', ')}: user replaced an owned container with a different type; left untouched for manual review`,
+          `ownership manifest retained at ${manifestPath} for repair context`,
+        ],
+        conflicts,
+      }
+    }
     if (manifestRaw !== null && options.files.removePath !== undefined) {
       await options.files.removePath(manifestPath).catch(() => undefined)
     }
     return { status: 'not-installed', targetPath, repairPlan: [], conflicts: [] }
   }
-  const conflicts = removed.conflicts.map((conflict) => conflict.pointer)
   // Byte-for-byte restoration: only for a pre-existing file that the manifest
   // proves was owned by this adapter, that has no conflicting user edits, and
   // whose current content prunes back to the recorded base snapshot. The

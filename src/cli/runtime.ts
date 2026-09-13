@@ -1,6 +1,10 @@
 import { open, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { parseProjectConfig, type ProjectConfig } from '../config/index.js'
+import {
+  parseProjectConfig,
+  type ProjectConfig,
+  resolveConfigurationValue,
+} from '../config/index.js'
 import { LifecycleService, LifecycleStore, projectIdForPath } from '../lifecycle/index.js'
 import { OutputWriter, type OutputMode } from '../output/index.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
@@ -81,13 +85,19 @@ export function resolveStateDirectory(
   flags: RuntimeFlags,
   environment: NodeJS.ProcessEnv = process.env,
 ): string {
-  return resolve(
-    flags['state-dir'] ??
-      // Environment is an index signature; bracket access is required by TypeScript.
-      // biome-ignore lint/complexity/useLiteralKeys: see explanation above
-      environment['OCBOX_STATE_DIR'] ??
-      resolveCurrentPlatformPaths(environment).stateDirectory,
-  )
+  // CLI flag > environment > platform default, resolved through the single
+  // documented precedence helper so runtime and config resolution cannot drift.
+  // The project file has no state-directory field, so that layer is absent.
+  const resolved = resolveConfigurationValue({
+    flag: flags['state-dir'],
+    // Environment is an index signature; bracket access is required by TypeScript.
+    // biome-ignore lint/complexity/useLiteralKeys: see explanation above
+    environment: environment['OCBOX_STATE_DIR'],
+    defaultValue: resolveCurrentPlatformPaths(environment).stateDirectory,
+    parseEnvironment: (value) => value,
+    environmentName: 'OCBOX_STATE_DIR',
+  })
+  return resolve(resolved.value)
 }
 
 export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
