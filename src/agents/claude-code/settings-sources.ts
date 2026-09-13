@@ -75,6 +75,12 @@ export function targetPathForScope(layout: ClaudeSettingsLayout, scope: AdapterS
   return layout.sharedProjectSettingsPath
 }
 
+export function scopeToSourceKind(scope: AdapterScope): ClaudeSettingsSource {
+  if (scope === 'user') return 'user'
+  if (scope === 'local') return 'local-project'
+  return 'shared-project'
+}
+
 export const CLAUDE_SETTINGS_PRECEDENCE = [
   'managed',
   'explicit',

@@ -178,6 +178,85 @@ export function permissionRuleOwned(rule: unknown): boolean {
   return rule === OWNED_PERMISSION_ALLOW
 }
 
+export type PermissionRuleKind = 'any' | 'exact' | 'prefix'
+
+export interface ParsedPermissionRule {
+  readonly raw: string
+  readonly tool: string
+  readonly kind: PermissionRuleKind
+  readonly value: string | null
+}
+
+// Claude Code permission rules are either a bare tool name (`Bash`) matching every
+// call of that tool, an exact specifier (`Bash(npm run build)`), or a colon-star
+// prefix (`Bash(ocbox exec:*)`, `Bash(python3:*)`). Anything else is not a rule we
+// can reason about and is treated as non-matching.
+export function parsePermissionRule(rule: string): ParsedPermissionRule | null {
+  if (typeof rule !== 'string') return null
+  const trimmed = rule.trim()
+  if (trimmed.length === 0) return null
+  const open = trimmed.indexOf('(')
+  if (open === -1) {
+    return { raw: trimmed, tool: trimmed, kind: 'any', value: null }
+  }
+  if (trimmed[trimmed.length - 1] !== ')') return null
+  const tool = trimmed.slice(0, open).trim()
+  if (tool.length === 0) return null
+  const inner = trimmed.slice(open + 1, -1)
+  if (inner.length === 0) {
+    return { raw: trimmed, tool, kind: 'any', value: null }
+  }
+  if (inner.endsWith(':*')) {
+    return { raw: trimmed, tool, kind: 'prefix', value: inner.slice(0, -2) }
+  }
+  return { raw: trimmed, tool, kind: 'exact', value: inner }
+}
+
+export function permissionRuleMatchesCommand(
+  rule: string,
+  toolName: string,
+  command: string,
+): boolean {
+  const parsed = parsePermissionRule(rule)
+  if (parsed === null || parsed.tool !== toolName) return false
+  if (parsed.kind === 'any') return true
+  if (parsed.kind === 'exact') return command === parsed.value
+  return command.startsWith(parsed.value as string)
+}
+
+export function permissionRulesOverlap(left: string, right: string): boolean {
+  const a = parsePermissionRule(left)
+  const b = parsePermissionRule(right)
+  if (a === null || b === null || a.tool !== b.tool) return false
+  if (a.kind === 'any' || b.kind === 'any') return true
+  if (a.kind === 'exact' && b.kind === 'exact') return a.value === b.value
+  const prefix = a.kind === 'prefix' ? a : b
+  const other = a.kind === 'prefix' ? b : a
+  if (prefix.kind !== 'prefix') return false
+  if (other.kind === 'prefix') {
+    return (
+      (prefix.value as string).startsWith(other.value as string) ||
+      (other.value as string).startsWith(prefix.value as string)
+    )
+  }
+  return (other.value as string).startsWith(prefix.value as string)
+}
+
+export function shadowingPermissionRules(
+  rules: readonly string[],
+  ownedRule: string = OWNED_PERMISSION_ALLOW,
+): string[] {
+  const seen = new Set<string>()
+  const shadowing: string[] = []
+  for (const rule of rules) {
+    if (!permissionRulesOverlap(rule, ownedRule)) continue
+    if (seen.has(rule)) continue
+    seen.add(rule)
+    shadowing.push(rule)
+  }
+  return shadowing
+}
+
 export function collectDenyAskRules(document: ClaudeSettingsDocument): {
   readonly deny: string[]
   readonly ask: string[]

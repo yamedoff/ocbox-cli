@@ -13,6 +13,7 @@ import {
   hookObjectOwned,
   OWNED_PERMISSION_ALLOW,
   permissionRuleOwned,
+  shadowingPermissionRules,
 } from './settings-model.js'
 
 export interface MergePlan {
@@ -128,10 +129,8 @@ export function planMerge(
   const preservedDeny = stringRules(permissionsBefore?.deny)
   const preservedAsk = stringRules(permissionsBefore?.ask)
 
-  const higherDeny = new Set(options.higherDeny ?? [])
-  const higherAsk = new Set(options.higherAsk ?? [])
-  const localDeny = new Set(preservedDeny)
-  const localAsk = new Set(preservedAsk)
+  const higherDeny = options.higherDeny ?? []
+  const higherAsk = options.higherAsk ?? []
 
   let addedHook = false
   let addedPermission = false
@@ -187,13 +186,16 @@ export function planMerge(
       protectedRules.push('/permissions/allow')
     } else {
       const allow = ensureStringArray(permissionsContainer, 'allow')
-      const shadowed =
-        higherDeny.has(OWNED_PERMISSION_ALLOW) ||
-        higherAsk.has(OWNED_PERMISSION_ALLOW) ||
-        localDeny.has(OWNED_PERMISSION_ALLOW) ||
-        localAsk.has(OWNED_PERMISSION_ALLOW)
-      if (shadowed) {
-        protectedRules.push(OWNED_PERMISSION_ALLOW)
+      const shadowing = shadowingPermissionRules([
+        ...higherDeny,
+        ...higherAsk,
+        ...preservedDeny,
+        ...preservedAsk,
+      ])
+      if (shadowing.length > 0) {
+        for (const rule of shadowing) {
+          if (!protectedRules.includes(rule)) protectedRules.push(rule)
+        }
       } else if (!allow.some(permissionRuleOwned)) {
         allow.push(OWNED_PERMISSION_ALLOW)
         addedPermission = true

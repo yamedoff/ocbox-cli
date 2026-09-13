@@ -53,9 +53,14 @@ export {
   OWNED_HOOK_COMMAND_FRAGMENT,
   OWNED_MARKER,
   OWNED_PERMISSION_ALLOW,
+  parsePermissionRule,
   parseSettingsJson,
+  permissionRuleMatchesCommand,
   permissionRuleOwned,
+  permissionRulesOverlap,
+  shadowingPermissionRules,
 } from './settings-model.js'
+export type { ParsedPermissionRule, PermissionRuleKind } from './settings-model.js'
 export type {
   AdapterScope,
   ClaudeLayoutOptions,
@@ -69,6 +74,7 @@ export {
   precedenceRank,
   resolveClaudeSettingsLayout,
   resolveClaudeSettingsSources,
+  scopeToSourceKind,
   targetPathForScope,
 } from './settings-sources.js'
 export {

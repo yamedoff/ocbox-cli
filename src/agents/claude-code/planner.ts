@@ -6,9 +6,19 @@ import {
   hasManagedHookLock,
   OWNED_PERMISSION_ALLOW,
   parseSettingsJson,
+  permissionRulesOverlap,
 } from './settings-model.js'
-import type { AdapterScope, ClaudeSettingsLayout } from './settings-sources.js'
-import { targetPathForScope } from './settings-sources.js'
+import type {
+  AdapterScope,
+  ClaudeSettingsLayout,
+  ClaudeSettingsSource,
+} from './settings-sources.js'
+import {
+  precedenceRank,
+  resolveClaudeSettingsSources,
+  scopeToSourceKind,
+  targetPathForScope,
+} from './settings-sources.js'
 import {
   backupPathForTarget,
   hashDocument,
@@ -97,65 +107,110 @@ async function loadDocument(
   return { raw, document: parsed.document, issues: parsed.issues.map((issue) => issue.message) }
 }
 
-function higherPolicyGuard(
-  paths: readonly { readonly label: string; readonly raw: string | null }[],
-): {
-  readonly deny: string[]
-  readonly ask: string[]
-} {
+interface PolicyLock {
+  readonly kind: ClaudeSettingsSource
+  readonly path: string
+}
+
+interface PolicyShadow {
+  readonly kind: ClaudeSettingsSource
+  readonly path: string
+  readonly rule: string
+  readonly polarity: 'deny' | 'ask'
+}
+
+interface HigherPolicyEvaluation {
+  readonly locks: readonly PolicyLock[]
+  readonly shadowing: readonly PolicyShadow[]
+  readonly deny: readonly string[]
+  readonly ask: readonly string[]
+}
+
+// Read-only evaluation of every settings source at or above the target scope's
+// precedence. Deny/ask rules from lower sources cannot weaken these, and the
+// PreToolUse hook fires before Claude Code evaluates local permissions, so any
+// matching deny/ask must stop setup before the routing hook is installed.
+async function evaluateHigherPolicy(
+  files: PlannerFileAccess,
+  layout: ClaudeSettingsLayout,
+  scope: AdapterScope,
+): Promise<HigherPolicyEvaluation> {
+  const targetRank = precedenceRank(scopeToSourceKind(scope))
+  const sources = resolveClaudeSettingsSources(layout).filter(
+    (source) => source.precedence <= targetRank,
+  )
+  const locks: PolicyLock[] = []
+  const shadowing: PolicyShadow[] = []
   const deny: string[] = []
   const ask: string[] = []
-  for (const entry of paths) {
-    if (entry.raw === null) continue
-    const parsed = parseSettingsJson(entry.label, entry.raw)
+  for (const source of sources) {
+    const raw = await files.readText(source.path)
+    if (raw === null) continue
+    const parsed = parseSettingsJson(source.path, raw)
     if (parsed.issues.length > 0) continue
     if (hasManagedHookLock(parsed.document)) {
-      throw new Error(
-        'Managed policy locks hooks or permission rules (allowManagedHooksOnly / allowManagedPermissionRulesOnly). Setup refuses to weaken higher policy; ask the workspace administrator.',
-      )
+      locks.push({ kind: source.kind, path: source.path })
     }
     const rules = collectDenyAskRules(parsed.document)
-    if (rules.deny.some((rule) => rule.startsWith('Bash('))) {
-      throw new Error(
-        'Managed policy denies Bash rules that overlap the owned router. Setup fails closed rather than fighting higher policy.',
-      )
+    for (const rule of rules.deny) {
+      deny.push(rule)
+      if (permissionRulesOverlap(rule, OWNED_PERMISSION_ALLOW)) {
+        shadowing.push({ kind: source.kind, path: source.path, rule, polarity: 'deny' })
+      }
     }
-    deny.push(...rules.deny)
-    ask.push(...rules.ask)
+    for (const rule of rules.ask) {
+      ask.push(rule)
+      if (permissionRulesOverlap(rule, OWNED_PERMISSION_ALLOW)) {
+        shadowing.push({ kind: source.kind, path: source.path, rule, polarity: 'ask' })
+      }
+    }
   }
-  return { deny, ask }
+  return { locks, shadowing, deny, ask }
+}
+
+function describeShadow(shadow: PolicyShadow): string {
+  return `${shadow.polarity} "${shadow.rule}" from ${shadow.kind} (${shadow.path})`
+}
+
+function managedLockError(locks: readonly PolicyLock[]): Error {
+  return new Error(
+    `Managed policy locks hooks or permission rules (allowManagedHooksOnly / allowManagedPermissionRulesOnly) in ${locks
+      .map((lock) => `${lock.kind} (${lock.path})`)
+      .join(', ')}. Setup refuses to weaken higher policy; ask the workspace administrator.`,
+  )
+}
+
+function shadowedRouterError(shadowing: readonly PolicyShadow[]): Error {
+  const rules = shadowing.map(describeShadow).join(', ')
+  return new Error(
+    `Higher-precedence policy shadows the owned router (${rules}). Setup fails closed rather than installing a hook that would execute remotely before the local deny/ask is evaluated.`,
+  )
+}
+
+function protectedRulesError(rules: readonly string[]): Error {
+  return new Error(
+    `Higher-precedence policy or container conflicts protect the owned router (${rules.join(', ')}). Setup fails closed rather than weakening higher policy or overwriting user containers.`,
+  )
 }
 
 export async function planSetup(options: PlannerOptions): Promise<SetupResult> {
   const gate = gateClaudeVersion(options.claudeVersionRaw)
   if (!gate.supported) throw new Error(gate.remediation)
   const targetPath = targetPathForScope(options.layout, options.scope)
-  const higherPaths: { readonly label: string; readonly raw: string | null }[] = []
-  if (options.layout.managedSettingsPath !== null) {
-    higherPaths.push({
-      label: options.layout.managedSettingsPath,
-      raw: await options.files.readText(options.layout.managedSettingsPath),
-    })
-  }
-  for (const explicit of options.layout.explicitSettingsPaths) {
-    higherPaths.push({ label: explicit, raw: await options.files.readText(explicit) })
-  }
-  const higher = higherPolicyGuard(higherPaths)
   const current = await loadDocument(options.files, targetPath)
   if (current.issues.length > 0) {
     throw new Error(`Target settings failed validation: ${current.issues.join('; ')}`)
   }
+  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
+  if (policy.locks.length > 0) throw managedLockError(policy.locks)
+  if (policy.shadowing.length > 0) throw shadowedRouterError(policy.shadowing)
   const manifestPath = manifestPathForTarget(targetPath)
   const existingManifest = parseManifestContent(await options.files.readText(manifestPath))
   const merged = planMerge(current.document, options.sessionId, {
-    higherDeny: higher.deny,
-    higherAsk: higher.ask,
+    higherDeny: policy.deny,
+    higherAsk: policy.ask,
   })
-  if (merged.protectedRules.length > 0) {
-    throw new Error(
-      `Higher-precedence policy shadows the owned router (${merged.protectedRules.join(', ')}). Setup fails closed rather than weakening ${higherPaths.length > 0 ? 'managed/explicit' : 'higher'} policy.`,
-    )
-  }
+  if (merged.protectedRules.length > 0) throw protectedRulesError(merged.protectedRules)
   if (merged.alreadyApplied) {
     return {
       status: 'already-applied',
@@ -257,6 +312,36 @@ export async function planDoctor(options: PlannerOptions): Promise<DoctorResult>
         detail: `${entry.source} parses; deny=${deny.length} ask=${ask.length}; deny-first precedence preserved`,
       })
     }
+  }
+<  const policy = await evaluateHigherPolicy(options.files, options.layout, options.scope)
+  const lockedSources = policy.locks.map((lock) => `${lock.kind} (${lock.path})`).join(', ')
+  const shadowingRules = policy.shadowing.map(describeShadow).join(', ')
+  if (policy.locks.length > 0) {
+    findings.push({
+      check: 'managed-lock',
+      ok: false,
+      detail: `managed policy locks hooks/permissions (allowManagedHooksOnly / allowManagedPermissionRulesOnly) in ${lockedSources}; setup stays blocked until a workspace administrator relaxes the lock`,
+    })
+  } else {
+    findings.push({
+      check: 'managed-lock',
+      ok: true,
+      detail:
+        'no allowManagedHooksOnly/allowManagedPermissionRulesOnly lock in sources at or above target precedence',
+    })
+  }
+  if (policy.shadowing.length > 0) {
+    findings.push({
+      check: 'higher-policy-shadow',
+      ok: false,
+      detail: `deny/ask rules shadow the owned router (${shadowingRules}); setup fails closed because the PreToolUse hook runs before local permission evaluation, so an administrator must remove or narrow the rule`,
+    })
+  } else {
+    findings.push({
+      check: 'higher-policy-shadow',
+      ok: true,
+      detail: 'no deny/ask rule at or above target precedence shadows the owned router',
+    })
   }
   let installedSessionId: string | null = null
   let sessionMismatch = false
