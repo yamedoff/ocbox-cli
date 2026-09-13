@@ -13,6 +13,7 @@ export default defineConfig({
     'commands/agent/index': 'src/commands/agent/index.ts',
     'commands/agent/setup': 'src/commands/agent/setup.ts',
     'commands/agent/doctor': 'src/commands/agent/doctor.ts',
+    'commands/agent/hook': 'src/commands/agent/hook.ts',
     'commands/agent/remove': 'src/commands/agent/remove.ts',
     'commands/auth/index': 'src/commands/auth/index.ts',
     'commands/auth/login': 'src/commands/auth/login.ts',

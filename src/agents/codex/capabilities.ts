@@ -2,7 +2,7 @@ export const CODEX_ADAPTER_NOTICE =
   'The Codex adapter is a routing aid, not host isolation and not a security boundary.'
 
 export const COVERED_CAPABILITIES: readonly string[] = [
-  'shell tool calls matching the owned fixture hook (routed through the selected Session via `ocbox exec`)',
+  'Codex Bash tool calls matching the owned PreToolUse hook (canonical `Bash` matcher) are mapped to the selected Session through `ocbox exec --session ... -- /bin/bash -lc <command>`',
   'source movement only through an explicit `ocbox sync` invocation (the adapter never syncs implicitly)',
 ]
 

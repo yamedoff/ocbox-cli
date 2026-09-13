@@ -78,6 +78,8 @@ describe('codex setup planner', () => {
     const hooks = plan.changes.find((change) => change.kind === 'hooks-write')
     expect(hooks?.after).toContain('sess-test-1')
     expect(hooks?.after).toContain('PreToolUse')
+    expect(hooks?.after).toContain('agent hook codex')
+    expect(hooks?.after).toContain('"matcher": "Bash"')
     expect(hooks?.backupPath).toBeNull()
     const manifest = plan.changes.find((change) => change.kind === 'manifest')
     expect(manifest?.file).toBe('/state/agents/codex/user/manifest.json')
@@ -270,7 +272,7 @@ describe('codex drift and remove', () => {
     if (!first.ok || first.manifest === null) throw new Error('plan failed')
     const edited = JSON.stringify({
       hooks: {
-        PreToolUse: [{ matcher: 'shell', hooks: [{ type: 'command', command: 'user-edited' }] }],
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'user-edited' }] }],
       },
     })
     const plan = planCodexRemove({
@@ -326,6 +328,9 @@ describe('codex doctor', () => {
     expect(report.matrix.uncovered.join(' ')).toMatch(/MCP/)
     expect(report.checks.map((check) => check.id)).toContain('selected-session')
     expect(report.checks.find((check) => check.id === 'schema-proof')?.status).toBe('ok')
+    expect(report.checks.find((check) => check.id === 'hook-contract')).toMatchObject({
+      status: 'ok',
+    })
   })
 
   it('fails closed checks with no usable Session and never exposes tokens', () => {

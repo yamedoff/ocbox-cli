@@ -7,11 +7,13 @@ const USAGE = [
   '  $ ocbox agent setup codex [--layer user|project] [--session SESSION_ID] [--yes]',
   '  $ ocbox agent doctor codex',
   '  $ ocbox agent remove codex [--layer user|project|all] [--yes]',
+  '  $ ocbox agent hook codex --session SESSION_ID   # internal PreToolUse hook (stdin JSON)',
   '',
   'COMMANDS',
   '  setup   Plan or apply the owned config and hook fragments (idempotent)',
   '  doctor  Check version, config, trust, owned entries, Session, and drift',
   '  remove  Restore only owned fragments, preserving user edits',
+  '  hook    Internal owned hook entrypoint that maps covered Bash calls to ocbox exec',
 ].join('\n')
 
 export default class AgentTopic extends Command {

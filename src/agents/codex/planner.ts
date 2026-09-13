@@ -4,7 +4,9 @@ import { parseHooksJsonDocument, parseTomlDocument, serializeHooksJsonDocument }
 import { type CodexJsonValue, deepEqual, isRecord, sha256 } from './document.js'
 import { CodexAdapterError } from './errors.js'
 import type { CodexFileSystem } from './fs.js'
-import { buildHookShellCommand, isRecursionGuardActive } from './hook-helper.js'
+import { CODEX_HOOK_MATCHER_TOOL } from './hook-contract.js'
+import { buildHookCommand, isRecursionGuardActive } from './hook-helper.js'
+import { proveCodexHookContract } from './hook.js'
 import {
   CODEX_HOOKS_TABLE_KEY,
   type CodexDesiredFragment,
@@ -220,14 +222,17 @@ function timestampNow(provided?: string): string {
 }
 
 function desiredSessionFragment(sessionId: string, ocboxBin?: string): CodexDesiredFragment {
-  const command = buildHookShellCommand({
+  const command = buildHookCommand({
     sessionId,
     ...(ocboxBin === undefined ? {} : { ocboxBin }),
   })
   return {
     event: 'PreToolUse',
-    matcher: 'shell',
-    group: { matcher: 'shell', hooks: [{ type: 'command', command }] },
+    matcher: CODEX_HOOK_MATCHER_TOOL,
+    group: {
+      matcher: CODEX_HOOK_MATCHER_TOOL,
+      hooks: [{ type: 'command', command }],
+    },
   }
 }
 
@@ -494,6 +499,12 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
           : 'Codex schema is not recognized; refusing to merge.',
       )
     }
+  }
+  const hookContract = proveCodexHookContract()
+  if (!hookContract.proven) {
+    errors.push(
+      `The pinned Codex hook contract cannot be proven offline (${hookContract.detail}); refusing to install a hook that cannot map covered Bash calls to ocbox exec. ${LIVE_E2E_BLOCKER}`,
+    )
   }
   if (input.allowUnverifiedSchema === false) {
     warnings.push(
@@ -1523,6 +1534,15 @@ export function codexDoctor(input: DoctorInput): {
       remediation: 'Repair the config first.',
     })
   }
+  const hookContract = proveCodexHookContract()
+  checks.push({
+    id: 'hook-contract',
+    status: hookContract.proven ? 'ok' : 'fail',
+    summary: hookContract.proven
+      ? `Pinned Codex hook contract ${hookContract.revision} maps covered Bash calls to ocbox exec.`
+      : `Pinned Codex hook contract cannot be proven offline (${hookContract.detail}).`,
+    remediation: hookContract.proven ? null : LIVE_E2E_BLOCKER,
+  })
   checks.push({
     id: 'recursion-guard',
     status: isRecursionGuardActive(input.environment) ? 'warning' : 'ok',

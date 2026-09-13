@@ -14,7 +14,7 @@ export const CODEX_VERSION_EVIDENCE = {
 } as const
 
 export const LIVE_E2E_BLOCKER =
-  'Live Codex E2E (setup, remote shell task, sync, drift detection, remove/restore) has not been run against the pinned version; the hook/config schema is unverified locally, so live setup stays fail-closed until the schema is proven on a host with the pinned Codex.'
+  'Live Codex E2E (setup, remote shell task, sync, drift detection, remove/restore) has not been run against the pinned version. Setup mechanically proves the pinned offline hook contract (payload -> ocbox exec grammar -> recursion markers) and stays fail-closed when that proof cannot be established, so a hook that cannot route covered Bash calls is never installed; live schema behavior remains the named blocker.'
 
 export type CodexVersionStatus = 'supported' | 'unsupported' | 'unparsable'
 

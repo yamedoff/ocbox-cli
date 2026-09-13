@@ -18,17 +18,18 @@ import {
   type CodexDesiredFragment,
 } from '../../../src/agents/codex/hooks.js'
 import { deepEqual } from '../../../src/agents/codex/document.js'
-import { buildHookShellCommand } from '../../../src/agents/codex/hook-helper.js'
+import { buildHookCommand } from '../../../src/agents/codex/hook-helper.js'
+import { CODEX_HOOK_MATCHER_TOOL } from '../../../src/agents/codex/hook-contract.js'
 
 const VERSION_OUTPUT = 'codex-cli 0.153.4'
 
 function desiredSessionFragment(sessionId: string): CodexDesiredFragment {
   return {
     event: 'PreToolUse',
-    matcher: 'shell',
+    matcher: CODEX_HOOK_MATCHER_TOOL,
     group: {
-      matcher: 'shell',
-      hooks: [{ type: 'command', command: buildHookShellCommand({ sessionId }) }],
+      matcher: CODEX_HOOK_MATCHER_TOOL,
+      hooks: [{ type: 'command', command: buildHookCommand({ sessionId }) }],
     },
   }
 }
