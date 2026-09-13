@@ -28,7 +28,11 @@ import {
   OperationSchema,
   type RequestContext,
 } from '../../domain/operation.js'
-import type { SandboxSpec } from '../../domain/spec.js'
+import {
+  SandboxSpecSchema,
+  type RequestedEffectiveSpec,
+  type SandboxSpec,
+} from '../../domain/spec.js'
 import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { OcboxError } from '../../errors/index.js'
 import type { ProviderCapabilities } from '../contract/capabilities.js'
@@ -165,6 +169,39 @@ function shellQuote(arg: string): string {
 function commandString(request: ExecRequest): string {
   if (request.command.mode === 'shell') return request.command.shell
   return request.command.argv.map(shellQuote).join(' ')
+}
+
+/**
+ * Maps the hosted Session's observed specification onto the domain's
+ * requested/effective pair.
+ *
+ * The hosted `effectiveSpec` is the provider's observed reality and is the only
+ * source promoted to `effective`; the locally persisted request is never
+ * promoted, so requested state is never mistaken for observed state. A hosted
+ * payload that is absent or does not fully satisfy the domain `SandboxSpec`
+ * stays `effective: null` (unknown/unobserved), keeping the `--shell` Linux
+ * target guard fail-closed instead of weakening it. `effectiveObservedAt`
+ * records the host's observation clock (the same clock as the Sandbox lifetime)
+ * so the domain timestamp invariant holds without trusting a cross-service
+ * clock; provider identity, bindings, and raw/normalized state are untouched.
+ */
+function hostedSpecification(
+  requested: SandboxSpec,
+  effectiveSpec: Readonly<Record<string, unknown>> | null,
+  observedAt: string,
+): RequestedEffectiveSpec {
+  if (effectiveSpec === null) {
+    return { effective: null, effectiveObservedAt: null, requested }
+  }
+  const parsed = SandboxSpecSchema.safeParse(effectiveSpec)
+  if (!parsed.success) {
+    return { effective: null, effectiveObservedAt: null, requested }
+  }
+  return {
+    effective: parsed.data,
+    effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
+    requested,
+  }
 }
 
 /**
@@ -362,7 +399,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       updatedAt: now,
     }
     this.#sandboxes.set(localId, record)
-    const sandbox = this.#sandboxOf(record, primary.state, now, request.specification)
+    const sandbox = this.#sandboxOf(record, primary.state, now, request.specification, session)
     const operation = this.#operationOf(context, {
       action: 'create',
       replay: started.meta.replay,
@@ -388,7 +425,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     }
     const now = this.#now()
     record.updatedAt = now
-    return this.#sandboxOf(record, primary.state, now, record.spec)
+    return this.#sandboxOf(record, primary.state, now, record.spec, session)
   }
 
   async list(context: RequestContext, request: ListSandboxesRequest): Promise<readonly Sandbox[]> {
@@ -414,7 +451,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       const now = this.#now()
       if (existing !== undefined) {
         existing.updatedAt = now
-        out.push(this.#sandboxOf(existing, primary.state, now, existing.spec))
+        out.push(this.#sandboxOf(existing, primary.state, now, existing.spec, session))
       } else {
         void context
       }
@@ -541,7 +578,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     record.updatedAt = now
     if (expected === 'deleted') {
       await this.#confirmDeleted(record.hostedSessionId)
-      const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, 'deleted')
+      const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, null, 'deleted')
       const operation = this.#operationOf(context, {
         action,
         replay: started.meta.replay,
@@ -561,7 +598,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(waited.requestId),
       })
     }
-    const sandbox = this.#sandboxOf(record, primary.state, now, record.spec, expected)
+    const sandbox = this.#sandboxOf(record, primary.state, now, record.spec, session, expected)
     const operation = this.#operationOf(context, {
       action,
       replay: started.meta.replay,
@@ -615,6 +652,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     bindingState: 'running' | 'stopped',
     observedAt: string,
     spec: SandboxSpec,
+    hostedSession: HostedSession | null,
     forceNormalized?: 'running' | 'paused' | 'stopped' | 'deleted',
   ): Sandbox {
     const normalized = forceNormalized ?? (bindingState === 'running' ? 'running' : 'stopped')
@@ -644,7 +682,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       projectId: record.localProjectId,
       provider: 'ocbox',
       providerSandboxId: ProviderSandboxIdSchema.parse(record.hostedSandboxId),
-      specification: { effective: null, effectiveObservedAt: null, requested: spec },
+      specification: hostedSpecification(spec, hostedSession?.effectiveSpec ?? null, observedAt),
       updatedAt: observedAt,
     })
   }

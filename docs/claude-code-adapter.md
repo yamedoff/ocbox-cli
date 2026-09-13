@@ -59,3 +59,50 @@ back to the non-destructive textual prune instead of restoring bytes.
   credentials, deploy state, or email.
 
 These limits are exercised by `test/agents/claude-code/manifest-loss.test.ts`.
+
+## Fail-closed hook process boundary
+
+Claude Code's PreToolUse contract blocks the local tool call only when the hook
+exits `2`; any other non-zero exit is treated as a non-blocking warning. The
+installed `ocbox agent hook claude-code` entrypoint therefore runs inside a
+top-level boundary (`runAgentHookSafely`) that converts any unexpected error
+while reading stdin, deciding routing, invoking `ocbox exec`, or writing the
+decision into the documented `ocbox-block[guard]` denial with exit `2`. A
+generic uncaught error can no longer escape as exit `1` and let a covered Bash
+call run locally after the remote copy.
+
+The boundary is deliberately conservative about writer failures:
+
+- Each writer is attempted independently and its error is swallowed, so a closed
+  stderr or stdout still yields exit `2` rather than re-throwing.
+- A failed decision write is never retried as a second execution claim: the
+  fallback `ocbox-block[guard]` reason carries no `exit-code=` and no remote
+  outcome, because the boundary cannot know whether the routed run completed.
+- The error detail is passed through the CLI's recursive redaction
+  (`[REDACTED]` / `[LOCAL_PATH]`) before it reaches the decision or stderr, so a
+  credential or host path carried on a thrown error cannot leak into Claude
+  Code's logs.
+
+`test/commands/agent/hook-safety.test.ts` injects failing readers and writers to
+prove each path, and re-asserts that the T11 bounded `--timeout` argv is
+unchanged.
+
+## Installed Claude Code discovery
+
+`setup`, `doctor`, and `remove` share one version reader
+(`readInstalledClaudeVersion` in `src/agents/claude-code/claude-executable.ts`).
+It resolves an explicit executable instead of relying on `execFile('claude')`:
+
+- On POSIX it scans `PATH` for an executable `claude` file.
+- On Windows it scans `PATH` with `PATHEXT` (default
+  `.COM;.EXE;.BAT;.CMD`), so an npm-installed `claude.cmd` shim is found.
+- It then launches the resolved absolute path with a fixed `--version` argv.
+  Native executables are spawned with no shell; a `.cmd`/`.bat` shim is launched
+  through `cmd.exe /d /s /c` after the path is rejected if it contains any shell
+  metacharacter. No untrusted value is interpolated into a shell command.
+
+Any resolution or launch failure yields `''`, which the existing pinned-version
+gate reports as an unsupported install instead of masking the cause behind a
+crash. `test/agents/claude-code/claude-executable.test.ts` covers POSIX
+resolution and execution, the Windows PATHEXT shim lookup (including `.bat` and
+PATHEXT order), the no-shell argv, and the unsafe-path refusal.

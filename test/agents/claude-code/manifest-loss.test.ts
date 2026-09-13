@@ -500,4 +500,43 @@ describe('claude-code manifest-loss durability (F8)', () => {
       false,
     )
   })
+
+  it('retains conflicts and the ownership manifest when a user replaced an owned container (L4)', async () => {
+    const layout = projectLayout()
+    const target = targetPathForScope(layout, 'project')
+    const files = memoryFiles()
+    await planSetup({
+      layout,
+      scope: 'project',
+      sessionId: SESSION_A,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    const manifestPath = manifestPathForTarget(target)
+    expect(files.store.has(manifestPath)).toBe(true)
+
+    // The user replaces the owned hooks container with a scalar and the owned
+    // permissions container with a scalar: both are container-invalid.
+    const replaced = `${JSON.stringify(
+      { hooks: { PreToolUse: 'not-an-array' }, permissions: { allow: 'not-an-array' } },
+      null,
+      2,
+    )}\n`
+    files.store.set(target, replaced)
+
+    const removed = await planRemove({
+      layout,
+      scope: 'project',
+      sessionId: null,
+      claudeVersionRaw: PINNED,
+      files,
+    })
+    expect(removed.status).toBe('not-installed')
+    expect(removed.conflicts).toContain('/hooks/PreToolUse')
+    expect(removed.conflicts).toContain('/permissions/allow')
+    expect(removed.repairPlan.join(' ')).toContain('container-invalid')
+    // Neither the user-replaced target nor the ownership manifest is touched.
+    expect(files.store.get(target)).toBe(replaced)
+    expect(files.store.has(manifestPath)).toBe(true)
+  })
 })

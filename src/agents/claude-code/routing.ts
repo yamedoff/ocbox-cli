@@ -1,5 +1,13 @@
-import { OWNED_HOOK_COMMAND_FRAGMENT } from './settings-model.js'
+import {
+  isOwnedHookCommand,
+  OWNED_HOOK_COMMAND_FRAGMENT,
+  parseOwnedHookCommand,
+} from './settings-model.js'
 import { CLAUDE_CODE_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from './timeouts.js'
+
+// Re-exported so existing importers (`merge.ts`, the adapter barrel, tests) keep
+// one canonical ownership grammar without a second definition here.
+export { isOwnedHookCommand, parseOwnedHookCommand }
 
 export const RECURSION_GUARD_ENV = 'OCBOX_AGENT_ROUTED' as const
 export const ADAPTER_ID_ENV = 'OCBOX_AGENT_ADAPTER' as const
@@ -51,28 +59,6 @@ export function buildHookCommand(sessionId: string | null): string {
  */
 export function recursionGuardArgs(): readonly string[] {
   return ['--env', `${RECURSION_GUARD_ENV}=1`, '--env', `${ADAPTER_ID_ENV}=${ADAPTER_ID}`]
-}
-
-/**
- * Exact-shape matcher for the adapter-owned router command. Ownership is never
- * inferred from substrings: a user command that merely mentions `ocbox agent
- * hook claude-code` as a substring must still survive `remove` untouched unless
- * it matches the exact emitted shape. The Session varies, so the only variable
- * segment is the optional `--session <id>` token.
- */
-const OWNED_HOOK_COMMAND_PATTERN = /^ocbox agent hook claude-code(?: --session (\S+))?$/
-
-export function parseOwnedHookCommand(
-  command: unknown,
-): { readonly sessionId: string | null } | null {
-  if (typeof command !== 'string') return null
-  const match = OWNED_HOOK_COMMAND_PATTERN.exec(command)
-  if (match === null) return null
-  return { sessionId: match[1] ?? null }
-}
-
-export function isOwnedHookCommand(command: unknown): boolean {
-  return parseOwnedHookCommand(command) !== null
 }
 
 export function decideRouting(input: RoutingInput): RoutingDecision {

@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
 import { Args, Flags } from '@oclif/core'
+import { readInstalledClaudeVersion } from '../../agents/claude-code/claude-executable.js'
 import { liveFileAccess, planDoctor } from '../../agents/claude-code/planner.js'
 import { resolveClaudeSettingsLayout as resolveLayout } from '../../agents/claude-code/settings-sources.js'
 import {
@@ -8,18 +8,6 @@ import {
   TEST_HARNESS_ENV,
 } from '../../agents/claude-code/version.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
-
-function readInstalledVersion(): Promise<string> {
-  return new Promise((resolve) => {
-    execFile('claude', ['--version'], { timeout: 15000 }, (error, stdout, stderr) => {
-      if (error) {
-        resolve('')
-        return
-      }
-      resolve(`${stdout}${stderr}`.trim())
-    })
-  })
-}
 
 export default class AgentDoctor extends OcboxCommand {
   static override description =
@@ -56,7 +44,7 @@ export default class AgentDoctor extends OcboxCommand {
         const scope = flags.scope as 'user' | 'project' | 'local'
         const override = flags['claude-version']
         assertClaudeVersionOverrideAllowed(override)
-        const detected = override ?? (await readInstalledVersion())
+        const detected = override ?? (await readInstalledClaudeVersion())
         const layout = resolveLayout({ projectDirectory: flags['project-dir'] })
         const result = await planDoctor({
           layout,

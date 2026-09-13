@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { replaceFileAtomically } from '../../state/exclusive-file-lock.js'
 import { hashBytes } from './json.js'
@@ -99,11 +99,11 @@ export async function writeFileAtomic(path: string, content: string): Promise<vo
     await handle.sync()
     await handle.close()
     handle = undefined
-    try {
-      await replaceFileAtomically(temporary, path)
-    } catch {
-      await rename(temporary, path)
-    }
+    // Single platform-safe replacement path: `replaceFileAtomically` performs
+    // the rename and owns the bounded Windows sharing-violation retry. If it
+    // still fails, the outer catch removes the temporary file and rethrows, so
+    // there is exactly one attempt and one clear error, never a second rename.
+    await replaceFileAtomically(temporary, path)
     await fsyncParentDirectory(directory)
   } catch (error) {
     await handle?.close()

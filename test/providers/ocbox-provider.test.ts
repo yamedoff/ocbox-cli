@@ -125,6 +125,144 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(fetched?.id).toBe(result.sandbox.id)
   })
 
+  it('maps a valid hosted effectiveSpec into the Sandbox specification', async () => {
+    const effectiveSpec = { ...testSpec(), cpu: { millicores: 2000 } }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.effective).toEqual(effectiveSpec)
+    expect(result.sandbox.specification.effective?.operatingSystem).toBe('linux')
+    expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
+    expect(result.sandbox.specification.requested).toEqual(testSpec())
+    expect(result.sandbox.provider).toBe('ocbox')
+    expect(result.sandbox.providerSandboxId).toBe('sbx_hosted_1')
+    expect(result.sandbox.lifecycle.rawState).toBe('running')
+    expect(result.sandbox.lifecycle.normalizedState).toBe('running')
+  })
+
+  it('leaves an absent or unparseable hosted effectiveSpec unobserved and never promotes requested', async () => {
+    const providerSpec = testSpec()
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(
+          jsonResponse(
+            hostedSessionFixture({
+              requestedSpec: providerSpec,
+              effectiveSpec: { operatingSystem: 'linux' },
+            }),
+          ),
+        )
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.effective).toBeNull()
+    expect(result.sandbox.specification.effectiveObservedAt).toBeNull()
+    expect(result.sandbox.specification.requested).toEqual(testSpec())
+  })
+
+  it('maps a non-Linux hosted effectiveSpec without substituting the Linux request', async () => {
+    const requested = testSpec()
+    const effectiveSpec = { ...requested, operatingSystem: 'windows' }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: requested as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.effective?.operatingSystem).toBe('windows')
+    expect(result.sandbox.specification.requested.operatingSystem).toBe('linux')
+  })
+
   it('rejects incompatible multi-binding servers instead of targeting silently', async () => {
     const { api } = await seededApi(routeFetch('incompatible'))
     const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })

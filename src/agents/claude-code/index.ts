@@ -7,6 +7,22 @@ export {
   ROUTING_AID_NOTICE,
   UNCOVERED_CAPABILITIES,
 } from './capabilities.js'
+export {
+  CLAUDE_EXECUTABLE_NAME,
+  CLAUDE_VERSION_ARGUMENTS,
+  CLAUDE_VERSION_TIMEOUT_MILLISECONDS,
+  defaultClaudeVersionExecutor,
+  readInstalledClaudeVersion,
+  resolveClaudeExecutable,
+  WINDOWS_PATH_EXTENSIONS_DEFAULT,
+} from './claude-executable.js'
+export type {
+  ClaudeExecFile,
+  ClaudeExecOptions,
+  ClaudeExecResult,
+  ReadInstalledClaudeVersionOptions,
+  ResolveClaudeExecutableOptions,
+} from './claude-executable.js'
 export { ClaudeCodeAdapterError } from './errors.js'
 export type { ClaudeCodeAdapterErrorCode } from './errors.js'
 export {
@@ -70,7 +86,6 @@ export {
   hookEntryOwned,
   hookObjectOwned,
   OWNED_HOOK_COMMAND_FRAGMENT,
-  OWNED_MARKER,
   OWNED_PERMISSION_ALLOW,
   parsePermissionRule,
   parseSettingsJson,
