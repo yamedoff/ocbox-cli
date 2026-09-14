@@ -3,6 +3,7 @@ import {
   type CodexHookPayload,
   codexShellCommandToArgv,
 } from './hook-contract.js'
+import { parseOwnedCodexCommand } from './ownership.js'
 
 /**
  * Explicit routed environment markers. A routed `ocbox exec` exports these so a
@@ -51,8 +52,15 @@ export function buildHookCommand(options: HookCommandOptions): string {
   return buildHookArgv(options).join(' ')
 }
 
+/**
+ * Anti-recursion ownership check. This delegates to the single anchored
+ * grammar in `ownership.ts`: only an exact ocbox-owned invocation (the
+ * installed hook entrypoint or the legacy exec shape) suppresses re-routing.
+ * A repository-controlled lookalike that merely contains `ocbox exec` or
+ * `agent hook codex` is not owned and must still route.
+ */
 export function isOwnedHookCommand(command: string): boolean {
-  return command.includes(OWNED_HOOK_COMMAND_FRAGMENT) || command.includes(OWNED_EXEC_FRAGMENT)
+  return parseOwnedCodexCommand(command) !== null
 }
 
 export interface RoutedExecInput {

@@ -20,7 +20,10 @@ import { buildHookCommand } from '../../../src/agents/codex/hook-helper.js'
 import { CODEX_HOOK_MATCHER_TOOL } from '../../../src/agents/codex/hook-contract.js'
 import { type CodexHookFragment, toOwnedFragment } from '../../../src/agents/codex/hooks.js'
 import { parseLegacyCodexManifest } from '../../../src/agents/codex/legacy.js'
-import { ownedFragmentsInDocument } from '../../../src/agents/codex/ownership.js'
+import {
+  isAdapterOwnedCommand,
+  ownedFragmentsInDocument,
+} from '../../../src/agents/codex/ownership.js'
 import { resolveCodexPaths } from '../../../src/agents/codex/paths.js'
 import { editTomlHooks } from '../../../src/agents/codex/toml-edit.js'
 
@@ -277,6 +280,83 @@ describe('strict-ownership duplicate pruning (F5)', () => {
     expect(after).not.toContain('sess-old')
     expect(after).toContain('sess-new')
     expect(after).toContain('existing-user-hook')
+  })
+})
+
+describe('strict ownership protects user lookalikes (D2)', () => {
+  const userExecLookalike = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: 'echo run ocbox exec --session abc123' }],
+  }
+  const userRunLookalike = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: 'ocbox run --session abc exec cleanup' }],
+  }
+
+  it('never claims a user command that merely contains ocbox/exec/--session tokens', () => {
+    expect(isAdapterOwnedCommand('echo run ocbox exec --session abc123')).toBe(false)
+    expect(isAdapterOwnedCommand('ocbox run --session abc exec cleanup')).toBe(false)
+    expect(isAdapterOwnedCommand('echo agent hook codex --session abc')).toBe(false)
+    expect(isAdapterOwnedCommand('echo run ocbox exec --session abc123; rm -rf /')).toBe(false)
+  })
+
+  it('strips only the strictly parsed owned fragment without a manifest', () => {
+    const currentHooks = hooksJson({
+      PreToolUse: [owned('sess-old').group, userExecLookalike, userRunLookalike],
+      SessionStart: [userGroup],
+    })
+    const document = JSON.parse(currentHooks) as Record<string, unknown>
+    expect(ownedFragmentsInDocument(document)).toHaveLength(1)
+    const remove = planCodexRemove({
+      manifest: null,
+      layer: 'user',
+      configFile: '/home/ada/.codex/config.toml',
+      hooksFile: '/home/ada/.codex/hooks.json',
+      currentTomlText: null,
+      currentHooksText: currentHooks,
+      originalTomlText: null,
+      originalHooksText: null,
+    })
+    expect(remove.status).toBe('removed')
+    const hooksAction = remove.actions.find((entry) => entry.file.endsWith('hooks.json'))
+    const after = hooksAction?.after ?? ''
+    expect(after).not.toContain('sess-old')
+    expect(after).toBe(
+      serializeHooksJsonDocument({
+        hooks: {
+          PreToolUse: [userExecLookalike, userRunLookalike],
+          SessionStart: [userGroup],
+        },
+      }),
+    )
+  })
+
+  it('preserves unrelated user hooks byte-for-byte when a manifest is present', () => {
+    const first = planCodexSetup(setupInput({ sessionId: 'sess-old' }))
+    if (!first.ok || first.manifest === null) throw new Error('plan failed')
+    const drifted = hooksJson({
+      PreToolUse: [owned('sess-old').group, userExecLookalike, userRunLookalike],
+      SessionStart: [userGroup],
+    })
+    const remove = planCodexRemove({
+      manifest: first.manifest,
+      currentTomlText: null,
+      currentHooksText: drifted,
+      originalTomlText: null,
+      originalHooksText: null,
+    })
+    expect(remove.status).toBe('removed')
+    const hooksAction = remove.actions.find((entry) => entry.file.endsWith('hooks.json'))
+    const after = hooksAction?.after ?? ''
+    expect(after).not.toContain('sess-old')
+    expect(after).toBe(
+      serializeHooksJsonDocument({
+        hooks: {
+          PreToolUse: [userExecLookalike, userRunLookalike],
+          SessionStart: [userGroup],
+        },
+      }),
+    )
   })
 })
 
