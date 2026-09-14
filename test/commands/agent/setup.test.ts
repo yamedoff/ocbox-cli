@@ -1,12 +1,28 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentSetup from '../../../src/commands/agent/setup.js'
 
+function canCreateDirectoryLink(): boolean {
+  const root = mkdtempSync(join(tmpdir(), 'ocbox-agent-setup-linkprobe-'))
+  try {
+    mkdirSync(join(root, 'target'))
+    symlinkSync(join(root, 'target'), join(root, 'link'), 'junction')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+const CAN_DIRECTORY_LINK = canCreateDirectoryLink()
+
 const mocks = vi.hoisted(() => ({
-  runCodexVersion: vi.fn(async () => 'codex-cli 0.153.4 (abc123)'),
-  detectCodexExecutable: vi.fn(() => 'codex'),
+  readInstalledCodexVersion: vi.fn(async () => 'codex-cli 0.153.4 (abc123)'),
+  resolveCodexExecutable: vi.fn(async () => 'codex'),
   resolveSessionSelection: vi.fn(async () => ({ sessionId: 'sess-test-1', recorded: true })),
 }))
 
@@ -14,8 +30,8 @@ vi.mock('../../../src/agents/codex/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/agents/codex/index.js')>()
   return {
     ...actual,
-    runCodexVersion: mocks.runCodexVersion,
-    detectCodexExecutable: mocks.detectCodexExecutable,
+    readInstalledCodexVersion: mocks.readInstalledCodexVersion,
+    resolveCodexExecutable: mocks.resolveCodexExecutable,
     resolveSessionSelection: mocks.resolveSessionSelection,
   }
 })
@@ -105,4 +121,28 @@ describe('agent setup codex command', () => {
     expect(process.exitCode).toBe(1)
     await expect(readFile(join(projectDir, '.codex', 'hooks.json'), 'utf8')).rejects.toThrow()
   })
+
+  it.skipIf(!CAN_DIRECTORY_LINK)(
+    'refuses to write when .codex is a directory link escaping the project',
+    async () => {
+      const root = await tempRoot()
+      const projectDir = join(root, 'repo')
+      const codexHome = join(root, 'codex-home')
+      const stateDir = join(root, 'state')
+      const outside = join(root, 'outside')
+      await mkdir(projectDir, { recursive: true })
+      await mkdir(outside, { recursive: true })
+      await trustProject(codexHome, projectDir)
+      await symlink(outside, join(projectDir, '.codex'), 'junction')
+
+      await AgentSetup.run(projectSetupArgs(projectDir, codexHome, stateDir), {
+        root: process.cwd(),
+      })
+
+      expect(process.exitCode).toBe(1)
+      await expect(readFile(join(outside, 'config.toml'), 'utf8')).rejects.toThrow()
+      await expect(readFile(join(outside, 'hooks.json'), 'utf8')).rejects.toThrow()
+      expect(stderrSpy).toHaveBeenCalled()
+    },
+  )
 })

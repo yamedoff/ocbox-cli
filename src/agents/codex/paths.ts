@@ -1,4 +1,11 @@
+import { lstat as nodeLstat, realpath as nodeRealpath } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
+import {
+  assertPathWithinDirectoryRoot,
+  type PathLstat,
+  type PathRealpath,
+  PathBoundaryViolation,
+} from '../../security/path-boundary.js'
 import { CodexAdapterError } from './errors.js'
 
 export type CodexHostPlatform = 'darwin' | 'linux' | 'win32'
@@ -20,9 +27,14 @@ export interface CodexPaths {
   readonly codexHome: string
   readonly userConfigFile: string
   readonly userHooksFile: string
+  // `*Path` aliases predate the `*File` names and are still read by the
+  // installation detector; both spellings always carry the same value, so new
+  // code should prefer `*File` while the aliases stay for compatibility.
   readonly userConfigPath: string
   readonly userHooksPath: string
   readonly projectDirectory: string | null
+  // `projectRoot` mirrors `projectDirectory` for the same historical reason;
+  // both are always equal.
   readonly projectRoot: string | null
   readonly projectConfigFile: string | null
   readonly projectHooksFile: string | null
@@ -134,6 +146,9 @@ export function layerTargetFiles(
   layer: CodexLayer,
 ): { readonly configFile: string; readonly hooksFile: string } {
   if (layer === 'project') {
+    // The `??` fallbacks only fire for hand-built `CodexPaths` objects that
+    // set one spelling: `resolveCodexPaths` always sets both spellings to the
+    // same value, so either side resolves identically in practice.
     const config = paths.projectConfigFile ?? paths.projectConfigPath
     const hooks = paths.projectHooksFile ?? paths.projectHooksPath
     if (config === null || hooks === null) {
@@ -166,5 +181,48 @@ export function assertAdapterOwnedPath(
       message: 'Adapter refuses to write outside the Codex configuration root',
       remediation: 'Restore the default Codex config location and retry.',
     })
+  }
+}
+
+/**
+ * Injectable link-resolution surface so the boundary can be exercised without a
+ * real filesystem while the live CLI always resolves through `node:fs`.
+ */
+export interface CodexPathBoundaryIo {
+  readonly realpath: PathRealpath
+  readonly lstat: PathLstat
+}
+
+export const nodeCodexPathBoundaryIo: CodexPathBoundaryIo = {
+  realpath: nodeRealpath,
+  lstat: nodeLstat,
+}
+
+/**
+ * Full Codex-owned path boundary: the lexical `assertAdapterOwnedPath` check
+ * first, then the shared realpath/lstat walk that refuses a target whose
+ * existing ancestors or target escape the containing configuration directory
+ * through a symlink, junction, or Windows reparse point. A target whose
+ * descendants do not exist yet still resolves through its deepest existing
+ * ancestor, so a fresh `.codex` directory remains creatable.
+ */
+export async function assertAdapterOwnedPathWithinRoot(
+  candidate: string,
+  root: string,
+  platform: CodexHostPlatform,
+  io: CodexPathBoundaryIo = nodeCodexPathBoundaryIo,
+): Promise<void> {
+  assertAdapterOwnedPath(candidate, root, platform)
+  try {
+    await assertPathWithinDirectoryRoot(candidate, io.realpath, io.lstat)
+  } catch (error) {
+    if (error instanceof PathBoundaryViolation) {
+      throw new CodexAdapterError({
+        code: 'CODEX_UNSAFE_PATH',
+        message: `Adapter refuses an unsafe Codex config path: ${error.message}`,
+        remediation: 'Restore the default Codex config location and retry.',
+      })
+    }
+    throw error
   }
 }

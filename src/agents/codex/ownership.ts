@@ -17,12 +17,15 @@ import {
  * survive with no recorded owner. Ownership therefore cannot depend on the
  * manifest alone: it must be provable from the persisted command itself.
  *
- * A group is adapter-owned only when one of its command hooks invokes the
- * `ocbox` binary either as the installed hook entrypoint
- * (`ocbox agent hook codex --session …`) or as the legacy routed shape
- * (`ocbox exec --session …`). Both shapes carry an explicit `--session`
- * selector, so unrelated user commands (including user edits that replaced
- * the owned command) are never claimed.
+ * Ownership is never inferred from substrings or from loose tokens that merely
+ * appear somewhere in the command (`ocbox` anywhere, `exec` later, a stray
+ * `--session`). A command is adapter-owned only when it is an exact anchored
+ * invocation of the `ocbox` binary: either the installed hook entrypoint
+ * (`ocbox agent hook codex --session <id>`) or the legacy routed shape
+ * (`ocbox exec --session <id> …`). The `ocbox` token must be the invoked
+ * binary and the owned subcommand must immediately follow it, so a
+ * repository-controlled lookalike such as `echo run ocbox exec --session abc`
+ * is never claimed and is never deleted by `remove`.
  */
 
 function stripQuotes(token: string): string {
@@ -75,27 +78,59 @@ export function tokenizeHookCommand(command: string): string[] {
   return tokens
 }
 
-export function isAdapterOwnedCommand(command: unknown): boolean {
+function isOcboxToken(token: string): boolean {
+  const base = binaryBaseName(token)
+  return base === 'ocbox' || base === 'ocbox.exe'
+}
+
+export interface OwnedCodexInvocation {
+  readonly kind: 'hook' | 'exec'
+  readonly sessionId: string
+}
+
+/**
+ * Single anchored ownership grammar shared by the anti-recursion router and the
+ * removal planner. The persisted emitter (`buildHookCommand`) and both checks
+ * consume it, so the installed shape and the recognised shape can never drift
+ * apart.
+ *
+ * Recognised shapes (the invoked binary must be token 0; quoting and absolute
+ * paths are tolerated by the tokenizer/basename normalisation):
+ *   - `<ocbox> agent hook codex --session <id>`   (exactly six tokens)
+ *   - `<ocbox> exec --session <id> <...>`         (legacy routed shape)
+ */
+export function parseOwnedCodexCommand(command: unknown): OwnedCodexInvocation | null {
   let words: string[]
   if (Array.isArray(command)) {
     words = command.filter((token): token is string => typeof token === 'string')
   } else if (typeof command === 'string') {
     words = tokenizeHookCommand(command)
   } else {
-    return false
+    return null
   }
-  const binIndex = words.findIndex((token) => {
-    const base = binaryBaseName(token)
-    return base === 'ocbox' || base === 'ocbox.exe'
-  })
-  if (binIndex === -1) return false
-  const rest = words.slice(binIndex)
-  if (!rest.includes('--session')) return false
-  if (rest.includes('exec')) return true
-  const agentIndex = rest.indexOf('agent')
-  const hookIndex = rest.indexOf('hook')
-  const codexIndex = rest.indexOf('codex')
-  return agentIndex !== -1 && hookIndex === agentIndex + 1 && codexIndex === hookIndex + 1
+  const binary = words[0]
+  if (binary === undefined || !isOcboxToken(binary)) return null
+  if (
+    words.length === 6 &&
+    words[1] === 'agent' &&
+    words[2] === 'hook' &&
+    words[3] === 'codex' &&
+    words[4] === '--session'
+  ) {
+    const sessionId = words[5]
+    if (sessionId === undefined || sessionId.length === 0) return null
+    return { kind: 'hook', sessionId }
+  }
+  if (words[1] === 'exec' && words[2] === '--session') {
+    const sessionId = words[3]
+    if (sessionId === undefined || sessionId.length === 0) return null
+    return { kind: 'exec', sessionId }
+  }
+  return null
+}
+
+export function isAdapterOwnedCommand(command: unknown): boolean {
+  return parseOwnedCodexCommand(command) !== null
 }
 
 export function isAdapterOwnedGroup(group: unknown): boolean {

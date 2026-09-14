@@ -15,6 +15,7 @@ import {
   RECURSION_GUARD_ENV,
   type HookEnvironment,
 } from './hook-helper.js'
+import { CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from './timeouts.js'
 
 export interface CodexRoutingHookOptions {
   readonly rawInput: string
@@ -35,6 +36,28 @@ const PROOF_SESSION_ID = '00000000-0000-4000-8000-000000000000' as const
 const PROOF_COMMAND = 'printf ocbox-hook-contract' as const
 
 /**
+ * Emits the documented Codex fail-closed deny decision and returns exit 2. The
+ * reason is a bounded static string: an exec-layer error can carry a credential
+ * or a host-local path, and Codex captures this stderr/decision, so the raw
+ * error is never interpolated. Both writers are best-effort because a closed
+ * stream must not rethrow; exit 2 still blocks the local Bash copy.
+ */
+function emitCodexFailClosed(options: CodexRoutingHookOptions, reason: string): number {
+  const message = `ocbox codex router: ${reason}`
+  try {
+    options.writeError(message)
+  } catch {
+    // The process is failing closed regardless of whether stderr is writable.
+  }
+  try {
+    options.writeDecision(codexPreToolUseDenyDecision(message))
+  } catch {
+    // Do not retry a decision write; exit 2 still blocks local execution.
+  }
+  return HOOK_FAIL_CLOSED_EXIT_CODE
+}
+
+/**
  * Executes the installed Codex hook entrypoint. Reads the pinned PreToolUse
  * JSON, applies fail-closed routing, and only then drives the selected Session
  * through the same `ocbox exec` grammar as the CLI. A routed call returns the
@@ -43,8 +66,7 @@ const PROOF_COMMAND = 'printf ocbox-hook-contract' as const
 export async function runCodexRoutingHook(options: CodexRoutingHookOptions): Promise<number> {
   const parsed = parseCodexHookPayload(options.rawInput)
   if (!parsed.ok) {
-    options.writeError(`ocbox codex router: ${parsed.reason}; failing closed`)
-    return HOOK_FAIL_CLOSED_EXIT_CODE
+    return emitCodexFailClosed(options, `${parsed.reason}; failing closed`)
   }
   const decision = planCodexHookRoute({
     payload: parsed.payload,
@@ -53,15 +75,15 @@ export async function runCodexRoutingHook(options: CodexRoutingHookOptions): Pro
   })
   if (decision.action === 'allow-local') return 0
   if (decision.action === 'block' || decision.execArgv === null) {
-    options.writeError(`ocbox codex router: ${decision.reason}`)
-    return HOOK_FAIL_CLOSED_EXIT_CODE
+    return emitCodexFailClosed(options, decision.reason)
   }
-  let exitCode = 1
+  let exitCode: number
   try {
     exitCode = await options.invokeExec(decision.execArgv)
-  } catch (error) {
-    options.writeError(
-      `ocbox codex router: routed execution failed (${error instanceof Error ? error.message : 'unknown error'}); failing closed`,
+  } catch {
+    return emitCodexFailClosed(
+      options,
+      'routed execution failed before reporting an outcome; failing closed',
     )
   }
   options.writeDecision(
@@ -107,6 +129,12 @@ export function proveCodexHookContract(): CodexHookContractProof {
     !decision.execArgv.includes(`${ADAPTER_ID_ENV}=${ADAPTER_ID}`)
   ) {
     return { proven: false, revision: CODEX_HOOK_PAYLOAD_REVISION, detail: 'recursion-markers' }
+  }
+  if (
+    !decision.execArgv.includes('--timeout') ||
+    !decision.execArgv.includes(String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS))
+  ) {
+    return { proven: false, revision: CODEX_HOOK_PAYLOAD_REVISION, detail: 'timeout-ordering' }
   }
   try {
     const grammar = parseExecArguments(decision.execArgv.slice(1))

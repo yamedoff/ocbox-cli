@@ -9,24 +9,31 @@ import {
 } from '../../agents/claude-code/version.js'
 import {
   codexDoctor,
-  detectCodexExecutable,
-  determineProjectTrust,
   layerTargetFiles,
   manifestFile,
   manifestPathForLayer,
-  parseCodexToml,
   parseLegacyCodexManifest,
-  projectTrustLevel,
+  readInstalledCodexVersion,
   readManifestSafe,
   readTextOrNull,
   resolveAgentCodexPaths,
+  resolveCodexExecutable,
+  resolveProjectTrustLevel,
   resolveSessionSelection,
-  runCodexVersion,
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
+import {
+  flagProvidedChecker,
+  irrelevantFlagWarnings,
+  warnIrrelevantFlags,
+  type FlagMetadata,
+} from './adapter-flags.js'
 
-async function runCodexDoctor(flags: Record<string, unknown>): Promise<unknown> {
+async function runCodexDoctor(
+  flags: Record<string, unknown>,
+  extraWarnings: readonly string[] = [],
+): Promise<unknown> {
   const rawLayer = flags['layer'] as string | undefined
   const layer = rawLayer === 'project' ? 'project' : 'user'
   if (rawLayer !== undefined && rawLayer !== 'user' && rawLayer !== 'project') {
@@ -39,8 +46,8 @@ async function runCodexDoctor(flags: Record<string, unknown>): Promise<unknown> 
     stateDirectory,
   })
   const targets = layerTargetFiles(paths, layer)
-  const codexExecutable = detectCodexExecutable() ?? 'codex'
-  const versionText = await runCodexVersion(codexExecutable)
+  const codexExecutable = (await resolveCodexExecutable()) ?? 'codex'
+  const versionText = await readInstalledCodexVersion({ executable: codexExecutable })
   const tomlText = await readTextOrNull(targets.configFile)
   const hooksText = await readTextOrNull(targets.hooksFile)
   const projectDirectory = paths.projectDirectory ?? process.cwd()
@@ -63,13 +70,11 @@ async function runCodexDoctor(flags: Record<string, unknown>): Promise<unknown> 
   let trustLevel: string | null = null
   if (layer === 'project') {
     const userToml = await readTextOrNull(paths.userConfigFile)
-    const determined = determineProjectTrust(userToml, projectDirectory)
-    trustLevel =
-      determined === 'trusted'
-        ? 'trusted'
-        : (projectTrustLevel(tomlText, [projectDirectory], (text: string) =>
-            parseCodexToml(text),
-          ) ?? determined)
+    trustLevel = resolveProjectTrustLevel({
+      userConfigToml: userToml,
+      layerConfigToml: tomlText,
+      projectDirectory,
+    })
   }
   const report = codexDoctor({
     versionText,
@@ -110,6 +115,7 @@ async function runCodexDoctor(flags: Record<string, unknown>): Promise<unknown> 
     covered: [...report.matrix.covered],
     uncovered: [...report.matrix.uncovered],
     notice: report.matrix.notice,
+    warnings: [...extraWarnings],
   }
 }
 
@@ -158,18 +164,22 @@ export default class AgentDoctor extends OcboxCommand {
   }
 
   async run(): Promise<void> {
-    const { args, flags } = await this.parse(AgentDoctor)
+    const { args, flags, metadata } = await this.parse(AgentDoctor)
     const adapter = String(args.adapter ?? '')
+    const flagRecord = flags as unknown as Record<string, unknown>
+    const isProvided = flagProvidedChecker(flagRecord, metadata as FlagMetadata | undefined)
     if (adapter === 'codex') {
+      const flagWarnings = irrelevantFlagWarnings('codex', 'doctor', isProvided)
       await this.emitResult(
         flags,
         'agent.codex.doctor',
         (result: unknown) => JSON.stringify(result),
-        async () => runCodexDoctor(flags as unknown as Record<string, unknown>),
+        async () => runCodexDoctor(flagRecord, flagWarnings),
       )
       return
     }
     if (adapter === 'claude-code') {
+      warnIrrelevantFlags('claude-code', 'doctor', isProvided)
       await this.emitResult(
         flags,
         'agent.doctor',

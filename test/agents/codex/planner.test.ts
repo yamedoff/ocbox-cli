@@ -119,10 +119,15 @@ describe('codex setup planner', () => {
     expect(after).not.toContain('sess-test-1')
   })
 
-  it('no longer needs the deprecated unverified-schema flag', () => {
-    const plan = planCodexSetup(setupInput({ allowUnverifiedSchema: false }))
-    expect(plan.ok).toBe(true)
-    expect(plan.warnings.join(' ')).toMatch(/deprecated/)
+  it('warns only when the deprecated unverified-schema flag is passed', () => {
+    const withFlag = planCodexSetup(setupInput({ allowUnverifiedSchema: true }))
+    expect(withFlag.ok).toBe(true)
+    expect(withFlag.warnings.join(' ')).toMatch(/deprecated/)
+    const withoutFlag = planCodexSetup(setupInput({ allowUnverifiedSchema: false }))
+    expect(withoutFlag.ok).toBe(true)
+    expect(withoutFlag.warnings.join(' ')).not.toMatch(/deprecated/)
+    const unset = planCodexSetup(setupInput())
+    expect(unset.warnings.join(' ')).not.toMatch(/deprecated/)
   })
 
   it('refuses unsupported versions', () => {

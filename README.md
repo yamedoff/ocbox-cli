@@ -23,7 +23,9 @@ planner, deletion confirmation, and staging/recovery contract. See
 token lifecycle, and the pinned hosted OpenAPI artifact. See
 [docs/claude-code-adapter.md](docs/claude-code-adapter.md) for the Claude Code
 routing adapter's setup/remove behavior and its manifest-loss reconstruction
-limits.
+limits. See [docs/codex-adapter.md](docs/codex-adapter.md) for the Codex
+routing adapter's plan/apply setup, remove/restore behavior, manifest
+recovery, hook exit contract, Windows discovery, and byte-preserving edits.
 
 ## Toolchain
 
