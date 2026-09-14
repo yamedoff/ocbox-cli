@@ -506,7 +506,7 @@ export function planCodexSetup(input: SetupPlanInput, manifest?: CodexManifest |
       `The pinned Codex hook contract cannot be proven offline (${hookContract.detail}); refusing to install a hook that cannot map covered Bash calls to ocbox exec. ${LIVE_E2E_BLOCKER}`,
     )
   }
-  if (input.allowUnverifiedSchema === false) {
+  if (input.allowUnverifiedSchema === true) {
     warnings.push(
       'The --allow-unverified-schema flag is deprecated: the pinned schema gate now proves the hooks shape, so setup proceeds without it.',
     )

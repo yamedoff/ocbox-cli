@@ -1,5 +1,6 @@
-import { parseTomlDocument } from './codec.js'
+import { parseCodexToml, parseTomlDocument } from './codec.js'
 import { isRecord } from './document.js'
+import { projectTrustLevel } from './io.js'
 
 export type ProjectTrust = 'trusted' | 'untrusted' | 'unknown'
 
@@ -29,4 +30,28 @@ export function determineProjectTrust(
     return 'unknown'
   }
   return 'unknown'
+}
+
+export interface ProjectTrustInputs {
+  readonly userConfigToml: string | null
+  readonly layerConfigToml: string | null
+  readonly projectDirectory: string
+}
+
+/**
+ * Single project-trust policy shared by the `setup` and `doctor` commands.
+ * The user-level `config.toml` wins when it explicitly trusts the repository;
+ * otherwise the layer file being planned against is consulted with the same
+ * strict TOML reader setup uses, falling back to the user-config verdict
+ * (`'untrusted'` or `'unknown'`). The project layer is never auto-trusted: a
+ * missing or untrusted verdict keeps setup and doctor fail-closed.
+ */
+export function resolveProjectTrustLevel(inputs: ProjectTrustInputs): string | null {
+  const determined = determineProjectTrust(inputs.userConfigToml, inputs.projectDirectory)
+  if (determined === 'trusted') return 'trusted'
+  return (
+    projectTrustLevel(inputs.layerConfigToml, [inputs.projectDirectory], (text: string) =>
+      parseCodexToml(text),
+    ) ?? determined
+  )
 }

@@ -20,9 +20,14 @@ export interface CodexPaths {
   readonly codexHome: string
   readonly userConfigFile: string
   readonly userHooksFile: string
+  // `*Path` aliases predate the `*File` names and are still read by the
+  // installation detector; both spellings always carry the same value, so new
+  // code should prefer `*File` while the aliases stay for compatibility.
   readonly userConfigPath: string
   readonly userHooksPath: string
   readonly projectDirectory: string | null
+  // `projectRoot` mirrors `projectDirectory` for the same historical reason;
+  // both are always equal.
   readonly projectRoot: string | null
   readonly projectConfigFile: string | null
   readonly projectHooksFile: string | null
@@ -134,6 +139,9 @@ export function layerTargetFiles(
   layer: CodexLayer,
 ): { readonly configFile: string; readonly hooksFile: string } {
   if (layer === 'project') {
+    // The `??` fallbacks only fire for hand-built `CodexPaths` objects that
+    // set one spelling: `resolveCodexPaths` always sets both spellings to the
+    // same value, so either side resolves identically in practice.
     const config = paths.projectConfigFile ?? paths.projectConfigPath
     const hooks = paths.projectHooksFile ?? paths.projectHooksPath
     if (config === null || hooks === null) {

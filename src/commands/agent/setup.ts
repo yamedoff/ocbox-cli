@@ -10,18 +10,16 @@ import {
 import {
   applyCodexChangePlan,
   assertAdapterOwnedPath,
-  determineProjectTrust,
   layerTargetFiles,
   manifestPathForLayer,
   manifestFile,
   nodeCodexFileSystem,
-  parseCodexToml,
   parseLegacyCodexManifest,
   planCodexSetup,
-  projectTrustLevel,
   readManifestSafe,
   readTextOrNull,
   resolveAgentCodexPaths,
+  resolveProjectTrustLevel,
   resolveSessionSelection,
   runCodexVersion,
   detectCodexExecutable,
@@ -30,6 +28,15 @@ import {
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
+import {
+  flagProvidedChecker,
+  irrelevantFlagWarnings,
+  warnIrrelevantFlags,
+  type FlagMetadata,
+} from './adapter-flags.js'
+
+/** Fail-closed exit for a Codex setup plan the adapter refuses to apply. */
+const CODEX_SETUP_BLOCKED_EXIT_CODE = 2
 
 function parseCodexLayer(raw: string | undefined): CodexLayer {
   if (raw === undefined || raw === 'user') return 'user'
@@ -37,7 +44,10 @@ function parseCodexLayer(raw: string | undefined): CodexLayer {
   throw new Error(`Unknown layer "${raw}"; use user or project.`)
 }
 
-async function runCodexSetup(flags: Record<string, unknown>): Promise<unknown> {
+async function runCodexSetup(
+  flags: Record<string, unknown>,
+  extraWarnings: readonly string[] = [],
+): Promise<unknown> {
   const layer = parseCodexLayer(flags['layer'] as string | undefined)
   const stateDirectory = resolveStateDirectory(flags as never)
   const paths = resolveAgentCodexPaths({
@@ -54,13 +64,11 @@ async function runCodexSetup(flags: Record<string, unknown>): Promise<unknown> {
   let trustLevel: string | null = null
   if (layer === 'project') {
     const userToml = await readTextOrNull(paths.userConfigFile)
-    const determined = determineProjectTrust(userToml, projectDirectory)
-    trustLevel =
-      determined === 'trusted'
-        ? 'trusted'
-        : (projectTrustLevel(baseTomlText, [projectDirectory], (text: string) =>
-            parseCodexToml(text),
-          ) ?? determined)
+    trustLevel = resolveProjectTrustLevel({
+      userConfigToml: userToml,
+      layerConfigToml: baseTomlText,
+      projectDirectory,
+    })
   }
   const selection = await resolveSessionSelection(
     stateDirectory,
@@ -95,9 +103,16 @@ async function runCodexSetup(flags: Record<string, unknown>): Promise<unknown> {
     },
     manifest,
   )
-  const warnings = warning === null ? [...plan.warnings] : [warning, ...plan.warnings]
+  const warnings =
+    warning === null
+      ? [...plan.warnings, ...extraWarnings]
+      : [warning, ...plan.warnings, ...extraWarnings]
   if (!plan.ok) {
     if (flags['yes'] === true) throw new Error(plan.errors.join(' '))
+    // Plan mode still emits the machine-readable plan on stdout, but a
+    // fail-closed blocker must not exit 0: without --yes nothing was applied
+    // and the caller asked for a setup that cannot proceed.
+    process.exitCode = CODEX_SETUP_BLOCKED_EXIT_CODE
     return {
       ok: false,
       applied: false,
@@ -216,18 +231,22 @@ export default class AgentSetup extends OcboxCommand {
   }
 
   async run(): Promise<void> {
-    const { args, flags } = await this.parse(AgentSetup)
+    const { args, flags, metadata } = await this.parse(AgentSetup)
     const adapter = String(args.adapter ?? '')
+    const flagRecord = flags as unknown as Record<string, unknown>
+    const isProvided = flagProvidedChecker(flagRecord, metadata as FlagMetadata | undefined)
     if (adapter === 'codex') {
+      const flagWarnings = irrelevantFlagWarnings('codex', 'setup', isProvided)
       await this.emitResult(
         flags,
         'agent.codex.setup',
         (result: unknown) => JSON.stringify(result),
-        async () => runCodexSetup(flags as unknown as Record<string, unknown>),
+        async () => runCodexSetup(flagRecord, flagWarnings),
       )
       return
     }
     if (adapter === 'claude-code') {
+      warnIrrelevantFlags('claude-code', 'setup', isProvided)
       await this.emitResult(
         flags,
         'agent.setup',

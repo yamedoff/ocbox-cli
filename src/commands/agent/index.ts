@@ -20,6 +20,9 @@ const USAGE = [
   'NOTES',
   '  Routing aid, not host isolation. Covered shell calls route through ocbox exec.',
   '  Source moves only through explicit ocbox sync. Hooks stay under the hooks key.',
+  '  Codex setup/remove print a plan without --yes and apply it with --yes;',
+  '  a refused codex plan still prints its JSON but exits 2. Flags owned by',
+  '  the other adapter are ignored with an explicit warning.',
 ].join('\n')
 
 export default class AgentTopic extends Command {

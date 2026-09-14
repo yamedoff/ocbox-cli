@@ -257,6 +257,14 @@ function describePolicyIssue(issue: PolicySourceIssue): string {
 // the target. Write precedence governs which source the adapter may write, not
 // whether a rule blocks.
 //
+// This loop intentionally inlines the overlap check instead of reusing
+// `shadowingPermissionRules` from settings-model: setup must attribute each
+// shadowing rule to its source (kind, path, deny/ask polarity) for the
+// fail-closed error, while `merge.ts` uses the shared helper for the
+// unattributed union it reconciles against. The two paths share
+// `permissionRulesOverlap` as the single matching predicate, so they cannot
+// disagree on what "shadowing" means.
+//
 // A source that cannot be read or parsed is also a policy risk: its deny/ask may
 // be unknown, so setup fails closed instead of unioning an incomplete policy.
 // The distinction at/above vs below the target is preserved in the report so the

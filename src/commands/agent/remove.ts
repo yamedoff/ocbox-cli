@@ -25,6 +25,12 @@ import {
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
+import {
+  flagProvidedChecker,
+  irrelevantFlagWarnings,
+  warnIrrelevantFlags,
+  type FlagMetadata,
+} from './adapter-flags.js'
 
 const CODEX_LAYERS: readonly CodexLayer[] = ['user', 'project']
 
@@ -122,7 +128,10 @@ async function removeCodexLayer(options: RemoveLayerOptions): Promise<{
   }
 }
 
-async function runCodexRemove(flags: Record<string, unknown>): Promise<unknown> {
+async function runCodexRemove(
+  flags: Record<string, unknown>,
+  extraWarnings: readonly string[] = [],
+): Promise<unknown> {
   const rawLayer = flags['layer'] as string | undefined
   const layers: readonly CodexLayer[] =
     rawLayer === undefined || rawLayer === 'all'
@@ -136,7 +145,7 @@ async function runCodexRemove(flags: Record<string, unknown>): Promise<unknown> 
   const apply = flags['yes'] === true
   const actions: unknown[] = []
   const repairSteps: string[] = []
-  const warnings: string[] = []
+  const warnings: string[] = [...extraWarnings]
   const repairs: unknown[] = []
   let applied = false
   for (const layer of layers) {
@@ -206,18 +215,22 @@ export default class AgentRemove extends OcboxCommand {
   }
 
   async run(): Promise<void> {
-    const { args, flags } = await this.parse(AgentRemove)
+    const { args, flags, metadata } = await this.parse(AgentRemove)
     const adapter = String(args.adapter ?? '')
+    const flagRecord = flags as unknown as Record<string, unknown>
+    const isProvided = flagProvidedChecker(flagRecord, metadata as FlagMetadata | undefined)
     if (adapter === 'codex') {
+      const flagWarnings = irrelevantFlagWarnings('codex', 'remove', isProvided)
       await this.emitResult(
         flags,
         'agent.codex.remove',
         (result: unknown) => JSON.stringify(result),
-        async () => runCodexRemove(flags as unknown as Record<string, unknown>),
+        async () => runCodexRemove(flagRecord, flagWarnings),
       )
       return
     }
     if (adapter === 'claude-code') {
+      warnIrrelevantFlags('claude-code', 'remove', isProvided)
       await this.emitResult(
         flags,
         'agent.remove',

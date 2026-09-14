@@ -62,13 +62,15 @@ export function createClaudeHookInvoker(
 /**
  * Builds the codex hook's `ocbox exec` invocation. Codex routed execution
  * output goes to stderr so stdout stays a clean hook-decision channel, matching
- * the accepted T10 entrypoint.
+ * the accepted T10 entrypoint. It shares {@link hookCommandIo} with the
+ * claude-code invoker: both map routed stdout onto the hook's stderr, so the
+ * byte stream on stdout is the JSON decision alone either way.
  */
 export function createCodexHookInvoker(
   runtime: RuntimeFlags,
   io: ExecutionCommandIo,
 ): (argv: readonly string[]) => Promise<number> {
-  const routedIo: ExecutionCommandIo = { stdout: io.stderr, stderr: io.stderr }
+  const routedIo = hookCommandIo(io)
   return async (argv) =>
     runExecutionCommand(
       argv.slice(1),
