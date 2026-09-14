@@ -9,7 +9,7 @@ import {
 } from '../../agents/claude-code/version.js'
 import {
   applyCodexRemovePlan,
-  assertAdapterOwnedPath,
+  assertAdapterOwnedPathWithinRoot,
   layerTargetFiles,
   manifestFile,
   manifestPathForLayer,
@@ -96,9 +96,9 @@ async function removeCodexLayer(options: RemoveLayerOptions): Promise<{
     }
     for (const action of plan.actions) {
       if (action.action === 'noop') continue
-      assertAdapterOwnedPath(action.file, applyRoot, paths.platform)
+      await assertAdapterOwnedPathWithinRoot(action.file, applyRoot, paths.platform)
       if (action.preservedCopy !== null) {
-        assertAdapterOwnedPath(action.preservedCopy, applyRoot, paths.platform)
+        await assertAdapterOwnedPathWithinRoot(action.preservedCopy, applyRoot, paths.platform)
       }
     }
     await applyCodexRemovePlan(

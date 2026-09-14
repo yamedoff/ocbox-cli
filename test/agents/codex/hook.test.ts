@@ -244,6 +244,27 @@ describe('codex hook entrypoint', () => {
     expect(guarded.errors[0]).toContain('failing closed')
   })
 
+  it('fails closed with a bounded static message when the exec invoker throws (D6/F1)', async () => {
+    const guarded = await runHook({
+      invokeExec: async () => {
+        throw new Error('token=sk-supersecretvalue123 at /home/ada/.codex/config.toml')
+      },
+    })
+    expect(guarded.exitCode).toBe(HOOK_FAIL_CLOSED_EXIT_CODE)
+    expect(guarded.errors).toHaveLength(1)
+    expect(guarded.errors[0]).toContain('routed execution failed before reporting an outcome')
+    expect(guarded.errors.join('\n')).not.toContain('sk-supersecretvalue123')
+    expect(guarded.errors.join('\n')).not.toContain('/home/ada/.codex/config.toml')
+    const decision = JSON.parse(guarded.decisions[0] ?? '{}')
+    expect(decision).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+      },
+    })
+    expect(JSON.stringify(decision)).not.toContain('sk-supersecretvalue123')
+  })
+
   it('leaves uncovered tools local and never routes them', async () => {
     const edit = await runHook({ rawInput: codexPayload('npm test', 'Edit') })
     expect(edit.exitCode).toBe(0)

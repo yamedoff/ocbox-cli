@@ -9,7 +9,7 @@ import {
 } from '../../agents/claude-code/version.js'
 import {
   applyCodexChangePlan,
-  assertAdapterOwnedPath,
+  assertAdapterOwnedPathWithinRoot,
   determineProjectTrust,
   layerTargetFiles,
   manifestPathForLayer,
@@ -137,7 +137,7 @@ async function runCodexSetup(flags: Record<string, unknown>): Promise<unknown> {
   }
   for (const change of plan.changes) {
     if (change.kind === 'manifest') continue
-    assertAdapterOwnedPath(change.file, applyRoot, paths.platform)
+    await assertAdapterOwnedPathWithinRoot(change.file, applyRoot, paths.platform)
   }
   await applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem)
   const backupConfigPath =
