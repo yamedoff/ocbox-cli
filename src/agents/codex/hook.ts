@@ -15,6 +15,7 @@ import {
   RECURSION_GUARD_ENV,
   type HookEnvironment,
 } from './hook-helper.js'
+import { CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from './timeouts.js'
 
 export interface CodexRoutingHookOptions {
   readonly rawInput: string
@@ -107,6 +108,12 @@ export function proveCodexHookContract(): CodexHookContractProof {
     !decision.execArgv.includes(`${ADAPTER_ID_ENV}=${ADAPTER_ID}`)
   ) {
     return { proven: false, revision: CODEX_HOOK_PAYLOAD_REVISION, detail: 'recursion-markers' }
+  }
+  if (
+    !decision.execArgv.includes('--timeout') ||
+    !decision.execArgv.includes(String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS))
+  ) {
+    return { proven: false, revision: CODEX_HOOK_PAYLOAD_REVISION, detail: 'timeout-ordering' }
   }
   try {
     const grammar = parseExecArguments(decision.execArgv.slice(1))

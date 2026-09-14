@@ -1,5 +1,3 @@
-import { execFile } from 'node:child_process'
-import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
 import { resolve } from 'node:path'
@@ -10,14 +8,6 @@ import { resolveCodexPaths, type CodexHostPlatform, type CodexPaths } from './pa
 export interface SessionSelection {
   readonly sessionId: string | null
   readonly recorded: boolean
-}
-
-function isFile(candidate: string): boolean {
-  try {
-    return statSync(candidate).isFile()
-  } catch {
-    return false
-  }
 }
 
 function currentPlatform(): CodexHostPlatform {
@@ -43,28 +33,6 @@ export function resolveAgentCodexPaths(options: AgentPathOptions): CodexPaths {
     isWsl: host === 'linux' && process.env['WSL_DISTRO_NAME'] !== undefined,
     environment: process.env,
     ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }),
-  })
-}
-
-export function detectCodexExecutable(
-  pathValue: string | undefined = process.env['Path'] ?? process.env['PATH'],
-): string | null {
-  if (pathValue === undefined || pathValue.length === 0) return null
-  const separator = pathValue.includes(';') ? ';' : ':'
-  for (const directory of pathValue.split(separator)) {
-    for (const candidate of [`${directory}/codex`, `${directory}/codex.exe`]) {
-      if (isFile(candidate)) return candidate
-    }
-  }
-  return null
-}
-
-export function runCodexVersion(executable = 'codex'): Promise<string> {
-  return new Promise((resolveVersion) => {
-    execFile(executable, ['--version'], { timeout: 15_000 }, (error, stdout) => {
-      if (error !== null) resolveVersion('')
-      else resolveVersion(String(stdout))
-    })
   })
 }
 

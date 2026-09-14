@@ -9,7 +9,7 @@ import {
   manifestFile,
   manifestPathForLayer,
 } from '../../../src/agents/codex/manifest.js'
-import { detectCodexExecutable, projectTrustLevel } from '../../../src/agents/codex/io.js'
+import { projectTrustLevel } from '../../../src/agents/codex/io.js'
 import { parseCodexToml } from '../../../src/agents/codex/codec.js'
 import { determineProjectTrust, normalizeProjectKey } from '../../../src/agents/codex/trust.js'
 
@@ -72,28 +72,6 @@ describe('codex atomic writes and backups', () => {
       updatedAt: '2026-09-12T00:00:00.000Z',
     }
     expect(CodexManifestSchema.parse(manifest).sessionId).toBe('sess-1')
-  })
-})
-
-describe('codex executable detection', () => {
-  it('returns null for empty search paths', () => {
-    expect(detectCodexExecutable('')).toBeNull()
-    expect(detectCodexExecutable('/nope:/also-nope')).toBeNull()
-  })
-
-  it('finds codex.exe in a synthetic search path', async () => {
-    const directory = await temporaryDirectory()
-    try {
-      const win = join(directory, 'bin')
-      await rm(win, { recursive: true, force: true })
-      const { mkdir, writeFile } = await import('node:fs/promises')
-      await mkdir(win, { recursive: true })
-      await writeFile(join(win, 'codex.exe'), 'binary', 'utf8')
-      expect(detectCodexExecutable(`${win};C:\\nope`)).toBe(`${win}/codex.exe`)
-      expect(detectCodexExecutable('/nope:/also-nope')).toBeNull()
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
   })
 })
 

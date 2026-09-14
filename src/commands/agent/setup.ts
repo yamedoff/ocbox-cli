@@ -20,11 +20,11 @@ import {
   planCodexSetup,
   projectTrustLevel,
   readManifestSafe,
+  readInstalledCodexVersion,
   readTextOrNull,
   resolveAgentCodexPaths,
+  resolveCodexExecutable,
   resolveSessionSelection,
-  runCodexVersion,
-  detectCodexExecutable,
   type CodexLayer,
   type LegacyCodexManifest,
 } from '../../agents/codex/index.js'
@@ -46,8 +46,8 @@ async function runCodexSetup(flags: Record<string, unknown>): Promise<unknown> {
     stateDirectory,
   })
   const targets = layerTargetFiles(paths, layer)
-  const codexExecutable = detectCodexExecutable() ?? 'codex'
-  const versionText = await runCodexVersion(codexExecutable)
+  const codexExecutable = (await resolveCodexExecutable()) ?? 'codex'
+  const versionText = await readInstalledCodexVersion({ executable: codexExecutable })
   const baseTomlText = await readTextOrNull(targets.configFile)
   const baseHooksText = await readTextOrNull(targets.hooksFile)
   const projectDirectory = paths.projectDirectory ?? process.cwd()

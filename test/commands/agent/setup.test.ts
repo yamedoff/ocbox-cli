@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentSetup from '../../../src/commands/agent/setup.js'
 
 const mocks = vi.hoisted(() => ({
-  runCodexVersion: vi.fn(async () => 'codex-cli 0.153.4 (abc123)'),
-  detectCodexExecutable: vi.fn(() => 'codex'),
+  readInstalledCodexVersion: vi.fn(async () => 'codex-cli 0.153.4 (abc123)'),
+  resolveCodexExecutable: vi.fn(async () => 'codex'),
   resolveSessionSelection: vi.fn(async () => ({ sessionId: 'sess-test-1', recorded: true })),
 }))
 
@@ -14,8 +14,8 @@ vi.mock('../../../src/agents/codex/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/agents/codex/index.js')>()
   return {
     ...actual,
-    runCodexVersion: mocks.runCodexVersion,
-    detectCodexExecutable: mocks.detectCodexExecutable,
+    readInstalledCodexVersion: mocks.readInstalledCodexVersion,
+    resolveCodexExecutable: mocks.resolveCodexExecutable,
     resolveSessionSelection: mocks.resolveSessionSelection,
   }
 })

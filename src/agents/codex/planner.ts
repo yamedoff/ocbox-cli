@@ -31,6 +31,7 @@ import {
 import { fragmentKey, ownedFragmentsInDocument, ownedFragmentsInDocuments } from './ownership.js'
 import { layerTargetFiles, type CodexLayer, type CodexPaths } from './paths.js'
 import { detectCodexSchema, validateHooksTable } from './schema.js'
+import { CODEX_HOOK_TIMEOUT_SECONDS } from './timeouts.js'
 import { editTomlHooks } from './toml-edit.js'
 import { checkCodexVersion, LIVE_E2E_BLOCKER } from './version.js'
 import type { CodexSchemaDescriptor } from './version.js'
@@ -231,7 +232,13 @@ function desiredSessionFragment(sessionId: string, ocboxBin?: string): CodexDesi
     matcher: CODEX_HOOK_MATCHER_TOOL,
     group: {
       matcher: CODEX_HOOK_MATCHER_TOOL,
-      hooks: [{ type: 'command', command }],
+      hooks: [
+        {
+          type: 'command',
+          command,
+          timeout: CODEX_HOOK_TIMEOUT_SECONDS,
+        },
+      ],
     },
   }
 }

@@ -3,6 +3,7 @@ import {
   type CodexHookPayload,
   codexShellCommandToArgv,
 } from './hook-contract.js'
+import { CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from './timeouts.js'
 
 /**
  * Explicit routed environment markers. A routed `ocbox exec` exports these so a
@@ -63,13 +64,18 @@ export interface RoutedExecInput {
 /**
  * Maps covered shell command data to `ocbox exec --session ... -- <argv>`.
  * The recursion markers travel as `--env` options before the `--` terminator so
- * the structured argv itself is never rewritten.
+ * the structured argv itself is never rewritten. The bounded `--timeout` sits
+ * strictly below the installed hook deadline (see `timeouts.ts`) so the remote
+ * runner returns a timeout outcome and the hook can emit its deny before Codex
+ * cancels the hook.
  */
 export function buildRoutedExecArgv(input: RoutedExecInput): readonly string[] {
   return [
     'exec',
     '--session',
     input.sessionId,
+    '--timeout',
+    String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
     ...recursionGuardArgs(),
     '--env',
     `${SESSION_ENV}=${input.sessionId}`,

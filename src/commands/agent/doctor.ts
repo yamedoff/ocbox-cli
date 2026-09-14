@@ -9,7 +9,6 @@ import {
 } from '../../agents/claude-code/version.js'
 import {
   codexDoctor,
-  detectCodexExecutable,
   determineProjectTrust,
   layerTargetFiles,
   manifestFile,
@@ -17,11 +16,12 @@ import {
   parseCodexToml,
   parseLegacyCodexManifest,
   projectTrustLevel,
+  readInstalledCodexVersion,
   readManifestSafe,
   readTextOrNull,
   resolveAgentCodexPaths,
+  resolveCodexExecutable,
   resolveSessionSelection,
-  runCodexVersion,
 } from '../../agents/codex/index.js'
 import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
 import { resolveStateDirectory } from '../../cli/runtime.js'
@@ -39,8 +39,8 @@ async function runCodexDoctor(flags: Record<string, unknown>): Promise<unknown> 
     stateDirectory,
   })
   const targets = layerTargetFiles(paths, layer)
-  const codexExecutable = detectCodexExecutable() ?? 'codex'
-  const versionText = await runCodexVersion(codexExecutable)
+  const codexExecutable = (await resolveCodexExecutable()) ?? 'codex'
+  const versionText = await readInstalledCodexVersion({ executable: codexExecutable })
   const tomlText = await readTextOrNull(targets.configFile)
   const hooksText = await readTextOrNull(targets.hooksFile)
   const projectDirectory = paths.projectDirectory ?? process.cwd()

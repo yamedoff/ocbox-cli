@@ -25,6 +25,7 @@ import {
   proveCodexHookContract,
   runCodexRoutingHook,
 } from '../../../src/agents/codex/hook.js'
+import { CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS } from '../../../src/agents/codex/timeouts.js'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 
@@ -182,6 +183,8 @@ describe('codex hook-to-exec grammar', () => {
       'exec',
       '--session',
       SESSION_ID,
+      '--timeout',
+      String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
       ...recursionGuardArgs(),
       '--env',
       `${SESSION_ENV}=${SESSION_ID}`,
@@ -204,6 +207,8 @@ describe('codex hook entrypoint', () => {
         'exec',
         '--session',
         SESSION_ID,
+        '--timeout',
+        String(CODEX_HOOK_REMOTE_TIMEOUT_MILLISECONDS),
         '--env',
         `${RECURSION_GUARD_ENV}=1`,
         '--env',
