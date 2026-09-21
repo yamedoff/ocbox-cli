@@ -1,0 +1,33 @@
+{
+  "pinnedVersion": "2.0.51",
+  "settingsSchemaRevision": 1,
+  "evidence": "Static pin retained with PINNED_CLAUDE_CODE_VERSION; re-capture from the installed pinned binary before changing the pin (live-only gate).",
+  "hookEvents": [
+    "PreToolUse",
+    "PostToolUse",
+    "Notification",
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStop",
+    "PreCompact",
+    "SessionStart",
+    "SessionEnd"
+  ],
+  "toolMatchers": [
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "Glob",
+    "Grep",
+    "KillShell",
+    "LS",
+    "MultiEdit",
+    "NotebookEdit",
+    "Read",
+    "Task",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Write"
+  ]
+}

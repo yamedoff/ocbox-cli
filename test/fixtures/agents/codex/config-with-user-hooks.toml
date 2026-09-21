@@ -1,0 +1,9 @@
+model = "gpt-5.6-luna"
+approval_policy = "on-request"
+
+[[hooks.SessionStart]]
+matcher = "startup"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "existing-user-hook"
