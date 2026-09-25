@@ -27,9 +27,18 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Snapshot URLs freeze package resolution. The base image is Debian Bookworm,
 # whose deb822 sources are present at this path.
+# Use plain HTTP for the pinned snapshot host on purpose: the pinned base
+# digest ships no system CA bundle, so the first apt update over HTTPS cannot
+# verify the snapshot certificate before ca-certificates (installed by that
+# same update) exists -- a bootstrap deadlock ("No system certificates
+# available"). Integrity is unchanged: apt still verifies the snapshot
+# InRelease/Release signatures against the Debian archive keyring already in
+# the base image; only Acquire::Check-Valid-Until is relaxed for the dated
+# snapshot. Do not add Acquire::https::Verify-Peer=false, trusted=yes,
+# --allow-unauthenticated, or similar TLS/signature bypasses.
 RUN sed -ri \
-      -e "s#http://deb.debian.org/debian-security#https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}#g" \
-      -e "s#http://deb.debian.org/debian#https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}#g" \
+      -e "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}#g" \
+      -e "s#http://deb.debian.org/debian#http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}#g" \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
