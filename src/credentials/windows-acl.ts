@@ -68,7 +68,7 @@ export class PowerShellWindowsAclProtector implements WindowsAclProtector {
     return new Promise((resolve) => {
       const startedAt = Date.now()
       // Test-only phase diagnostics never include the target path or ACL data.
-      const diagnostic = process.env.OCBOX_AUTH_DIAGNOSTICS === '1'
+      const diagnostic = process.env['OCBOX_AUTH_DIAGNOSTICS'] === '1'
       if (diagnostic) process.stderr.write(`Windows ACL: starting ${kind}\n`)
       // Windows PowerShell must discover its own modules, even when the CLI was
       // launched from PowerShell 7, whose inherited module path is incompatible.
