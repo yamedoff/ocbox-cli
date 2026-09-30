@@ -28,6 +28,15 @@ export const MAX_SYNC_ENTRIES = MAX_SYNC_FILES + MAX_SYNC_DIRECTORIES
  * without limit; past this point the overflow flag reports the truncation.
  */
 export const MAX_SYNC_BLOCKED = 10_000
+/**
+ * Number of directory names the scan retains while ordering one listing.
+ * Ordering a listing requires holding the names that are still candidates, so
+ * this window is the per-directory memory bound: a listing with more children
+ * than the window is enumerated in ascending windows, each pass retaining at
+ * most this many names, and a directory holding `children` entries costs
+ * `ceil(children / MAX_SYNC_LISTING_WINDOW)` streaming passes.
+ */
+const MAX_SYNC_LISTING_WINDOW = 4_096
 
 export const ManifestEntrySchema = z
   .strictObject({
@@ -132,6 +141,11 @@ function comparePath(left: { path: string }, right: { path: string }): number {
   return Buffer.compare(Buffer.from(left.path, 'utf8'), Buffer.from(right.path, 'utf8'))
 }
 
+/** Byte-order comparison for raw directory names, mirroring `comparePath`. */
+function compareName(left: string, right: string): number {
+  return comparePath({ path: left }, { path: right })
+}
+
 function insideRoot(root: string, candidate: string): boolean {
   const path = relative(root, candidate)
   return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path))
@@ -191,8 +205,106 @@ async function hashStableFile(
 }
 
 /**
+ * Merges two ascending name runs, keeping only the smallest
+ * `MAX_SYNC_LISTING_WINDOW` names so the retained candidates stay bounded.
+ * Both inputs are already truncated to that length, and the smallest names of
+ * a union of sorted runs are the first names of their merge.
+ */
+function boundedMerge(left: readonly string[], right: readonly string[]): string[] {
+  const merged: string[] = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (merged.length < MAX_SYNC_LISTING_WINDOW) {
+    const leftName = left[leftIndex]
+    const rightName = right[rightIndex]
+    if (leftName === undefined) {
+      if (rightName === undefined) break
+      merged.push(rightName)
+      rightIndex += 1
+      continue
+    }
+    if (rightName === undefined || compareName(leftName, rightName) <= 0) {
+      merged.push(leftName)
+      leftIndex += 1
+      continue
+    }
+    merged.push(rightName)
+    rightIndex += 1
+  }
+  return merged
+}
+
+interface NameWindow {
+  /** At most `MAX_SYNC_LISTING_WINDOW` smallest names above the watermark, ascending. */
+  readonly names: readonly string[]
+  /** True when `names` covers every entry of the listing above the watermark. */
+  readonly exhausted: boolean
+}
+
+/**
+ * Collects the next ascending window of a directory listing in one streaming
+ * pass: the `MAX_SYNC_LISTING_WINDOW` smallest names strictly above `watermark`
+ * (or every remaining name when the listing has fewer). Retention is bounded by
+ * the window, so a directory holding millions of children is never
+ * materialized as a whole.
+ */
+async function nextNameWindow(directory: string, watermark: string | null): Promise<NameWindow> {
+  const directoryHandle = await opendir(directory)
+  let pending: string[] = []
+  let selected: string[] = []
+  let seen = 0
+  try {
+    for await (const child of directoryHandle) {
+      if (watermark !== null && compareName(child.name, watermark) <= 0) continue
+      seen += 1
+      pending.push(child.name)
+      if (pending.length === MAX_SYNC_LISTING_WINDOW) {
+        selected = boundedMerge(selected, pending.sort(compareName))
+        pending = []
+      }
+    }
+  } finally {
+    // Exhausting the async iterator closes the handle; a defensive close on
+    // the already-closed handle must not mask the scan result.
+    await directoryHandle.close().catch(() => undefined)
+  }
+  if (pending.length > 0) selected = boundedMerge(selected, pending.sort(compareName))
+  // Selecting fewer names than the window proves nothing else is left above
+  // the watermark; an exactly sized window counts as complete as well.
+  return { names: selected, exhausted: seen <= MAX_SYNC_LISTING_WINDOW }
+}
+
+/**
+ * Yields one directory's child names in ascending UTF-8 byte order.
+ *
+ * `opendir` streams entries in filesystem enumeration order, and the manifest
+ * caps are applied while the tree is walked, so admission decisions would
+ * otherwise depend on that order - and therefore on the host filesystem and
+ * platform - instead of on the tree's contents. Each pass collects the next
+ * window of names, so a listing with `children` entries costs
+ * `ceil(children / MAX_SYNC_LISTING_WINDOW)` streaming passes and never retains
+ * more than one window of names.
+ */
+async function* listChildrenInOrder(directory: string): AsyncGenerator<string> {
+  let watermark: string | null = null
+  for (;;) {
+    const window = await nextNameWindow(directory, watermark)
+    for (const name of window.names) yield name
+    if (window.exhausted) return
+    const last = window.names[window.names.length - 1]
+    if (last === undefined) return
+    watermark = last
+  }
+}
+
+/**
  * Walks without following links, hashes through an opened file handle, and
  * bounds all transferable data before a transfer begins.
+ *
+ * Children are visited in ascending raw-name byte order and every subtree is
+ * completed before the next sibling, so the caps below admit and block a
+ * deterministic function of the tree's contents rather than of the order the
+ * filesystem happened to enumerate.
  */
 export async function scanSourceManifest(
   sourceRoot: string,
@@ -242,103 +354,99 @@ export async function scanSourceManifest(
       addBlocked({ path: safeDisplayPath(rawSegments.join('/')), reason: 'filesystem-race' })
       return
     }
-    // `opendir` streams one entry at a time, so a directory with millions of
-    // children cannot materialize its whole listing in memory.
-    const directoryHandle = await opendir(directory)
-    try {
-      for await (const child of directoryHandle) {
-        const rawChildSegments = [...rawSegments, child.name]
-        const rawPath = rawChildSegments.join('/')
-        const normalizedRawPath = rawChildSegments
-          .map((segment) => segment.normalize('NFC'))
-          .join('/')
-        rawPaths.push(rawPath)
-        let path: ManifestPath
-        try {
-          path = normalizeManifestPath(normalizedRawPath)
-        } catch {
-          addBlocked({ path: safeDisplayPath(rawPath), reason: 'special-file' })
-          continue
-        }
-        const fullPath = resolve(directory, child.name)
-        const metadata = await lstat(fullPath)
-        if (metadata.isSymbolicLink()) {
-          addBlocked({ path, reason: 'symlink' })
-          continue
-        }
-        const exclusionReason: ExclusionReason | null = exclusionForPath(
-          path,
-          options.ignoreRuleGroups ?? [],
-        )
-        const common = {
-          path,
-          mtimeHintNanoseconds: nanosecondMtimeHint(metadata.mtimeMs),
-          mode: metadata.mode & 0o7777,
-          linkTarget: null,
-          exclusionReason,
-        }
-        if (metadata.isDirectory()) {
-          if (directories >= maxDirectories) {
-            addBlocked({ path, reason: 'entry-limit' })
-            continue
-          }
-          directories += 1
-          entries.push(
-            ManifestEntrySchema.parse({ ...common, type: 'directory', size: 0, sha256: null }),
-          )
-          if (exclusionReason === null) await visit(fullPath, rawChildSegments)
-          continue
-        }
-        if (!metadata.isFile()) {
-          addBlocked({ path, reason: 'special-file' })
-          continue
-        }
-        if (exclusionReason !== null) {
-          if (entries.length >= entryBudget) {
-            addBlocked({ path, reason: 'entry-limit' })
-            continue
-          }
-          entries.push(
-            ManifestEntrySchema.parse({
-              ...common,
-              type: 'file',
-              size: metadata.size,
-              sha256: null,
-            }),
-          )
-          continue
-        }
-        if (metadata.size > maxFileBytes || totalBytes + metadata.size > maxBytes) {
-          addBlocked({ path, reason: 'size-limit' })
-          continue
-        }
-        if (transferableFiles >= maxFiles) {
-          addBlocked({ path, reason: 'file-limit' })
-          continue
-        }
-        // The directory was realpath-checked at visit entry; re-verify the file
-        // itself so a hostile directory swap between awaits cannot point the
-        // open/read outside the canonical root.
-        const fileRealPath = await realpath(fullPath)
-        if (!insideRoot(canonicalRoot, fileRealPath)) {
-          addBlocked({ path, reason: 'filesystem-race' })
-          continue
-        }
-        const sha256 = await hashStableFile(fullPath, metadata)
-        if (sha256 === null) {
-          addBlocked({ path, reason: 'filesystem-race' })
-          continue
-        }
-        totalBytes += metadata.size
-        transferableFiles += 1
-        entries.push(
-          ManifestEntrySchema.parse({ ...common, type: 'file', size: metadata.size, sha256 }),
-        )
+    // Children are visited in ascending raw-name byte order (see
+    // `listChildrenInOrder`), which keeps cap admission a function of the
+    // tree's contents instead of `opendir` enumeration order. Each listing is
+    // streamed in bounded windows, so a directory with millions of children
+    // still cannot materialize its whole listing in memory.
+    for await (const childName of listChildrenInOrder(directory)) {
+      const rawChildSegments = [...rawSegments, childName]
+      const rawPath = rawChildSegments.join('/')
+      const normalizedRawPath = rawChildSegments
+        .map((segment) => segment.normalize('NFC'))
+        .join('/')
+      rawPaths.push(rawPath)
+      let path: ManifestPath
+      try {
+        path = normalizeManifestPath(normalizedRawPath)
+      } catch {
+        addBlocked({ path: safeDisplayPath(rawPath), reason: 'special-file' })
+        continue
       }
-    } finally {
-      // Exhausting the async iterator closes the handle; a defensive close on
-      // the already-closed handle must not mask the scan result.
-      await directoryHandle.close().catch(() => undefined)
+      const fullPath = resolve(directory, childName)
+      const metadata = await lstat(fullPath)
+      if (metadata.isSymbolicLink()) {
+        addBlocked({ path, reason: 'symlink' })
+        continue
+      }
+      const exclusionReason: ExclusionReason | null = exclusionForPath(
+        path,
+        options.ignoreRuleGroups ?? [],
+      )
+      const common = {
+        path,
+        mtimeHintNanoseconds: nanosecondMtimeHint(metadata.mtimeMs),
+        mode: metadata.mode & 0o7777,
+        linkTarget: null,
+        exclusionReason,
+      }
+      if (metadata.isDirectory()) {
+        if (directories >= maxDirectories) {
+          addBlocked({ path, reason: 'entry-limit' })
+          continue
+        }
+        directories += 1
+        entries.push(
+          ManifestEntrySchema.parse({ ...common, type: 'directory', size: 0, sha256: null }),
+        )
+        if (exclusionReason === null) await visit(fullPath, rawChildSegments)
+        continue
+      }
+      if (!metadata.isFile()) {
+        addBlocked({ path, reason: 'special-file' })
+        continue
+      }
+      if (exclusionReason !== null) {
+        if (entries.length >= entryBudget) {
+          addBlocked({ path, reason: 'entry-limit' })
+          continue
+        }
+        entries.push(
+          ManifestEntrySchema.parse({
+            ...common,
+            type: 'file',
+            size: metadata.size,
+            sha256: null,
+          }),
+        )
+        continue
+      }
+      if (metadata.size > maxFileBytes || totalBytes + metadata.size > maxBytes) {
+        addBlocked({ path, reason: 'size-limit' })
+        continue
+      }
+      if (transferableFiles >= maxFiles) {
+        addBlocked({ path, reason: 'file-limit' })
+        continue
+      }
+      // The directory was realpath-checked at visit entry; re-verify the file
+      // itself so a hostile directory swap between awaits cannot point the
+      // open/read outside the canonical root.
+      const fileRealPath = await realpath(fullPath)
+      if (!insideRoot(canonicalRoot, fileRealPath)) {
+        addBlocked({ path, reason: 'filesystem-race' })
+        continue
+      }
+      const sha256 = await hashStableFile(fullPath, metadata)
+      if (sha256 === null) {
+        addBlocked({ path, reason: 'filesystem-race' })
+        continue
+      }
+      totalBytes += metadata.size
+      transferableFiles += 1
+      entries.push(
+        ManifestEntrySchema.parse({ ...common, type: 'file', size: metadata.size, sha256 }),
+      )
     }
   }
 
