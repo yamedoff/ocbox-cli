@@ -2,7 +2,8 @@ name: Base image candidate
 
 on:
   pull_request:
-    branches: [main]
+    # Validate image repairs before the recovery branch can reach main.
+    branches: [main, codex/recovery-cli-integration]
     paths:
       - images/ocbox-base/**
       - scripts/verify-image-candidate.mjs
