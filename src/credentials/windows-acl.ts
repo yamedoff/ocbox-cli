@@ -66,6 +66,10 @@ export class PowerShellWindowsAclProtector implements WindowsAclProtector {
 
   protectAndVerify(path: string, kind: ProtectedPathKind): Promise<boolean> {
     return new Promise((resolve) => {
+      const startedAt = Date.now()
+      // Test-only phase diagnostics never include the target path or ACL data.
+      const diagnostic = process.env.OCBOX_AUTH_DIAGNOSTICS === '1'
+      if (diagnostic) process.stderr.write(`Windows ACL: starting ${kind}\n`)
       // Windows PowerShell must discover its own modules, even when the CLI was
       // launched from PowerShell 7, whose inherited module path is incompatible.
       const environment = Object.fromEntries(
@@ -88,8 +92,18 @@ export class PowerShellWindowsAclProtector implements WindowsAclProtector {
           timeout: 10_000,
         },
       )
-      child.once('error', () => resolve(false))
-      child.once('exit', (code) => resolve(code === 0))
+      child.once('error', () => {
+        if (diagnostic) process.stderr.write(`Windows ACL: spawn failed (${kind})\n`)
+        resolve(false)
+      })
+      child.once('exit', (code, signal) => {
+        if (diagnostic) {
+          process.stderr.write(
+            `Windows ACL: finished ${kind} in ${Date.now() - startedAt}ms (exit ${code}, signal ${signal})\n`,
+          )
+        }
+        resolve(code === 0)
+      })
     })
   }
 }

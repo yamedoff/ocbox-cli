@@ -243,7 +243,7 @@ function run(args, options = {}) {
     process.stderr.write(`Auth harness: starting ${command}\n`)
     const child = spawn(process.execPath, [cli, ...args], {
       cwd: options.cwd ?? root,
-      env: { NO_COLOR: '1', ...isolatedEnvironment(), ...options.env },
+      env: { NO_COLOR: '1', OCBOX_AUTH_DIAGNOSTICS: '1', ...isolatedEnvironment(), ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -261,6 +261,17 @@ function run(args, options = {}) {
       action()
     }
     const timer = setTimeout(() => {
+      // Emit only the opt-in boundary diagnostics; never dump CLI stream data.
+      const aclPhases = Buffer.concat(stderr)
+        .toString('utf8')
+        .split(/\r?\n/)
+        .filter((line) =>
+          /^Windows ACL: (starting (directory|file)|spawn failed \((directory|file)\)|finished (directory|file) in \d+ms \(exit (\d+|null), signal (null|SIGTERM|SIGKILL)\))$/.test(
+            line,
+          ),
+        )
+        .join('\n')
+      if (aclPhases) process.stderr.write(`${aclPhases}\n`)
       child.kill('SIGKILL')
       const phases = events.map((event) => event.name).join(', ')
       finish(() =>

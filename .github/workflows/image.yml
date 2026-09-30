@@ -134,11 +134,25 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
-          format: table
+          format: json
+          output: artifacts/trivy.json
           exit-code: '1'
           severity: CRITICAL
           scanners: vuln,secret
           ignore-unfixed: false
+      - name: Preserve scan diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ocbox-base-failure-${{ github.sha }}
+          path: |
+            artifacts/trivy.json
+            artifacts/sbom.spdx.json
+            artifacts/image-config.json
+            build-metadata.json
+            runtime-build-metadata.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload review evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
