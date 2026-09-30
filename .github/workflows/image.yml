@@ -95,9 +95,15 @@ jobs:
           # digest binds every runtime setting and the ordered rootfs diff IDs.
           mkdir -p artifacts/oci-layout
           tar -xf artifacts/ocbox-base.oci.tar -C artifacts/oci-layout
-          manifest_digest=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | if length == 1 then .[0].digest else error("ambiguous runtime manifest") end' artifacts/oci-layout/index.json)
-          manifest_path="artifacts/oci-layout/blobs/sha256/${manifest_digest#sha256:}"
-          test "sha256:$(sha256sum "$manifest_path" | cut -d ' ' -f 1)" = "$manifest_digest"
+          # OCI archive index.json wraps the attested image index. Walk at most
+          # three indexes, hashing each selected descriptor before reading it.
+          manifest_path=artifacts/oci-layout/index.json
+          for depth in 1 2 3; do
+            manifest_digest=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] as $runtime | if ($runtime | length) == 1 then $runtime[0].digest elif ($runtime | length) == 0 and (.manifests | length) == 1 and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json" then .manifests[0].digest else error("ambiguous runtime manifest") end' "$manifest_path")
+            manifest_path="artifacts/oci-layout/blobs/sha256/${manifest_digest#sha256:}"
+            test "sha256:$(sha256sum "$manifest_path" | cut -d ' ' -f 1)" = "$manifest_digest"
+            if jq -e 'has("config")' "$manifest_path" > /dev/null; then break; fi
+          done
           config_digest=$(jq -er '.config.digest' "$manifest_path")
           config_path="artifacts/oci-layout/blobs/sha256/${config_digest#sha256:}"
           test "sha256:$(sha256sum "$config_path" | cut -d ' ' -f 1)" = "$config_digest"
