@@ -90,8 +90,21 @@ jobs:
             --output type=oci,dest=artifacts/ocbox-base.oci.tar \
             .
           jq -e '."containerimage.digest" | test("^sha256:[0-9a-f]{64}$")' build-metadata.json
-          test "$(jq -r '."containerimage.config.digest"' runtime-build-metadata.json)" = \
-            "$(jq -r '."containerimage.config.digest"' build-metadata.json)"
+          # Compare the actual loaded image with the actual OCI config blob.
+          # Exporter metadata may describe a different serialization; the config
+          # digest binds every runtime setting and the ordered rootfs diff IDs.
+          mkdir -p artifacts/oci-layout
+          tar -xf artifacts/ocbox-base.oci.tar -C artifacts/oci-layout
+          manifest_digest=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | if length == 1 then .[0].digest else error("ambiguous runtime manifest") end' artifacts/oci-layout/index.json)
+          manifest_path="artifacts/oci-layout/blobs/sha256/${manifest_digest#sha256:}"
+          test "sha256:$(sha256sum "$manifest_path" | cut -d ' ' -f 1)" = "$manifest_digest"
+          config_digest=$(jq -er '.config.digest' "$manifest_path")
+          config_path="artifacts/oci-layout/blobs/sha256/${config_digest#sha256:}"
+          test "sha256:$(sha256sum "$config_path" | cut -d ' ' -f 1)" = "$config_digest"
+          test "$(docker image inspect "$IMAGE_REF" --format '{{.Id}}')" = "$config_digest"
+          # Keep small review evidence; the complete layout remains in the tar.
+          cp "$config_path" artifacts/image-config.json
+          rm -rf artifacts/oci-layout
           jq -e '."buildx.build.provenance"' build-metadata.json > artifacts/provenance.json
           jq --arg digest "$(jq -r '."containerimage.digest"' build-metadata.json)" \
             '.image.digest = $digest' images/ocbox-base/manifest.json > artifacts/image-manifest.json

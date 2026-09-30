@@ -164,6 +164,13 @@ export function verifyImageSources({
   assert(ociStep.includes('--provenance=mode=max'), 'OCI output must enable provenance')
   assert(ociStep.includes('--output type=oci,dest=artifacts/ocbox-base.oci.tar'), 'OCI output file')
   assert(!ociStep.includes('--provenance=false'), 'OCI output must not disable provenance')
+  assert(
+    ociStep.includes('sha256sum "$manifest_path"') &&
+      ociStep.includes('sha256sum "$config_path"') &&
+      ociStep.includes('docker image inspect "$IMAGE_REF" --format \'{{.Id}}\'') &&
+      ociStep.includes('= "$config_digest"'),
+    'loaded image identity must match the verified OCI config',
+  )
   assert(dockerfile.includes('ARG SOURCE_DATE_EPOCH='), 'reproducible build epoch default')
   assert(
     workflow.includes('SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)'),

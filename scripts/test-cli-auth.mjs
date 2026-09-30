@@ -237,6 +237,10 @@ function extractJsonValues(buffer) {
  */
 function run(args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
+    const startedAt = Date.now()
+    // Report phases without URLs, OAuth state, codes, tokens, or stream contents.
+    const command = args.slice(0, 2).join(' ')
+    process.stderr.write(`Auth harness: starting ${command}\n`)
     const child = spawn(process.execPath, [cli, ...args], {
       cwd: options.cwd ?? root,
       env: { NO_COLOR: '1', ...isolatedEnvironment(), ...options.env },
@@ -258,7 +262,16 @@ function run(args, options = {}) {
     }
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      finish(() => rejectPromise(new Error(`CLI timed out: ${args.join(' ')}`)))
+      const phases = events.map((event) => event.name).join(', ')
+      finish(() =>
+        rejectPromise(
+          new Error(
+            `CLI timed out: ${command}; phases=[${phases}]; ` +
+              `mock exchanges=${mock?.calls.exchange ?? 0}; ` +
+              `stdout bytes=${Buffer.concat(stdout).length}; stderr bytes=${Buffer.concat(stderr).length}`,
+          ),
+        ),
+      )
     }, options.timeout ?? 30_000)
     child.stdout.on('data', (chunk) => {
       stdout.push(chunk)
@@ -273,15 +286,18 @@ function run(args, options = {}) {
     child.stderr.on('data', (chunk) => stderr.push(chunk))
     child.on('error', (error) => finish(() => rejectPromise(error)))
     child.on('close', (code, signal) =>
-      finish(() =>
+      finish(() => {
+        process.stderr.write(
+          `Auth harness: finished ${command} in ${Date.now() - startedAt}ms (exit ${code})\n`,
+        )
         resolvePromise({
           code,
           events,
           signal,
           stderr: Buffer.concat(stderr),
           stdout: Buffer.concat(stdout),
-        }),
-      ),
+        })
+      }),
     )
   })
 }

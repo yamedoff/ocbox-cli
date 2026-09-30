@@ -20,3 +20,17 @@ by longer timeouts or removed tests. A scanner fixture allowlist must remain nar
 Use the toolchain pinned in `package.json` and the lockfile. Local image readiness
 does not prove downstream scan, SBOM, provenance or attestation gates. These workflows
 validate candidates; merging or publishing a release is a separate reviewed action.
+
+The dependency repair advances the transitive `brace-expansion` lockfile entry from
+5.0.9 to 5.0.12, preserving the pinned direct dependencies and audit threshold.
+The image workflow checks the loaded Docker image ID against the config digest in
+the exported OCI runtime manifest, verifying both manifest and config blob hashes.
+This binds runtime settings and ordered rootfs diff IDs without relying on exporter
+metadata serialization. Run 36790209610 logged the same exported config digest for
+both outputs but failed the exporter metadata comparison; the exact metadata
+difference remains unverified. The actual loaded/archive identity check must pass.
+
+Windows auth harness phase diagnostics contain command names, event names, elapsed
+times and mock exchange counts only. They preserve the existing timeouts and all
+auth assertions. Local auth success does not resolve a hosted Windows timeout;
+the refreshed hosted run must demonstrate success or identify the stalled phase.
