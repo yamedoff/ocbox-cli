@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ProjectIdSchema,
   RequestIdSchema,
@@ -37,12 +37,14 @@ function createService(
     readonly capabilities?: ProviderCapabilities
     readonly signal?: AbortSignal
     readonly now?: () => Date
+    readonly provider?: FakeSandboxProvider
   } = {},
 ): LifecycleService {
   const now = options.now ?? (() => new Date())
   const registry = new ProviderRegistry().register(
     'fake',
     () =>
+      options.provider ??
       new FakeSandboxProvider(stateDirectory, {
         now,
         ...(options.faults === undefined ? {} : { faults: options.faults }),
@@ -166,14 +168,32 @@ describe('LifecycleService', () => {
   it('returns OPERATION_CONFLICT for a different concurrent mutation', async () => {
     const directory = await temporaryDirectory()
     await createService(directory).start()
-    const pause = createService(directory, {
-      faults: { delayMilliseconds: { pause: 100 } },
-    }).pause()
-    await waitForOperation(directory)
-
-    await expect(createService(directory).stop()).rejects.toMatchObject({
-      code: 'OPERATION_CONFLICT',
+    const provider = new FakeSandboxProvider(directory)
+    const originalPause = provider.pause.bind(provider)
+    let releasePause = () => {}
+    let enteredPause = () => {}
+    const entered = new Promise<void>((resolve) => {
+      enteredPause = resolve
     })
+    const gate = new Promise<void>((resolve) => {
+      releasePause = resolve
+    })
+    // Hold the provider mutation until the conflicting command has observed the
+    // reservation. A wall-clock delay can expire before Windows finishes I/O.
+    vi.spyOn(provider, 'pause').mockImplementation(async (...args) => {
+      enteredPause()
+      await gate
+      return originalPause(...args)
+    })
+    const pause = createService(directory, { provider }).pause()
+    try {
+      await entered
+      await expect(createService(directory).stop()).rejects.toMatchObject({
+        code: 'OPERATION_CONFLICT',
+      })
+    } finally {
+      releasePause()
+    }
     expect((await pause).session.state).toBe('paused')
   })
 

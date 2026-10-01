@@ -34,3 +34,18 @@ Windows auth harness phase diagnostics contain command names, event names, elaps
 times and mock exchange counts only. They preserve the existing timeouts and all
 auth assertions. Local auth success does not resolve a hosted Windows timeout;
 the refreshed hosted run must demonstrate success or identify the stalled phase.
+
+Run 36792180776 identifies the first Windows credential-directory ACL subprocess
+as the failure: it exits via the existing 10-second timeout before login persists.
+The ACL script now uses .NET Framework FileInfo/DirectoryInfo security APIs directly
+to avoid PowerShell module autoload and requests ACL rules as raw SIDs to avoid
+account-name or domain-controller resolution. It still rejects reparse points, disables
+inherited rules, sets the current user as owner, and reads the ACL back to require
+current-user-only full control. The timeout and credential failure behavior remain
+unchanged. Real Windows credential round-trip tests exercise this boundary; hosted
+validation must independently pass before the Windows repair is accepted.
+
+The concurrent lifecycle conflict test now holds the provider mutation behind an
+explicit promise barrier until the competing command observes the reservation.
+This verifies the conflict while the operation is actually pending, independently
+of filesystem speed or scheduler timing.

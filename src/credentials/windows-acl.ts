@@ -11,16 +11,22 @@ const ACL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $targetPath = $env:OCBOX_ACL_TARGET_PATH
 $targetKind = $env:OCBOX_ACL_TARGET_KIND
-$item = Get-Item -LiteralPath $targetPath -Force
+$item = if ($targetKind -eq 'directory') {
+  [System.IO.DirectoryInfo]::new($targetPath)
+} else {
+  [System.IO.FileInfo]::new($targetPath)
+}
+if (-not $item.Exists) { exit 35 }
 if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { exit 34 }
-if (($targetKind -eq 'directory') -ne $item.PSIsContainer) { exit 35 }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 function Test-UserOnlyAcl($candidate) {
   if (-not $candidate.AreAccessRulesProtected) { return $false }
   if ($candidate.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { return $false }
   $fullControl = $false
-  foreach ($entry in @($candidate.Access)) {
-    $entrySid = $entry.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
+  # Request raw SIDs; .Access resolves account names and can wait for an
+  # unavailable domain controller while checking inherited ACLs.
+  foreach ($entry in $candidate.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+    $entrySid = $entry.IdentityReference
     if ($entrySid.Value -ne $sid.Value) { return $false }
     if ($entry.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { return $false }
     if (($entry.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl -and
@@ -30,7 +36,10 @@ function Test-UserOnlyAcl($candidate) {
 }
 # A protected object needs verification only; rewriting its ACL may require
 # privileges that ordinary users intentionally do not hold.
-if (Test-UserOnlyAcl (Get-Acl -LiteralPath $targetPath)) { exit 0 }
+# Use .NET Framework APIs directly. PowerShell cmdlets autoload Management and
+# Security modules, which can stall on Windows runners before ACL work begins.
+# These APIs preserve literal paths and do not require module discovery.
+if (Test-UserOnlyAcl ($item.GetAccessControl())) { exit 0 }
 $acl = if ($targetKind -eq 'directory') {
   [System.Security.AccessControl.DirectorySecurity]::new()
 } else {
@@ -51,8 +60,8 @@ $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
 )
 $acl.SetOwner($sid)
 $acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $targetPath -AclObject $acl
-$verified = Get-Acl -LiteralPath $targetPath
+$item.SetAccessControl($acl)
+$verified = $item.GetAccessControl()
 if (-not (Test-UserOnlyAcl $verified)) { exit 31 }
 `
 
