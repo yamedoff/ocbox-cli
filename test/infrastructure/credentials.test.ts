@@ -66,6 +66,15 @@ describe('credential stores', () => {
       const file = join(directory, 'empty-file')
       await writeFile(file, '')
       const protector = new PowerShellWindowsAclProtector()
+      // Concurrent callers must receive the verification for their own path,
+      // even when one request fails and retires the reused worker.
+      expect(
+        await Promise.all([
+          protector.protectAndVerify(directory, 'directory'),
+          protector.protectAndVerify(file, 'file'),
+          protector.protectAndVerify(file, 'directory'),
+        ]),
+      ).toEqual([true, true, false])
       expect(await protector.protectAndVerify(join(directory, 'missing'), 'file')).toBe(false)
       expect(await protector.protectAndVerify(file, 'directory')).toBe(false)
       expect(await protector.protectAndVerify(directory, 'file')).toBe(false)

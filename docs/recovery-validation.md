@@ -45,6 +45,20 @@ current-user-only full control. The timeout and credential failure behavior rema
 unchanged. Real Windows credential round-trip tests exercise this boundary; hosted
 validation must independently pass before the Windows repair is accepted.
 
+Run 36924797958 passes the real Windows ACL tests and completes first login, but
+the next logout expires before producing ACL diagnostics. The build now generates
+oclif's command manifest and includes it in npm/image layouts, avoiding import of
+every command on each launch. A standalone-package test poisons an unrelated
+command to verify that selected-command startup does not execute it.
+
+Repeated credential checks also reuse a bounded PowerShell worker within each ACL
+protector. Requests carry only base64 UTF-8 path data and a validated path kind;
+they never evaluate request data. Calls are serialized, each rereads and verifies
+the ACL, and each retains its 10-second deadline. Failed/malformed responses kill
+the worker and fail closed. Idle workers are unreferenced and retired after five
+seconds, so they cannot keep the CLI alive. This reduces process startup overhead
+without caching permissions or weakening the existing command deadlines.
+
 The concurrent lifecycle conflict test now holds the provider mutation behind an
 explicit promise barrier until the competing command observes the reservation.
 This verifies the conflict while the operation is actually pending, independently

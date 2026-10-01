@@ -80,6 +80,7 @@ RUN groupadd --gid 10001 ocbox \
 # Install the compiled CLI bundle and its oclif manifest. The bundle inlines its
 # production dependencies, so the image ships no node_modules tree.
 COPY --chown=ocbox:ocbox package.json /opt/ocbox/cli/package.json
+COPY --chown=ocbox:ocbox oclif.manifest.json /opt/ocbox/cli/oclif.manifest.json
 COPY --chown=ocbox:ocbox dist /opt/ocbox/cli/dist
 
 # T5 owns the compiled versioned helper. Building T7 from a branch without T5
