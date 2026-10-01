@@ -59,6 +59,17 @@ the worker and fail closed. Idle workers are unreferenced and retired after five
 seconds, so they cannot keep the CLI alive. This reduces process startup overhead
 without caching permissions or weakening the existing command deadlines.
 
+Run 36926812189 passes credential ACL tests in 0.44 seconds but the first auth
+child produces no output for its entire 60-second deadline. Pinned oclif's
+`getShell` calls an unbounded synchronous PowerShell/WMI parent-process query
+when Windows has no `SHELL` environment variable. The entry point now provides
+Windows' `COMSPEC` basename as shell metadata in that case and honors an explicit
+`SHELL`. This avoids the query without changing sandbox command execution.
+The auth harness also preserves a narrow allowlist of OS launch variables while
+isolating home/credential paths and excluding inherited product configuration.
+A bootstrap phase marker reports only the command name and elapsed time before
+CLI import, so future failures can distinguish Node startup from CLI startup.
+
 The concurrent lifecycle conflict test now holds the provider mutation behind an
 explicit promise barrier until the competing command observes the reservation.
 This verifies the conflict while the operation is actually pending, independently

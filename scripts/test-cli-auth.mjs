@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const cli = join(repositoryRoot, 'dist', 'index.js')
+const bootstrap = join(repositoryRoot, 'scripts', 'cli-auth-bootstrap.mjs')
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' }
 
 const root = await mkdtemp(join(tmpdir(), 'ocbox-auth-e2e-'))
@@ -34,10 +35,27 @@ function tokenPair(counter) {
 /** Cross-platform environment so credentials/metadata stay inside the temp root. */
 function isolatedEnvironment() {
   if (process.platform === 'win32') {
-    return { APPDATA: platformRoot, LOCALAPPDATA: platformRoot }
+    return { APPDATA: platformRoot, LOCALAPPDATA: platformRoot, USERPROFILE: platformRoot }
   }
   if (process.platform === 'darwin') return { HOME: platformRoot }
   return { HOME: platformRoot, XDG_CONFIG_HOME: platformRoot, XDG_STATE_HOME: platformRoot }
+}
+
+/** Preserve OS process-launch requirements without inheriting credentials/config. */
+function launchEnvironment() {
+  const names = new Set([
+    'path',
+    'pathext',
+    'systemroot',
+    'systemdrive',
+    'windir',
+    'comspec',
+    'temp',
+    'tmp',
+  ])
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => names.has(name.toLowerCase())),
+  )
 }
 
 function credentialDirectory() {
@@ -241,9 +259,15 @@ function run(args, options = {}) {
     // Report phases without URLs, OAuth state, codes, tokens, or stream contents.
     const command = args.slice(0, 2).join(' ')
     process.stderr.write(`Auth harness: starting ${command}\n`)
-    const child = spawn(process.execPath, [cli, ...args], {
+    const child = spawn(process.execPath, [bootstrap, cli, ...args], {
       cwd: options.cwd ?? root,
-      env: { NO_COLOR: '1', OCBOX_AUTH_DIAGNOSTICS: '1', ...isolatedEnvironment(), ...options.env },
+      env: {
+        ...launchEnvironment(),
+        NO_COLOR: '1',
+        OCBOX_AUTH_DIAGNOSTICS: '1',
+        ...isolatedEnvironment(),
+        ...options.env,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -266,7 +290,7 @@ function run(args, options = {}) {
         .toString('utf8')
         .split(/\r?\n/)
         .filter((line) =>
-          /^Windows ACL: (starting (directory|file)|spawn failed \((directory|file)\)|finished (directory|file) in \d+ms \(exit (\d+|null), signal (null|SIGTERM|SIGKILL)\))$/.test(
+          /^(Auth CLI: bootstrap|Windows ACL: (starting (directory|file)|spawn failed \((directory|file)\)|finished (directory|file) in \d+ms \(exit (\d+|null), signal (null|SIGTERM|SIGKILL)\)))$/.test(
             line,
           ),
         )
@@ -294,7 +318,19 @@ function run(args, options = {}) {
         options.onEvent?.(envelope)
       }
     })
-    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    let bootstrapped = false
+    child.stderr.on('data', (chunk) => {
+      stderr.push(chunk)
+      if (
+        !bootstrapped &&
+        Buffer.concat(stderr).toString('utf8').includes('Auth CLI: bootstrap\n')
+      ) {
+        bootstrapped = true
+        process.stderr.write(
+          `Auth harness: bootstrapped ${command} in ${Date.now() - startedAt}ms\n`,
+        )
+      }
+    })
     child.on('error', (error) => finish(() => rejectPromise(error)))
     child.on('close', (code, signal) =>
       finish(() => {

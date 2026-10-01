@@ -27,6 +27,43 @@ try {
   )
   assert(stdout.includes('USAGE'), 'selected command must render its help')
   assert(!stderr.includes(poison), 'startup must not import unrelated commands')
+  if (process.platform === 'win32') {
+    const launchScript = `
+      import assert from 'node:assert/strict';
+      import { pathToFileURL } from 'node:url';
+      const expected = process.env.SHELL ?? 'cmd.exe';
+      await import(pathToFileURL(process.argv[1]).href);
+      assert.equal(process.env.SHELL, expected);
+    `
+    const withoutShell = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => !['shell', 'comspec'].includes(name.toLowerCase()),
+      ),
+    )
+    for (const shell of [undefined, 'explicit-shell']) {
+      const result = await promisify(execFile)(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          launchScript,
+          join(directory, 'dist', 'index.js'),
+          '--version',
+        ],
+        {
+          cwd: directory,
+          timeout: 30_000,
+          windowsHide: true,
+          env: {
+            ...withoutShell,
+            COMSPEC: 'C:\\Windows\\System32\\cmd.exe',
+            ...(shell === undefined ? {} : { SHELL: shell }),
+          },
+        },
+      )
+      assert(result.stdout.includes('opencloudbox/'), 'Windows entry point must run')
+    }
+  }
   console.log('CLI manifest lazy command loading passed')
 } finally {
   await rm(directory, { recursive: true, force: true })
