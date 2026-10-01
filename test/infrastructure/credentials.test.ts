@@ -4,12 +4,12 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   CredentialProtectionError,
-  HostedOAuthCredentialStore,
-  ProtectedFileCredentialStore,
   type CredentialStore,
   type HostedOAuthCredential,
   type HostedOAuthCredentialKey,
+  HostedOAuthCredentialStore,
   type OsCredentialAdapter,
+  ProtectedFileCredentialStore,
   type ProtectedPathKind,
   type WindowsAclProtector,
 } from '../../src/credentials/index.js'

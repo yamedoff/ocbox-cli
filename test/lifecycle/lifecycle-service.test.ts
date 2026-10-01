@@ -3,20 +3,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  ProjectIdSchema,
-  RequestIdSchema,
-  UtcTimestampSchema,
-  type ProviderCapabilities,
-} from '../../src/contracts.js'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import { parseProjectConfig } from '../../src/config/index.js'
+import {
+  ProjectIdSchema,
+  type ProviderCapabilities,
+  RequestIdSchema,
+  UtcTimestampSchema,
+} from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
 import { LifecycleService, LifecycleStore } from '../../src/lifecycle/index.js'
 import {
   FAKE_CAPABILITIES,
-  FakeSandboxProvider,
   type FakeProviderFaults,
+  FakeSandboxProvider,
 } from '../../src/providers/fake/index.js'
 import { ProviderRegistry } from '../../src/providers/index.js'
 
