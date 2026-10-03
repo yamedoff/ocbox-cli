@@ -27,6 +27,37 @@ limits. See [docs/codex-adapter.md](docs/codex-adapter.md) for the Codex
 routing adapter's plan/apply setup, remove/restore behavior, manifest
 recovery, hook exit contract, Windows discovery, and byte-preserving edits.
 
+## Hosted project and environment onboarding
+
+After `ocbox auth login --api-url https://your-api.example`, set `OCBOX_API_URL`
+to that same API base (or pass `--api-url` on each metadata command). Metadata
+commands use the protected, issuer-bound login credential and work before a
+hosted project has been selected. They never accept a static environment bearer.
+
+```sh
+ocbox project list --limit 20 --json
+ocbox project create --name "My project" --idempotency-key onboarding-project-001 --json
+ocbox project get --project-id PROJECT_ID --json
+ocbox project update --project-id PROJECT_ID --name "My renamed project" --json
+ocbox environment list --project-id PROJECT_ID --json
+ocbox environment create --project-id PROJECT_ID --name development --json
+ocbox environment get --environment-id ENVIRONMENT_ID --json
+ocbox environment update --environment-id ENVIRONMENT_ID --selected true --json
+```
+
+Replace the ID placeholders with the IDs returned by create/list. List commands
+return one bounded page; pass its `nextCursor` to `--cursor` for the next page.
+Mutation commands accept `--idempotency-key` for a safe retry across invocations;
+otherwise they generate a new UUID per invocation. Environment update accepts
+`--name`, `--selected true`, or `--selected false` and requires at least one.
+
+For hosted lifecycle commands such as `start`, use the existing provider config
+(`provider.name = "ocbox"`) and set `OCBOX_PROJECT_ID` to the returned hosted
+project ID in the same shell. Metadata commands do not persist project selection
+or rewrite `opencloudbox.toml`. Server environment selection is metadata and does
+not replace the existing sandbox specification's environment configuration.
+Use `--state-dir` consistently with login if you override the auth state root.
+
 ## Toolchain
 
 - Node.js `24.20.0`
