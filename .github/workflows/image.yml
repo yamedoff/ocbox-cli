@@ -2,7 +2,8 @@ name: Base image candidate
 
 on:
   pull_request:
-    branches: [main]
+    # Validate image repairs before the recovery branch can reach main.
+    branches: [main, codex/recovery-cli-integration]
     paths:
       - images/ocbox-base/**
       - scripts/verify-image-candidate.mjs
@@ -89,8 +90,27 @@ jobs:
             --output type=oci,dest=artifacts/ocbox-base.oci.tar \
             .
           jq -e '."containerimage.digest" | test("^sha256:[0-9a-f]{64}$")' build-metadata.json
-          test "$(jq -r '."containerimage.config.digest"' runtime-build-metadata.json)" = \
-            "$(jq -r '."containerimage.config.digest"' build-metadata.json)"
+          # Compare the actual loaded image with the actual OCI config blob.
+          # Exporter metadata may describe a different serialization; the config
+          # digest binds every runtime setting and the ordered rootfs diff IDs.
+          mkdir -p artifacts/oci-layout
+          tar -xf artifacts/ocbox-base.oci.tar -C artifacts/oci-layout
+          # OCI archive index.json wraps the attested image index. Walk at most
+          # three indexes, hashing each selected descriptor before reading it.
+          manifest_path=artifacts/oci-layout/index.json
+          for depth in 1 2 3; do
+            manifest_digest=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] as $runtime | if ($runtime | length) == 1 then $runtime[0].digest elif ($runtime | length) == 0 and (.manifests | length) == 1 and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json" then .manifests[0].digest else error("ambiguous runtime manifest") end' "$manifest_path")
+            manifest_path="artifacts/oci-layout/blobs/sha256/${manifest_digest#sha256:}"
+            test "sha256:$(sha256sum "$manifest_path" | cut -d ' ' -f 1)" = "$manifest_digest"
+            if jq -e 'has("config")' "$manifest_path" > /dev/null; then break; fi
+          done
+          config_digest=$(jq -er '.config.digest' "$manifest_path")
+          config_path="artifacts/oci-layout/blobs/sha256/${config_digest#sha256:}"
+          test "sha256:$(sha256sum "$config_path" | cut -d ' ' -f 1)" = "$config_digest"
+          test "$(docker image inspect "$IMAGE_REF" --format '{{.Id}}')" = "$config_digest"
+          # Keep small review evidence; the complete layout remains in the tar.
+          cp "$config_path" artifacts/image-config.json
+          rm -rf artifacts/oci-layout
           jq -e '."buildx.build.provenance"' build-metadata.json > artifacts/provenance.json
           jq --arg digest "$(jq -r '."containerimage.digest"' build-metadata.json)" \
             '.image.digest = $digest' images/ocbox-base/manifest.json > artifacts/image-manifest.json
@@ -114,11 +134,25 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
-          format: table
+          format: json
+          output: artifacts/trivy.json
           exit-code: '1'
           severity: CRITICAL
           scanners: vuln,secret
           ignore-unfixed: false
+      - name: Preserve scan diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ocbox-base-failure-${{ github.sha }}
+          path: |
+            artifacts/trivy.json
+            artifacts/sbom.spdx.json
+            artifacts/image-config.json
+            build-metadata.json
+            runtime-build-metadata.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload review evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
