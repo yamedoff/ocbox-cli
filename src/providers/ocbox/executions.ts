@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type {
@@ -14,7 +15,6 @@ import {
   Deadline,
   type RetryPolicy,
   resolvePollDelayMilliseconds,
-  sleepWithSignal,
 } from './retry.js'
 import {
   type HostedExecutionEvent,
@@ -46,7 +46,9 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
   }
 }
 
-const defaultSleep = (milliseconds: number): Promise<void> => sleepWithSignal(milliseconds)
+const defaultSleep = async (milliseconds: number): Promise<void> => {
+  await delay(milliseconds)
+}
 
 export interface PollExecutionOptions {
   readonly deadlineMilliseconds?: number | undefined
@@ -122,7 +124,7 @@ export async function collectExecutionEvents(
   const pause = async (milliseconds: number): Promise<void> => {
     try {
       if (sleep === defaultSleep) {
-        await sleepWithSignal(milliseconds, options.signal)
+        await delay(milliseconds, undefined, { signal: options.signal })
       } else {
         await sleep(milliseconds)
       }
@@ -445,11 +447,16 @@ export function toExecResult(
   const rawCompleted = UtcTimestampSchema.parse(timing.completedAt)
   const completedAt = rawCompleted < startedAt ? startedAt : rawCompleted
   if (result.kind === 'cancelled') {
-    throw new OcboxError({
-      code: 'OPERATION_CANCELLED',
-      message: 'The hosted execution was cancelled',
-      requestId: newRequestId(),
-    })
+    return {
+      cancelled: true,
+      completedAt,
+      exitCode: 130,
+      signal: null,
+      startedAt,
+      stderr: new Uint8Array(),
+      stdout: new Uint8Array(),
+      timedOut: false,
+    }
   }
   if (result.kind === 'infrastructure') {
     throw new OcboxError({

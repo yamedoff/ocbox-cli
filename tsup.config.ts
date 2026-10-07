@@ -29,6 +29,7 @@ export default defineConfig({
     'commands/auth/status': 'src/commands/auth/status.ts',
     'commands/destroy': 'src/commands/destroy.ts',
     'commands/exec': 'src/commands/exec.ts',
+    'commands/cancel': 'src/commands/cancel.ts',
     'commands/init': 'src/commands/init.ts',
     'commands/ls': 'src/commands/ls.ts',
     'commands/pause': 'src/commands/pause.ts',

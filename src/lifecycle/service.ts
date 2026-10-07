@@ -22,9 +22,11 @@ import {
 } from '../contracts.js'
 import { OcboxError } from '../errors/index.js'
 import type { ExecutionTarget } from '../execution/service.js'
+import { FakeSandboxProvider } from '../providers/fake/provider.js'
 import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
 import type { ProviderRegistry } from '../providers/registry.js'
 import { AtomicStoreCancelledError, AtomicStoreConflictError } from './atomic-json-store.js'
+import { type CancellationResult, executionError } from './cancellation.js'
 import type { LifecycleProjectState } from './schema.js'
 import type { LifecycleStore } from './store.js'
 
@@ -150,6 +152,36 @@ export class LifecycleService {
       })
     }
     return { ...view, sandbox: observed }
+  }
+
+  async cancelExecution(
+    executionId?: string,
+    sandboxId?: string,
+    waitMilliseconds = 30_000,
+  ): Promise<CancellationResult> {
+    const state = await this.#store.load()
+    const sandbox =
+      sandboxId === undefined
+        ? this.#sandboxFor(state, await this.#resolveSession())
+        : Object.values(state.sandboxes).find(
+            (candidate) => candidate.id === sandboxId && candidate.projectId === this.#projectId,
+          )
+    const requestId = RequestIdSchema.parse(this.#createId())
+    if (sandbox === undefined)
+      throw executionError(
+        requestId,
+        'The requested local Sandbox was not found',
+        'SANDBOX_NOT_FOUND',
+      )
+    const provider = this.#provider(requestId)
+    if (!(provider instanceof OcboxSandboxProvider) && !(provider instanceof FakeSandboxProvider)) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: 'Provider does not support cancellation from another terminal',
+        requestId,
+      })
+    }
+    return provider.cancelSandboxExecution(sandbox.id, executionId, waitMilliseconds, this.#signal)
   }
 
   /**
@@ -653,7 +685,8 @@ export class LifecycleService {
 
   #provider(requestId: ReturnType<typeof RequestIdSchema.parse>) {
     const provider = this.#registry.resolve(this.#config.provider.name, requestId)
-    if (provider instanceof OcboxSandboxProvider) provider.bindLifecycleStore(this.#store)
+    if (provider instanceof OcboxSandboxProvider || provider instanceof FakeSandboxProvider)
+      provider.bindLifecycleStore(this.#store)
     return provider
   }
 

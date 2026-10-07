@@ -19,6 +19,7 @@ import {
   ProjectIdSchema,
   ProviderSandboxIdSchema,
   type RequestId,
+  RequestIdSchema,
   SandboxIdSchema,
   SessionIdSchema,
 } from '../../domain/ids.js'
@@ -37,6 +38,11 @@ import {
 } from '../../domain/spec.js'
 import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { OcboxError } from '../../errors/index.js'
+import {
+  type CancellationResult,
+  executionError,
+  waitForCancellation,
+} from '../../lifecycle/cancellation.js'
 import type { HostedSandboxMapping } from '../../lifecycle/schema.js'
 import type { LifecycleStore } from '../../lifecycle/store.js'
 import type { ProviderCapabilities } from '../contract/capabilities.js'
@@ -71,7 +77,11 @@ import {
   friendlyAdmissionFailure,
   type HostedRequestedSpec,
 } from './requested-spec.js'
-import type { HostedExecutionEvent } from './wire.js'
+import {
+  type HostedExecutionEvent,
+  HostedExecutionSchema,
+  isTerminalExecutionState,
+} from './wire.js'
 
 const HOSTED_CAPABILITIES: ProviderCapabilities = {
   runtimeClasses: ['container'],
@@ -795,6 +805,97 @@ export class OcboxSandboxProvider implements SandboxProvider {
     })
   }
 
+  async #lastExecution(
+    record: SandboxRecord,
+    executionId: string,
+    clear = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const mutate = (current: SandboxRecord): SandboxRecord => {
+      if (!clear) return { ...current, lastExecutionId: executionId }
+      if (current.lastExecutionId !== executionId) return current
+      const { lastExecutionId: _last, ...rest } = current
+      return rest
+    }
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, mutate(this.#sandboxes.get(record.localId) ?? record))
+      return
+    }
+    const scope = await this.#scope()
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    await this.#lifecycleStore.update((state) => {
+      const mappings = state.hostedMappings[scope]
+      const current = mappings?.[record.localId]
+      if (mappings !== undefined && current !== undefined)
+        mappings[record.localId] = mutate(current)
+      return state
+    }, signal)
+  }
+
+  async cancelSandboxExecution(
+    sandboxId: Sandbox['id'],
+    executionId: string | undefined,
+    waitMilliseconds: number,
+    signal?: AbortSignal,
+    requestCancellation = true,
+  ): Promise<CancellationResult> {
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined) throw notFoundSandbox(requestId)
+    const id = executionId ?? record.lastExecutionId
+    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    return waitForCancellation(
+      requestId,
+      waitMilliseconds,
+      signal,
+      async (boundedSignal, pause) => {
+        let requested = !requestCancellation
+        for (;;) {
+          boundedSignal.throwIfAborted()
+          const response = await this.#api.generated.getExecution({
+            path: { executionId: id },
+            signal: boundedSignal,
+          })
+          if (response.status === 404)
+            throw executionError(requestId, `Unknown execution ID: ${id}`, 'SANDBOX_NOT_FOUND')
+          const execution = HostedExecutionSchema.parse(
+            this.#api.assertSuccess('getExecution', response, [200]).body,
+          )
+          if (
+            execution.sessionId !== record.hostedSessionId ||
+            (execution.sandboxId !== null && execution.sandboxId !== record.hostedSandboxId)
+          ) {
+            throw executionError(
+              requestId,
+              'Execution does not belong to the selected Sandbox in the current scope',
+            )
+          }
+          if (isTerminalExecutionState(execution.state)) {
+            await this.#lastExecution(record, id, true, boundedSignal)
+            return {
+              executionId: id,
+              sandboxId,
+              state: execution.state as CancellationResult['state'],
+            }
+          }
+          if (!requested) {
+            const cancelled = await this.#api.generated.cancelExecution({
+              path: { executionId: id },
+              idempotencyKey: this.#createId(),
+              signal: boundedSignal,
+            })
+            // Completion may race cancellation; re-read the execution on conflict.
+            if (cancelled.status !== 409)
+              this.#api.assertSuccess('cancelExecution', cancelled, [200, 202])
+            requested = true
+          }
+          await pause()
+        }
+      },
+    )
+  }
+
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
     const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
@@ -842,6 +943,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
+    await this.#lastExecution(record, hosted.id)
     const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
     const controller = new AbortController()
     this.#executions.set(localExecutionId, {
@@ -876,6 +978,8 @@ export class OcboxSandboxProvider implements SandboxProvider {
     }).then(
       async (collected) => {
         try {
+          await this.#lastExecution(record, hosted.id, true)
+          this.#executions.delete(localExecutionId)
           const latest = collected.events[collected.events.length - 1]
           const completedAt = latest?.at ?? this.#now()
           const result = toExecResult(collected.result, {
@@ -941,6 +1045,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
       idempotencyKey: context.idempotencyKey,
     })
     this.#api.assertSuccess('cancelExecution', result, [200, 202])
+    if (this.#mappingScope !== undefined) {
+      await this.cancelSandboxExecution(
+        SandboxIdSchema.parse(tracked.localSandboxId),
+        tracked.hostedId,
+        30_000,
+        undefined,
+        false,
+      )
+    }
+    this.#executions.delete(request.executionId)
     return OperationSchema.parse({
       action: 'exec_cancel',
       completedAt: null,

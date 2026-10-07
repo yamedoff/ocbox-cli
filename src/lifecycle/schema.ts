@@ -17,6 +17,7 @@ export const HostedSandboxMappingSchema = z.strictObject({
   localProjectId: ProjectIdSchema,
   hostedSessionId: z.string().min(1),
   hostedSandboxId: z.string().min(1),
+  lastExecutionId: z.string().min(1).optional(),
   spec: SandboxSpecSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -37,6 +38,7 @@ export const LifecycleProjectStateSchema = z.strictObject({
   hostedMappings: z
     .record(z.string(), z.record(SandboxIdSchema, HostedSandboxMappingSchema))
     .default({}),
+  lastFakeExecutions: z.record(SandboxIdSchema, z.string().min(1)).default({}),
   pendingCreateSpecs: z.record(OperationIdSchema, SandboxSpecSchema),
 })
 
@@ -55,5 +57,6 @@ export function emptyLifecycleProjectState(
     operationAttempts: {},
     pendingCreateSpecs: {},
     hostedMappings: {},
+    lastFakeExecutions: {},
   }
 }

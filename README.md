@@ -118,3 +118,5 @@ pnpm run licenses:check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
 [docs/dependency-policy.md](docs/dependency-policy.md) for pinning policy.
+
+Use `ocbox cancel [execution-id] [--sandbox <local-id>]` from any terminal to cancel an execution; `--wait-timeout` bounds the wait in milliseconds.

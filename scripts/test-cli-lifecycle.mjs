@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -179,6 +180,10 @@ async function hostedLifecycle() {
   let missing = false
   let sessionId
   let refreshes = 0
+  let longExecution = false
+  let executionCancelled = false
+  let executionSessionId
+  let executionSandboxId
   const handler = (request, response) => {
     const path = new URL(request.url, 'http://127.0.0.1').pathname
     calls.push([request.method, path])
@@ -237,7 +242,10 @@ async function hostedLifecycle() {
       const session = sessions.get(id)
       if (!session || missing) return absent()
       if (!action) return send(session)
-      if (action === 'executions')
+      if (action === 'executions') {
+        executionSessionId = id
+        executionSandboxId = session.primarySandboxId
+        executionCancelled = false
         return send(
           {
             id: 'hosted_execution',
@@ -247,6 +255,7 @@ async function hostedLifecycle() {
           },
           202,
         )
+      }
       if (action === 'stop') {
         session.sandboxes[0].state = 'stopped'
         session.normalizedState = 'stopped'
@@ -258,11 +267,43 @@ async function hostedLifecycle() {
       if (action === 'destroy') sessions.delete(id)
       return operation(action, id)
     }
+    if (path === '/v1/executions/hosted_execution/cancel') {
+      executionCancelled = true
+      return send({ id: 'cancel_operation' }, 202)
+    }
+    if (path === '/v1/executions/hosted_execution')
+      return send({
+        id: 'hosted_execution',
+        createdAt: now,
+        updatedAt: now,
+        sessionId: executionSessionId,
+        sandboxId: executionSandboxId,
+        state: executionCancelled ? 'cancelled' : longExecution ? 'running' : 'completed',
+        command: longExecution ? 'sleep 600' : 'echo mock',
+        exitCode: null,
+        failureKind: null,
+        failure: null,
+        truncated: false,
+        outputBytes: 0,
+        outputLimitBytes: 1024,
+      })
+    if (path === '/v1/executions/hosted_execution/events' && longExecution && !executionCancelled)
+      return send({ data: [], nextCursor: null })
     if (path === '/v1/executions/hosted_execution/events')
       return send({
-        data: [{ sequence: 0, at: now, kind: 'completed', stream: null, message: '' }],
+        data: [
+          {
+            sequence: 0,
+            at: now,
+            kind: executionCancelled ? 'cancelled' : 'completed',
+            stream: null,
+            message: '',
+          },
+        ],
         nextCursor: null,
       })
+    if (path === '/v1/executions/hosted_execution/result' && executionCancelled)
+      return send({ kind: 'cancelled' })
     if (path === '/v1/executions/hosted_execution/result')
       return send({
         kind: 'command',
@@ -366,6 +407,36 @@ async function hostedLifecycle() {
     const executed = await success(['exec', '--json', '--', 'echo', 'mock'])
     assert.equal(executed.result.exitCode, 0)
 
+    assert.equal((await failure(['cancel', '--json'])).data.code, 'INVALID_STATE')
+    longExecution = true
+    const firstExecutionCall = calls.length
+    const running = run(['exec', '--json', '--', 'sleep', '600'])
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (
+        calls
+          .slice(firstExecutionCall)
+          .some(([, path]) => path.endsWith('/hosted_execution/events'))
+      )
+        break
+      await delay(25)
+      assert(attempt < 199, 'exec must start before cancellation')
+    }
+    const cancelled = await success(['cancel', '--sandbox', localId, '--json'])
+    assert.equal(cancelled.data.state, 'cancelled')
+    assert.equal(cancelled.data.executionId, 'hosted_execution')
+    const ended = await running
+    assert.equal(ended.code, 130)
+    assert.equal(JSON.parse(ended.stdout).outcome, 'cancelled')
+    const cancelCalls = calls.filter(([, path]) => path.endsWith('/hosted_execution/cancel')).length
+    assert.equal((await success(['cancel', 'hosted_execution', '--json'])).data.state, 'cancelled')
+    assert.equal(
+      calls.filter(([, path]) => path.endsWith('/hosted_execution/cancel')).length,
+      cancelCalls,
+    )
+    assert.equal((await failure(['cancel', '--json'])).data.code, 'INVALID_STATE')
+    assert.equal((await failure(['cancel', 'unknown', '--json'])).data.code, 'SANDBOX_NOT_FOUND')
+    longExecution = false
+
     // A rotated token in the same login retains the mapping across processes.
     await credentials.set(key, { ...credential, expiresAt: new Date(0).toISOString() })
     await success(['status', '--json'])
@@ -377,6 +448,10 @@ async function hostedLifecycle() {
     let before = sessionCalls()
     await metadataStore.save({ ...metadata, updatedAt: new Date(Date.now() + 1000).toISOString() })
     assert.equal((await failure(['status', '--json'])).data.code, 'SANDBOX_NOT_FOUND')
+    assert.equal(
+      (await failure(['cancel', 'hosted_execution', '--json'])).data.code,
+      'SANDBOX_NOT_FOUND',
+    )
     assert.equal(
       (await failure(['exec', '--json', '--', 'echo', 'mock'])).data.code,
       'SANDBOX_NOT_FOUND',
