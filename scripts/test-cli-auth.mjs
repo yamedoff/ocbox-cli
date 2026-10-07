@@ -12,6 +12,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const cli = join(repositoryRoot, 'dist', 'index.js')
 const bootstrap = join(repositoryRoot, 'scripts', 'cli-auth-bootstrap.mjs')
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' }
+const requiredScopes = ['source:read', 'product:read', 'product:edit', 'product:run']
 
 const root = await mkdtemp(join(tmpdir(), 'ocbox-auth-e2e-'))
 const stateRoot = join(root, 'state')
@@ -27,7 +28,7 @@ function tokenPair(counter) {
     accessToken: `access_${counter}`.padEnd(48, 'a'),
     expiresIn: 900,
     refreshToken: `refresh_${counter}`.padEnd(48, 'r'),
-    scope: 'source:read',
+    scope: requiredScopes.join(' '),
     tokenType: 'Bearer',
   }
 }
@@ -426,6 +427,7 @@ try {
         assert.equal(authorizationUrl.origin + authorizationUrl.pathname, authorizeUrl)
         assert.equal(authorizationUrl.searchParams.get('response_type'), 'code')
         assert.equal(authorizationUrl.searchParams.get('audience'), 'cli')
+        assert.equal(authorizationUrl.searchParams.get('scope'), requiredScopes.join(' '))
         assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256')
         const redirectUri = authorizationUrl.searchParams.get('redirect_uri')
         const state = authorizationUrl.searchParams.get('state')
@@ -442,7 +444,7 @@ try {
   assert.equal(loginResult.data.browserOpened, false)
   assert.equal(loginResult.data.issuer, mock.url)
   assert.equal(loginResult.data.audience, 'cli')
-  assert.deepEqual(loginResult.data.scopes, ['source:read'])
+  assert.deepEqual(loginResult.data.scopes, requiredScopes)
   assert.equal(mock.calls.exchange, 2)
   const issued = mock.lastPair()
   assertPurity(login, [loginCode, issued.accessToken, issued.refreshToken])
@@ -457,7 +459,7 @@ try {
   assert.equal(status.code, 0)
   const statusResult = parseResultEnvelope(status, 'auth.status')
   assert.equal(statusResult.data.loggedIn, true)
-  assert.deepEqual(statusResult.data.scopes, ['source:read'])
+  assert.deepEqual(statusResult.data.scopes, requiredScopes)
   assertPurity(status, [issued.accessToken, issued.refreshToken])
 
   // 3. No out-of-band/pasted-code fallback exists.

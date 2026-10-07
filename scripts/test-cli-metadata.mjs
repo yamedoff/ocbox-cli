@@ -20,7 +20,7 @@ const credential = {
   accessToken: 'fixture-access-'.padEnd(48, 'a'),
   refreshToken: 'fixture-refresh-'.padEnd(48, 'r'),
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-  scopes: ['source:read'],
+  scopes: ['source:read', 'product:read', 'product:edit', 'product:run'],
   tokenType: 'Bearer',
 }
 const launchNames = new Set([

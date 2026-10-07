@@ -49,7 +49,7 @@ function metadataInput(overrides: { issuer?: string; clientId?: string } = {}) {
     identity: TEST_KEY,
     issuer: overrides.issuer ?? endpoints.issuer,
     schemaVersion: 1 as const,
-    scopes: ['source:read'],
+    scopes: [...endpoints.scopes],
     updatedAt: new Date(TEST_NOW).toISOString(),
   }
 }
@@ -116,7 +116,10 @@ describe('hosted token manager runtime construction', () => {
   it('binds the credential to metadata from the caller-supplied state directory', async () => {
     const stateDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput()))
     const manager = createHostedTokenManager({
@@ -137,7 +140,10 @@ describe('hosted token manager runtime construction', () => {
     const stateDirectory = await temporaryStateDirectory()
     const otherDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(otherDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput()))
     const manager = createHostedTokenManager({
@@ -153,7 +159,10 @@ describe('hosted token manager runtime construction', () => {
   it('binds the credential to the configured client id', async () => {
     const stateDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput({ clientId: 'other_client' })))
     const manager = createHostedTokenManager({
