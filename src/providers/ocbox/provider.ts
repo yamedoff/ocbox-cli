@@ -16,9 +16,11 @@ import type {
 import {
   type ExecutionId,
   ExecutionIdSchema,
+  ProjectIdSchema,
   ProviderSandboxIdSchema,
   type RequestId,
   SandboxIdSchema,
+  SessionIdSchema,
 } from '../../domain/ids.js'
 import { ProviderLifecycleObservationSchema } from '../../domain/lifecycle.js'
 import {
@@ -29,12 +31,14 @@ import {
   type RequestContext,
 } from '../../domain/operation.js'
 import {
-  SandboxSpecSchema,
   type RequestedEffectiveSpec,
   type SandboxSpec,
+  SandboxSpecSchema,
 } from '../../domain/spec.js'
 import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { OcboxError } from '../../errors/index.js'
+import type { HostedSandboxMapping } from '../../lifecycle/schema.js'
+import type { LifecycleStore } from '../../lifecycle/store.js'
 import type { ProviderCapabilities } from '../contract/capabilities.js'
 import type { ProviderFiles } from '../contract/files.js'
 import type {
@@ -58,9 +62,9 @@ import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './exe
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
 import {
   MemoryOperationCheckpointStore,
-  waitForHostedOperation,
   type OperationCheckpointDurability,
   type OperationCheckpointStore,
+  waitForHostedOperation,
 } from './operations.js'
 import type { HostedExecutionEvent } from './wire.js'
 
@@ -119,18 +123,10 @@ export function executionWaitDeadlineMilliseconds(
   return base + EXECUTION_DEADLINE_GRACE_MILLISECONDS
 }
 
-interface SandboxRecord {
-  localId: string
-  localSessionId: string
-  localProjectId: string
-  hostedSessionId: string
-  hostedSandboxId: string
-  spec: SandboxSpec
-  createdAt: string
-  updatedAt: string
-}
+type SandboxRecord = HostedSandboxMapping
 
 export interface OcboxProviderOptions {
+  readonly mappingScope?: (() => Promise<string>) | undefined
   readonly api: OcboxApiClient
   readonly hostedProjectId: string
   readonly now?: (() => string) | undefined
@@ -268,6 +264,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
   readonly #createId: () => string
   readonly #checkpointStore: OperationCheckpointStore
   readonly checkpointDurability: OperationCheckpointDurability
+  #pinnedMappingScope: string | undefined
+  #lifecycleStore: LifecycleStore | undefined
+  readonly #mappingScope: (() => Promise<string>) | undefined
   readonly #sandboxes = new Map<string, SandboxRecord>()
   readonly #executions = new Map<
     string,
@@ -288,12 +287,84 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
       throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
     }
+    this.#mappingScope = options.mappingScope
     this.#api = options.api
     this.#hostedProjectId = options.hostedProjectId
     this.#now = options.now ?? (() => new Date().toISOString())
     this.#createId = options.createId ?? randomUUID
     this.#checkpointStore = options.checkpointStore ?? new MemoryOperationCheckpointStore()
     this.checkpointDurability = checkpointDurability
+  }
+
+  /** The lifecycle composition root supplies its existing project repository. */
+  bindLifecycleStore(store: LifecycleStore): void {
+    this.#lifecycleStore = store
+  }
+
+  async #scope(): Promise<string> {
+    if (this.#mappingScope === undefined) throw new TypeError('Hosted mapping scope is missing')
+    const scope = await this.#mappingScope()
+    if (this.#pinnedMappingScope !== undefined && scope !== this.#pinnedMappingScope) {
+      throw new OcboxError({
+        code: 'PROVIDER_AUTH',
+        message: 'The hosted login changed during this operation; rerun the command',
+        requestId: toRequestId(null),
+      })
+    }
+    this.#pinnedMappingScope = scope
+    return scope
+  }
+
+  async #records(): Promise<Map<string, SandboxRecord>> {
+    if (this.#mappingScope === undefined) return this.#sandboxes
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    const state = await this.#lifecycleStore.load()
+    return new Map(Object.entries(state.hostedMappings[scope] ?? {}))
+  }
+
+  async #saveRecord(record: SandboxRecord): Promise<void> {
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, record)
+      return
+    }
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    await this.#lifecycleStore.update((state) => ({
+      ...state,
+      hostedMappings: {
+        ...state.hostedMappings,
+        [scope]: { ...state.hostedMappings[scope], [record.localId]: record },
+      },
+    }))
+  }
+
+  #staleMapping(requestId: RequestId): OcboxError {
+    return new OcboxError({
+      code: 'SANDBOX_NOT_FOUND',
+      providerCode: 'HOSTED_MAPPING_STALE',
+      message:
+        'The hosted sandbox mapping is stale: its hosted session no longer exists. No replacement was created.',
+      requestId,
+    })
+  }
+
+  async #record(localId: string, requestId: RequestId): Promise<SandboxRecord | undefined> {
+    const record = (await this.#records()).get(localId)
+    if (record?.stale === true) throw this.#staleMapping(requestId)
+    return record
+  }
+
+  async #mappedSession(record: SandboxRecord): Promise<HostedSession> {
+    try {
+      return await this.#getOwnedSession(record.hostedSessionId)
+    } catch (error) {
+      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(error.requestId)
+    }
   }
 
   /** Test seam: seed a sandbox mapping without a network round-trip. */
@@ -307,12 +378,14 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }): void {
     const now = this.#now()
     this.#sandboxes.set(record.localId, {
+      deleted: false,
+      stale: false,
       createdAt: now,
       hostedSandboxId: record.hostedSandboxId,
       hostedSessionId: record.hostedSessionId,
-      localId: record.localId,
-      localProjectId: record.localProjectId,
-      localSessionId: record.localSessionId,
+      localId: SandboxIdSchema.parse(record.localId),
+      localProjectId: ProjectIdSchema.parse(record.localProjectId),
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
       spec: record.spec,
       updatedAt: now,
     })
@@ -357,6 +430,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     context: OperationContext,
     request: CreateSandboxRequest,
   ): Promise<SandboxMutationResult> {
+    await this.#records()
     await this.#assertProject(context.requestId)
     const created = await this.#api.generated.createSession({
       path: { projectId: this.#hostedProjectId },
@@ -389,6 +463,8 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const now = this.#now()
     const localId = SandboxIdSchema.parse(this.#createId())
     const record: SandboxRecord = {
+      deleted: false,
+      stale: false,
       createdAt: now,
       hostedSandboxId: primary.sandboxId,
       hostedSessionId: session.id,
@@ -398,7 +474,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       spec: request.specification,
       updatedAt: now,
     }
-    this.#sandboxes.set(localId, record)
+    await this.#saveRecord(record)
     const sandbox = this.#sandboxOf(record, primary.state, now, request.specification, session)
     const operation = this.#operationOf(context, {
       action: 'create',
@@ -411,9 +487,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async get(context: RequestContext, request: GetSandboxRequest): Promise<Sandbox | null> {
-    const record = this.#sandboxes.get(request.sandboxId)
-    if (record === undefined) return null
-    const session = await this.#getOwnedSession(record.hostedSessionId)
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined || record.deleted) return null
+    const session = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -435,12 +511,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const listed = this.#api.assertSuccess('listSessions', page, [200])
     const sessions = (listed.body as { data: readonly HostedSession[] }).data
     const out: Sandbox[] = []
+    const records = await this.#records()
     for (const session of sessions) {
       if (session.projectId !== this.#hostedProjectId) continue
       const primary = resolvePrimaryBinding(session)
       if (primary === null) continue
-      const existing = [...this.#sandboxes.values()].find(
-        (record) => record.hostedSandboxId === primary.sandboxId,
+      const existing = [...records.values()].find(
+        (record) =>
+          !record.stale &&
+          record.hostedSessionId === session.id &&
+          record.hostedSandboxId === primary.sandboxId,
       )
       if (request.sessionId !== null && request.sessionId !== undefined) {
         if (existing === undefined || existing.localSessionId !== request.sessionId) continue
@@ -526,7 +606,14 @@ export class OcboxSandboxProvider implements SandboxProvider {
 
   async #confirmDeleted(hostedSessionId: string): Promise<void> {
     try {
-      await this.#getOwnedSession(hostedSessionId)
+      const session = await this.#getOwnedSession(hostedSessionId)
+      if (session.normalizedState !== 'destroyed' || resolvePrimaryBinding(session) !== null) {
+        throw new OcboxError({
+          code: 'INVALID_STATE',
+          message: 'Hosted sandbox deletion has not been verified',
+          requestId: toRequestId(null),
+        })
+      }
     } catch (error) {
       if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
     }
@@ -538,7 +625,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     action: Extract<OperationAction, 'start' | 'pause' | 'resume' | 'stop' | 'destroy'>,
     expected: 'running' | 'paused' | 'stopped' | 'deleted',
   ): Promise<SandboxMutationResult> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     await this.#assertProject(context.requestId)
     const invoke = {
@@ -568,7 +655,12 @@ export class OcboxSandboxProvider implements SandboxProvider {
           idempotencyKey: context.idempotencyKey,
         }),
     }[action]
+    if (!(action === 'destroy' && record.deleted)) await this.#mappedSession(record)
     const initiated = await invoke()
+    if (initiated.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
     const started = this.#api.assertSuccess(`${action}Session`, initiated, [200, 202])
     const hostedOp = started.body as HostedOperation
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
@@ -578,6 +670,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     record.updatedAt = now
     if (expected === 'deleted') {
       await this.#confirmDeleted(record.hostedSessionId)
+      await this.#saveRecord({ ...record, deleted: true })
       const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, null, 'deleted')
       const operation = this.#operationOf(context, {
         action,
@@ -588,7 +681,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       })
       return { operation, sandbox }
     }
-    const session = await this.#getOwnedSession(record.hostedSessionId)
+    const session = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -666,7 +759,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         stopStartedAt: null,
         stoppedAt: null,
         deletionStartedAt: null,
-        deletedAt: null,
+        deletedAt: normalized === 'deleted' ? UtcTimestampSchema.parse(observedAt) : null,
         errorAt: null,
         lastTransitionAt: null,
       },
@@ -688,9 +781,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
-    const owned = await this.#getOwnedSession(record.hostedSessionId)
+    const owned = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(owned)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -711,6 +804,10 @@ export class OcboxSandboxProvider implements SandboxProvider {
       },
       idempotencyKey: context.idempotencyKey,
     })
+    if (started.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
     const created = this.#api.assertSuccess('createExecution', started, [200, 202])
     const hosted = created.body as {
       id: string
@@ -736,7 +833,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       controller,
       hostedId: hosted.id,
       localSandboxId: request.sandboxId,
-      localSessionId: record.localSessionId,
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
     })
     const startedAt = UtcTimestampSchema.parse(hosted.createdAt)
     const renumberer = new ExecEventRenumberer(localExecutionId, startedAt)
@@ -850,7 +947,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     request: ApplySourceRequest,
   ): Promise<ApplySourceResult> {
     if (request.source.kind === 'none') {
-      const record = this.#sandboxes.get(request.sandboxId)
+      const record = await this.#record(request.sandboxId, context.requestId)
       if (record === undefined) throw notFoundSandbox(context.requestId)
       const now = this.#now()
       const operation = OperationSchema.parse({
@@ -877,7 +974,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async #createPreview(context: OperationContext, request: CreatePreviewRequest): Promise<Preview> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const ttlSeconds = Math.max(
       60,
@@ -947,7 +1044,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const result = await this.#api.generated.deletePreview({
       path: { previewId },

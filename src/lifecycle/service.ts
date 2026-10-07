@@ -1,27 +1,28 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { type ProjectConfig, toSandboxSpec } from '../config/index.js'
 import {
   assertCapabilitySupported,
   assertSessionTransition,
   BindingIdSchema,
   IdempotencyKeySchema,
-  OperationIdSchema,
-  OperationSchema,
-  ProjectIdSchema,
-  RequestIdSchema,
-  SessionIdSchema,
-  SessionSchema,
-  UtcTimestampSchema,
   type Operation,
   type OperationAction,
   type OperationContext,
+  OperationIdSchema,
+  OperationSchema,
   type ProjectId,
+  ProjectIdSchema,
+  RequestIdSchema,
   type Sandbox,
   type SandboxProvider,
   type Session,
+  SessionIdSchema,
+  SessionSchema,
+  UtcTimestampSchema,
 } from '../contracts.js'
-import { toSandboxSpec, type ProjectConfig } from '../config/index.js'
 import { OcboxError } from '../errors/index.js'
 import type { ExecutionTarget } from '../execution/service.js'
+import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
 import type { ProviderRegistry } from '../providers/registry.js'
 import { AtomicStoreCancelledError, AtomicStoreConflictError } from './atomic-json-store.js'
 import type { LifecycleProjectState } from './schema.js'
@@ -134,7 +135,21 @@ export class LifecycleService {
 
   async status(sessionId?: string): Promise<SessionView> {
     const session = await this.#resolveSession(sessionId)
-    return this.#view(session.id)
+    const view = await this.#view(session.id)
+    if (view.sandbox === null || session.state === 'destroyed') return view
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const observed = await this.#provider(requestId).get(
+      { requestId, issuedAt: this.#timestamp() },
+      { sandboxId: view.sandbox.id },
+    )
+    if (observed === null) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'The sandbox mapping is unavailable for this login, API, or project',
+        requestId,
+      })
+    }
+    return { ...view, sandbox: observed }
   }
 
   /**
@@ -199,7 +214,21 @@ export class LifecycleService {
         details: { provider: provider.name },
       })
     }
-    return { session, sandbox, capabilities, provider }
+    const observed = await provider.get(
+      { requestId, issuedAt: this.#timestamp() },
+      { sandboxId: sandbox.id },
+    )
+    if (observed === null) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'The sandbox mapping is unavailable for this login, API, or project',
+        requestId,
+      })
+    }
+    if (observed.lifecycle.normalizedState !== 'running') {
+      throw this.#invalidState(session, 'The provider sandbox is not running; run ocbox start')
+    }
+    return { session, sandbox: observed, capabilities, provider }
   }
 
   async list(): Promise<readonly SessionView[]> {
@@ -623,7 +652,9 @@ export class LifecycleService {
   }
 
   #provider(requestId: ReturnType<typeof RequestIdSchema.parse>) {
-    return this.#registry.resolve(this.#config.provider.name, requestId)
+    const provider = this.#registry.resolve(this.#config.provider.name, requestId)
+    if (provider instanceof OcboxSandboxProvider) provider.bindLifecycleStore(this.#store)
+    return provider
   }
 
   #allowedStates(action: Exclude<LifecycleAction, 'create'>): readonly Session['state'][] {

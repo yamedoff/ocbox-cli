@@ -5,14 +5,14 @@ import {
   OcboxSandboxProvider,
 } from '../../src/providers/ocbox/provider.js'
 import {
+  errorResponse,
   HOSTED_PROJECT,
   HOSTED_SANDBOX,
   HOSTED_SESSION,
-  LOCAL_IDS,
-  errorResponse,
   hostedOperationFixture,
   hostedSessionFixture,
   jsonResponse,
+  LOCAL_IDS,
   operationContext,
   seededApi,
   testSpec,
@@ -533,7 +533,11 @@ describe('hosted ocbox provider lifecycle', () => {
       }
       if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
         sessionCalls += 1
-        return Promise.resolve(errorResponse('NOT_FOUND', 404))
+        return Promise.resolve(
+          destroyCalls === 0
+            ? jsonResponse(hostedSessionFixture({}))
+            : errorResponse('NOT_FOUND', 404),
+        )
       }
       return Promise.resolve(jsonResponse({}))
     })
@@ -553,7 +557,7 @@ describe('hosted ocbox provider lifecycle', () => {
       } as never,
     )
     expect(destroyCalls).toBe(1)
-    expect(sessionCalls).toBe(1)
+    expect(sessionCalls).toBe(2)
     expect(result.sandbox.lifecycle.normalizedState).toBe('deleted')
     expect(result.operation.action).toBe('destroy')
   })
@@ -588,7 +592,11 @@ describe('hosted ocbox provider lifecycle', () => {
       }
       if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
         sessionCalls += 1
-        return Promise.resolve(errorResponse('NOT_FOUND', 404))
+        return Promise.resolve(
+          destroyCalls.length === 0
+            ? jsonResponse(hostedSessionFixture({}))
+            : errorResponse('NOT_FOUND', 404),
+        )
       }
       return Promise.resolve(jsonResponse({}))
     })
@@ -615,7 +623,7 @@ describe('hosted ocbox provider lifecycle', () => {
       } as never,
     )
     expect(destroyCalls).toEqual([false, true])
-    expect(sessionCalls).toBe(2)
+    expect(sessionCalls).toBe(3)
     expect(first.operation.idempotencyResolution?.kind).toBe('created')
     expect(second.operation.idempotencyResolution?.kind).toBe('replayed_result')
     expect(second.sandbox.lifecycle.normalizedState).toBe('deleted')
