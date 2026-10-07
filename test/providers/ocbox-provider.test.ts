@@ -683,7 +683,15 @@ describe('hosted create request and admission', () => {
       } as never,
     )
     expect(body).toEqual(
-      requestedSpec && Object.keys(requestedSpec).length ? { requestedSpec } : {},
+      requestedSpec && Object.keys(requestedSpec).length
+        ? {
+            requestedSpec: {
+              ...requestedSpec,
+              ...('cpu' in requestedSpec ? { cpu: String(requestedSpec.cpu) } : {}),
+              ...('memory' in requestedSpec ? { memory: String(requestedSpec.memory) } : {}),
+            },
+          }
+        : {},
     )
   })
 

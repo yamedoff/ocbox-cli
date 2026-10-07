@@ -37,6 +37,36 @@ limits. See [docs/codex-adapter.md](docs/codex-adapter.md) for the Codex
 routing adapter's plan/apply setup, remove/restore behavior, manifest
 recovery, hook exit contract, Windows discovery, and byte-preserving edits.
 
+## Sync to a hosted sandbox
+
+After `ocbox init` and `ocbox start`, upload your current project before running it:
+
+```sh
+ocbox sync push
+ocbox exec -- cat a.txt
+ocbox sync push --exclude 'fixtures/**' --exclude large.bin
+```
+
+Hosted push uses the selected sandbox's persisted session mapping and uploads a
+checksummed OCBOXA1 source archive through manifest/chunk/checksum API routes.
+The server delivers the files under `/workspace/<projectId>`; hosted commands
+run from that project directory. Push reports uploaded paths and file bytes
+(with archive bytes separately). An unchanged push revalidates the latest
+matching server receipt and uploads no chunks; retries use session-scoped,
+content-addressed idempotency keys and immutable chunks.
+
+Staging limits are 100 files, 64 KiB per file, 512 KiB total file content, and
+1 MiB for the framed archive. Oversized files fail before upload and identify
+paths to exclude with `--exclude` or `.opencloudboxignore`. Existing ignore,
+secret, and path rules also apply. The OpenAPI schema ceilings may be higher;
+these are the managed staging policy limits.
+
+Hosted `sync pull`, `sync diff`, and `sync recover` are not supported yet: the
+API exposes manifest metadata, without file readback. Hosted push adds or
+replaces uploaded files; it cannot remove remote files, so `--delete` is
+unsupported. `--remote-dir` is available for the offline fake provider only,
+which retains its local workspace, three-way planning, and recovery behavior.
+
 ## Hosted project and environment onboarding
 
 Log in once, then initialize and run a hosted sandbox without environment variables:

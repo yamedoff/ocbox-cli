@@ -347,7 +347,7 @@ try {
   await run(['start', '--new', '--cpu', '2', '--image', 'node:24'])
   assert.deepEqual(
     calls.findLast((call) => call.path.endsWith('/sessions') && call.method === 'POST').body,
-    { requestedSpec: { cpu: 2, image: 'node:24' } },
+    { requestedSpec: { cpu: '2', image: 'node:24' } },
   )
   responseMode = 'normal'
   const callCount = calls.length

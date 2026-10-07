@@ -1,16 +1,16 @@
 /**
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
- * Pinned source commit: 96ea22927492a16d115daa791a3836ac9e06d159
- * Pinned source SHA-256: 605be009a98ae9207efa44be343bffc7e28435b76259a81f4239b458ca3396ca
+ * Pinned source commit: a10fef5
+ * Pinned source SHA-256: fc619a7450b65b9b340e9c8a40626735001c8be68e5666fd0ae6890a6d0ef500
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
  * Node runtime. It never imports private implementation or domain code.
  */
 
-export const OPENAPI_SOURCE_COMMIT = "96ea22927492a16d115daa791a3836ac9e06d159" as const
-export const OPENAPI_CHECKSUM = "sha256:605be009a98ae9207efa44be343bffc7e28435b76259a81f4239b458ca3396ca" as const
+export const OPENAPI_SOURCE_COMMIT = "a10fef5" as const
+export const OPENAPI_CHECKSUM = "sha256:fc619a7450b65b9b340e9c8a40626735001c8be68e5666fd0ae6890a6d0ef500" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -71,7 +71,7 @@ export interface SecretReference {
   readonly provider: string
   readonly exposureMode: "process" | "host"
   readonly allowedHosts: readonly string[]
-  readonly status: "active" | "delete_pending" | "deleted"
+  readonly status: "active" | "delete_pending" | "deleted" | "failed"
   readonly version: number
   readonly createdAt: string
   readonly updatedAt: string
@@ -266,7 +266,7 @@ export interface UpdateEnvironmentRequest {
 }
 
 export interface CreateSessionRequest {
-  readonly requestedSpec?: Record<string, unknown>
+  readonly requestedSpec?: { readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
 }
 
 export interface CreateExecutionRequest {
@@ -290,8 +290,60 @@ export interface CreatePreviewRequest {
   readonly ttlSeconds?: number
 }
 
+export interface SecretReferencePage {
+  readonly data: readonly SecretReference[]
+  readonly nextCursor: string | null
+}
+
+export interface CreateSecretReferenceRequest {
+  readonly name: string
+  readonly provider: string
+  readonly exposureMode: "process" | "host"
+  readonly allowedHosts?: readonly string[]
+  readonly value: string
+  readonly confirmUnrestrictedHosts?: boolean
+  readonly confirmProcessExposure?: boolean
+}
+
+export interface RotateSecretReferenceRequest {
+  readonly value: string
+}
+
+export interface DeleteSecretReferenceRequest {
+  readonly confirmInUse?: boolean
+}
+
+export interface DeleteConfirmationRequest {
+  readonly confirmInUse?: boolean
+}
+
+export interface EnvironmentConfiguration {
+  readonly environmentId: string
+  readonly projectId: string
+  readonly variables: readonly NonSecretVariable[]
+  readonly policy: EnvironmentPolicy
+  readonly secretOrder: readonly string[]
+  readonly updatedAt: string
+}
+
+export interface NonSecretVariable {
+  readonly name: string
+  readonly value: string
+}
+
+export interface EnvironmentPolicy {
+  readonly egressMode: "open"
+  readonly requireHostAllowlist: boolean
+}
+
+export interface UpdateEnvironmentConfigurationRequest {
+  readonly variables: readonly NonSecretVariable[]
+  readonly secretOrder: readonly string[]
+}
+
 export interface RequestMagicLinkRequest {
   readonly email: string
+  readonly redirectTo?: string
 }
 
 export interface MagicLinkAccepted {
@@ -327,6 +379,7 @@ export interface WebSession {
 export interface WebSessionIssued {
   readonly session: WebSession
   readonly csrfToken: string
+  readonly redirectTo?: string
 }
 
 export interface StartCliAuthorizationRequest {
@@ -399,6 +452,168 @@ export interface GithubSourceResolution {
   readonly resolvedAt: string
 }
 
+export interface BillingWallet {
+  readonly ownerId: string
+  readonly availableMicrocredits: string
+  readonly reservedMicrocredits: string
+  readonly consumedMicrocredits: string
+  readonly expiredMicrocredits: string
+  readonly grantedMicrocredits: string
+  readonly adjustmentsMicrocredits: string
+}
+
+export interface BillingLot {
+  readonly id: string
+  readonly ownerId: string
+  readonly source: "onboarding" | "purchase" | "campaign" | "refund" | "adjustment"
+  readonly issuedMicrocredits: string
+  readonly remainingMicrocredits: string
+  readonly issuedAt: string
+  readonly expiresAt: string
+  readonly restrictions?: string | null
+  readonly externalRef?: string | null
+}
+
+export interface BillingLotPage {
+  readonly data: readonly BillingLot[]
+  readonly nextCursor: string | null
+}
+
+export interface BillingLedgerLeg {
+  readonly account: "wallet" | "issuance" | "revenue" | "forfeiture" | "adjustment"
+  readonly amountMicrocredits: string
+  readonly sign: number
+}
+
+export interface BillingLedgerEntry {
+  readonly id: string
+  readonly businessEventId: string
+  readonly kind: "grant" | "purchase" | "refund" | "adjustment" | "correction" | "capture" | "expire" | "release"
+  readonly legs: readonly BillingLedgerLeg[]
+  readonly at: string
+  readonly ownerId: string
+}
+
+export interface BillingLedgerPage {
+  readonly data: readonly BillingLedgerEntry[]
+  readonly nextCursor: string | null
+}
+
+export interface BillingReservation {
+  readonly id: string
+  readonly ownerId: string
+  readonly state: "active" | "captured" | "expired" | "released"
+  readonly reservedMicrocredits: string
+  readonly remainingMicrocredits: string
+  readonly settledMicrocredits: string
+  readonly rateCardVersion: string
+  readonly rateMicrocreditsPerMinute: string
+  readonly createdAt: string
+  readonly updatedAt: string
+  readonly expiresAt: string
+}
+
+export interface CreateBillingReservationRequest {
+  readonly minutes?: number
+  readonly minimumMicrocredits?: string
+  readonly rateCardVersion?: string
+  readonly rateMicrocreditsPerMinute?: string
+}
+
+export interface SettleBillingReservationRequest {
+  readonly minutes?: number
+}
+
+export interface BillingSettlement {
+  readonly reservationId: string
+  readonly captureMicrocredits: string
+  readonly refilled: boolean
+}
+
+export interface BillingUsage {
+  readonly eventId: string
+  readonly ownerId: string
+  readonly billingMode: "managed" | "byok"
+  readonly billable: boolean
+  readonly quantity: string
+  readonly unit: string
+  readonly source: string
+  readonly windowStart: string
+  readonly windowEnd: string
+  readonly ingestedAt: string
+  readonly providerReportId?: string | null
+  readonly sessionId?: string | null
+}
+
+export interface BillingUsagePage {
+  readonly data: readonly BillingUsage[]
+  readonly nextCursor: string | null
+}
+
+export interface IngestBillingUsageRequest {
+  readonly eventId: string
+  readonly billingMode: "managed" | "byok"
+  readonly quantity: string
+  readonly unit: string
+  readonly source: string
+  readonly windowStart: string
+  readonly windowEnd: string
+  readonly providerReportId?: string
+  readonly sessionId?: string
+}
+
+export interface BillingRateCard {
+  readonly version: string
+  readonly kind: string
+  readonly effectiveFrom: string
+  readonly enabled: boolean
+  readonly fixture: boolean
+  readonly microcreditsPerMinute: string
+}
+
+export interface BillingRateCardPage {
+  readonly data: readonly BillingRateCard[]
+  readonly nextCursor: string | null
+}
+
+export interface BillingReconciliation {
+  readonly ownerId: string
+  readonly quarantined: boolean
+  readonly mismatches: readonly string[]
+  readonly alert?: string | null
+  readonly reconciledAt: string
+}
+
+export interface CreateBillingCheckoutRequest {
+  readonly credits: number
+}
+
+export interface BillingCheckout {
+  readonly attemptId: string
+  readonly ownerId: string
+  readonly credits: number
+  readonly amountMinorUnits: string
+  readonly currency: string
+  readonly catalogVersion: string
+  readonly status: "created" | "pending" | "paid" | "failed" | "cancelled" | "verification_required" | "partially_refunded" | "refunded" | "disputed"
+  readonly providerPaymentId: string | null
+  readonly checkoutUrl: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DodoWebhookAck {
+  readonly received: boolean
+  readonly duplicate: boolean
+}
+
+export interface PaymentReconciliation {
+  readonly checked: number
+  readonly repaired: number
+  readonly mismatches: readonly string[]
+  readonly reconciledAt: string
+}
+
 export interface ErrorEnvelope {
   readonly error: SafeError
   readonly requestId: string
@@ -409,12 +624,12 @@ export interface OpenCloudBoxClient {
   createProject(args: { readonly body: CreateProjectRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getProject(args: { readonly path: { readonly projectId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   updateProject(args: { readonly path: { readonly projectId: string }; readonly body: UpdateProjectRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  deleteProject(args: { readonly path: { readonly projectId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  deleteProject(args: { readonly path: { readonly projectId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   listEnvironments(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createEnvironment(args: { readonly path: { readonly projectId: string }; readonly body: CreateEnvironmentRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getEnvironment(args: { readonly path: { readonly environmentId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   updateEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body: UpdateEnvironmentRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getSession(args: { readonly path: { readonly sessionId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -422,7 +637,7 @@ export interface OpenCloudBoxClient {
   pauseSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   stopSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   destroySession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  listOperations(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listOperations(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly sessionId?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getOperation(args: { readonly path: { readonly operationId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   cancelOperation(args: { readonly path: { readonly operationId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createExecution(args: { readonly path: { readonly sessionId: string }; readonly body: CreateExecutionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -436,6 +651,29 @@ export interface OpenCloudBoxClient {
   verifySourceChecksum(args: { readonly path: { readonly manifestId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createPreview(args: { readonly path: { readonly sessionId: string }; readonly body: CreatePreviewRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   deletePreview(args: { readonly path: { readonly previewId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listSecretReferences(args: { readonly path: { readonly environmentId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  createSecretReference(args: { readonly path: { readonly environmentId: string }; readonly body: CreateSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  getEnvironmentConfiguration(args: { readonly path: { readonly environmentId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  updateEnvironmentConfiguration(args: { readonly path: { readonly environmentId: string }; readonly body: UpdateEnvironmentConfigurationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  getSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  deleteSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly body?: DeleteSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  rotateSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly body: RotateSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  reconcileSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  getBillingWallet(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listBillingLots(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listBillingLedger(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  grantOnboardingCredits(args: { readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  createBillingReservation(args: { readonly body: CreateBillingReservationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  settleBillingReservation(args: { readonly path: { readonly reservationId: string }; readonly body: SettleBillingReservationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  releaseBillingReservation(args: { readonly path: { readonly reservationId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listBillingUsage(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  ingestBillingUsage(args: { readonly body: IngestBillingUsageRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listBillingRateCards(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  getBillingReconciliation(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  createBillingCheckout(args: { readonly body: CreateBillingCheckoutRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  getBillingCheckout(args: { readonly path: { readonly attemptId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  handleDodoWebhook(args: { readonly body: Record<string, unknown>; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  reconcileBillingPayments(args: { readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   requestMagicLink(args: { readonly body: RequestMagicLinkRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   consumeMagicLink(args: { readonly body: ConsumeMagicLinkRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   startGithubWebLogin(args: { readonly body: StartGithubLoginRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -539,13 +777,15 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
-    async deleteProject(args: { readonly path: { readonly projectId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async deleteProject(args: { readonly path: { readonly projectId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/projects/${encodeURIComponent(String(args.path.projectId))}`)
       const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
       headers['idempotency-key'] = args.idempotencyKey
       const response = await transport.fetch(url, {
         method: "DELETE",
         headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
         ...(args?.signal === undefined ? {} : { signal: args.signal }),
       })
       const text = await response.text()
@@ -635,13 +875,15 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
-    async deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/environments/${encodeURIComponent(String(args.path.environmentId))}`)
       const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
       headers['idempotency-key'] = args.idempotencyKey
       const response = await transport.fetch(url, {
         method: "DELETE",
         headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
         ...(args?.signal === undefined ? {} : { signal: args.signal }),
       })
       const text = await response.text()
@@ -783,11 +1025,12 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
-    async listOperations(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async listOperations(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly sessionId?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/operations`)
       if (args?.query !== undefined) {
         if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
         if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+        if (args.query.sessionId !== undefined) url.searchParams.set("sessionId", String(args.query.sessionId))
       }
       const headers: Record<string, string> = { ...defaultHeaders }
       const response = await transport.fetch(url, {
@@ -1037,6 +1280,443 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       headers['idempotency-key'] = args.idempotencyKey
       const response = await transport.fetch(url, {
         method: "DELETE",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async listSecretReferences(args: { readonly path: { readonly environmentId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/environments/${encodeURIComponent(String(args.path.environmentId))}/secret-references`)
+      if (args?.query !== undefined) {
+        if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
+        if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async createSecretReference(args: { readonly path: { readonly environmentId: string }; readonly body: CreateSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/environments/${encodeURIComponent(String(args.path.environmentId))}/secret-references`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async getEnvironmentConfiguration(args: { readonly path: { readonly environmentId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/environments/${encodeURIComponent(String(args.path.environmentId))}/configuration`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async updateEnvironmentConfiguration(args: { readonly path: { readonly environmentId: string }; readonly body: UpdateEnvironmentConfigurationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/environments/${encodeURIComponent(String(args.path.environmentId))}/configuration`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "PATCH",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async getSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/secret-references/${encodeURIComponent(String(args.path.secretReferenceId))}`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async deleteSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly body?: DeleteSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/secret-references/${encodeURIComponent(String(args.path.secretReferenceId))}`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "DELETE",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async rotateSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly body: RotateSecretReferenceRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/secret-references/${encodeURIComponent(String(args.path.secretReferenceId))}/rotate`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async reconcileSecretReference(args: { readonly path: { readonly secretReferenceId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/secret-references/${encodeURIComponent(String(args.path.secretReferenceId))}/reconcile`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async getBillingWallet(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/wallet`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async listBillingLots(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/lots`)
+      if (args?.query !== undefined) {
+        if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
+        if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async listBillingLedger(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/ledger`)
+      if (args?.query !== undefined) {
+        if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
+        if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async grantOnboardingCredits(args: { readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/grants/onboarding`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async createBillingReservation(args: { readonly body: CreateBillingReservationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/reservations`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async settleBillingReservation(args: { readonly path: { readonly reservationId: string }; readonly body: SettleBillingReservationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/reservations/${encodeURIComponent(String(args.path.reservationId))}/settle`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async releaseBillingReservation(args: { readonly path: { readonly reservationId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/reservations/${encodeURIComponent(String(args.path.reservationId))}/release`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async listBillingUsage(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/usage`)
+      if (args?.query !== undefined) {
+        if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
+        if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async ingestBillingUsage(args: { readonly body: IngestBillingUsageRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/usage`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async listBillingRateCards(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/rate-cards`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async getBillingReconciliation(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/reconciliation`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async createBillingCheckout(args: { readonly body: CreateBillingCheckoutRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/checkout`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async getBillingCheckout(args: { readonly path: { readonly attemptId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/checkout/${encodeURIComponent(String(args.path.attemptId))}`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async handleDodoWebhook(args: { readonly body: Record<string, unknown>; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/webhooks/dodo`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        status: response.status,
+      }
+    },
+    async reconcileBillingPayments(args: { readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/billing/payments/reconcile`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
         headers,
         ...(args?.signal === undefined ? {} : { signal: args.signal }),
       })

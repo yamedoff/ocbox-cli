@@ -66,6 +66,7 @@ import type {
 import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
+import { uploadPreparedSource, type PreparedSource } from './source.js'
 import {
   MemoryOperationCheckpointStore,
   type OperationCheckpointDurability,
@@ -409,6 +410,27 @@ export class OcboxSandboxProvider implements SandboxProvider {
     })
   }
 
+  /** Upload only through the owned, persisted sandbox-to-session mapping. */
+  async uploadSource(sandboxId: string, prepared: PreparedSource) {
+    const requestId = toRequestId(null)
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
+    const owned = await this.#mappedSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (
+      primary === null ||
+      primary.sandboxId !== record.hostedSandboxId ||
+      primary.state !== 'running'
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source upload requires the mapped hosted sandbox to be running; run ocbox start',
+        requestId,
+      })
+    }
+    return uploadPreparedSource(this.#api, record.hostedSessionId, prepared, { deduplicate: true })
+  }
+
   readonly exec: ProviderExecution = {
     execute: (context: OperationContext, request: ExecRequest): Promise<ExecHandle> =>
       this.#execute(context, request),
@@ -455,7 +477,25 @@ export class OcboxSandboxProvider implements SandboxProvider {
       body:
         this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
           ? {}
-          : { requestedSpec: this.#requestedSpec },
+          : {
+              requestedSpec: {
+                ...(this.#requestedSpec.cpu === undefined
+                  ? {}
+                  : { cpu: String(this.#requestedSpec.cpu) }),
+                ...(this.#requestedSpec.memory === undefined
+                  ? {}
+                  : { memory: String(this.#requestedSpec.memory) }),
+                ...(this.#requestedSpec.image === undefined
+                  ? {}
+                  : { image: this.#requestedSpec.image }),
+                ...(this.#requestedSpec.region === undefined
+                  ? {}
+                  : { region: this.#requestedSpec.region }),
+                ...(this.#requestedSpec.runtime === undefined
+                  ? {}
+                  : { runtime: this.#requestedSpec.runtime }),
+              },
+            },
       idempotencyKey: context.idempotencyKey,
     })
     if (created.status >= 400) {

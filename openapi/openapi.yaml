@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: OpenCloudBox hosted API
   version: 0.1.0
-  description: Runtime-neutral v1 contract. Every unsafe method requires an Idempotency-Key header.
+  description: Runtime-neutral v1 contract. Every unsafe method requires an Idempotency-Key header, except operations marked `x-idempotency: none` (auth, CLI/GitHub protocol, webhook, and source-resolve operations with their own single-use semantics).
 servers:
   - url: /v1
 security:
@@ -15,35 +15,44 @@ tags:
   - name: Executions
   - name: Source
   - name: Previews
+  - name: Secrets
   - name: Auth
   - name: CLIAuth
   - name: GitHubApp
+  - name: Billing
 x-error-codes:
-  INVALID_REQUEST: 400
-  UNAUTHENTICATED: 401
-  FORBIDDEN: 403
-  NOT_FOUND: 404
-  METHOD_NOT_ALLOWED: 405
-  IDEMPOTENCY_CONFLICT: 409
-  IDEMPOTENCY_IN_PROGRESS: 409
-  OPERATION_NOT_CANCELLABLE: 409
-  SESSION_STATE_CONFLICT: 409
+  ACCOUNT_HOLD: 409
+  CSRF_TOKEN_INVALID: 403
+  DODO_LIVE_DISABLED: 403
+  DODO_SIGNATURE_INVALID: 401
   EXECUTION_NOT_CANCELLABLE: 409
   EXECUTION_NOT_COMPLETE: 409
-  SOURCE_CHUNK_CONFLICT: 409
-  VALIDATION_ERROR: 422
-  INVALID_CURSOR: 422
+  FORBIDDEN: 403
+  IDEMPOTENCY_CONFLICT: 409
+  IDEMPOTENCY_IN_PROGRESS: 409
   IDEMPOTENCY_KEY_REQUIRED: 422
+  INSUFFICIENT_CREDITS: 409
+  INTERNAL_ERROR: 500
+  INVALID_CLIENT: 401
+  INVALID_CURSOR: 422
+  INVALID_GRANT: 400
+  INVALID_REQUEST: 400
+  METHOD_NOT_ALLOWED: 405
+  NOT_FOUND: 404
+  OPERATION_NOT_CANCELLABLE: 409
+  PAYLOAD_TOO_LARGE: 413
+  PAYMENT_CONFLICT: 409
+  PAYMENT_VERIFICATION_REQUIRED: 409
+  RATE_CARD_DISABLED: 409
+  RATE_LIMITED: 429
+  SERVICE_UNAVAILABLE: 503
+  SESSION_STATE_CONFLICT: 409
+  SOURCE_CHUNK_CONFLICT: 409
   SOURCE_INCOMPLETE: 422
   SOURCE_INTEGRITY_FAILED: 422
   SOURCE_LIMIT_EXCEEDED: 422
-  PAYLOAD_TOO_LARGE: 413
-  RATE_LIMITED: 429
-  SERVICE_UNAVAILABLE: 503
-  INTERNAL_ERROR: 500
-  INVALID_CLIENT: 401
-  CSRF_TOKEN_INVALID: 403
-  INVALID_GRANT: 400
+  UNAUTHENTICATED: 401
+  VALIDATION_ERROR: 422
 paths:
   /projects:
     get:
@@ -143,9 +152,16 @@ paths:
       operationId: deleteProject
       tags: [Projects]
       summary: Destroy a project asynchronously.
+      description: Accepts an optional confirmation body. `confirmInUse: true` acknowledges deletion while live sessions still reference the scope.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteConfirmationRequest'
       responses:
         '202':
           $ref: '#/components/responses/Operation'
@@ -260,9 +276,17 @@ paths:
     delete:
       operationId: deleteEnvironment
       tags: [Environments]
+      summary: Destroy an environment asynchronously.
+      description: Accepts an optional confirmation body. `confirmInUse: true` acknowledges deletion while live sessions still reference the scope.
       parameters:
         - $ref: '#/components/parameters/EnvironmentId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteConfirmationRequest'
       responses:
         '202':
           $ref: '#/components/responses/Operation'
@@ -440,6 +464,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SessionIdQuery'
       responses:
         '200':
           $ref: '#/components/responses/OperationPage'
@@ -754,12 +779,548 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /environments/{environmentId}/secret-references:
+    get:
+      operationId: listSecretReferences
+      tags: [Secrets]
+      summary: List workload secret metadata for an environment. Values are never returned.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReferencePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createSecretReference
+      tags: [Secrets]
+      summary: Write a workload secret once to the provider store. The value transits a single no-store request and only metadata is persisted.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSecretReferenceRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /environments/{environmentId}/configuration:
+    get:
+      operationId: getEnvironmentConfiguration
+      tags: [Secrets]
+      summary: Read non-secret environment variables, policy, and ordered secret references.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentConfiguration'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      operationId: updateEnvironmentConfiguration
+      tags: [Secrets]
+      summary: Replace non-secret environment variables and secret ordering. Reserved credential names are rejected.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEnvironmentConfigurationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentConfiguration'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}:
+    get:
+      operationId: getSecretReference
+      tags: [Secrets]
+      summary: Read workload secret metadata. Values cannot be retrieved.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteSecretReference
+      tags: [Secrets]
+      summary: Revoke a workload secret at the provider. Failed provider deletion stays delete_pending until reconciliation verifies removal.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteSecretReferenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}/rotate:
+    post:
+      operationId: rotateSecretReference
+      tags: [Secrets]
+      summary: Rotate a workload secret with a one-time no-store value relay. Version changes are atomic.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateSecretReferenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}/reconcile:
+    post:
+      operationId: reconcileSecretReference
+      tags: [Secrets]
+      summary: Reconcile a delete_pending reference against the provider without replaying secret material.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/wallet:
+    get:
+      operationId: getBillingWallet
+      tags: [Billing]
+      summary: Read the derived wallet projection. Balances are computed, never stored.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingWallet'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/lots:
+    get:
+      operationId: listBillingLots
+      tags: [Billing]
+      summary: List expiring credit lots with issue and expiry dates.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLotPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/ledger:
+    get:
+      operationId: listBillingLedger
+      tags: [Billing]
+      summary: List immutable balanced ledger entries for wallet reconstruction.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLedgerPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/grants/onboarding:
+    post:
+      operationId: grantOnboardingCredits
+      tags: [Billing]
+      summary: Issue the exactly-once 1,000-credit onboarding grant expiring in 30 days.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLot'
+        '201':
+          $ref: '#/components/responses/BillingLot'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations:
+    post:
+      operationId: createBillingReservation
+      tags: [Billing]
+      summary: Atomically reserve the greater of 15 minutes at the active rate or the minimum.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBillingReservationRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/BillingReservation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations/{reservationId}/settle:
+    post:
+      operationId: settleBillingReservation
+      tags: [Billing]
+      summary: Burn one minute of settled usage and refill below five projected minutes.
+      parameters:
+        - $ref: '#/components/parameters/BillingReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettleBillingReservationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingSettlement'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations/{reservationId}/release:
+    post:
+      operationId: releaseBillingReservation
+      tags: [Billing]
+      summary: Release or expire unused reservation amounts idempotently.
+      parameters:
+        - $ref: '#/components/parameters/BillingReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingReservation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/usage:
+    get:
+      operationId: listBillingUsage
+      tags: [Billing]
+      summary: List owner-scoped, paginated usage attribution from server values only.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingUsagePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: ingestBillingUsage
+      tags: [Billing]
+      summary: Ingest an immutable usage event. Direct BYOK is non-billable.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBillingUsageRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/BillingUsage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/rate-cards:
+    get:
+      operationId: listBillingRateCards
+      tags: [Billing]
+      summary: List versioned rate cards. Production rates stay disabled without approval.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingRateCardPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reconciliation:
+    get:
+      operationId: getBillingReconciliation
+      tags: [Billing]
+      summary: Rebuild the wallet from the ledger and report quarantine status.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingReconciliation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/checkout:
+    post:
+      operationId: createBillingCheckout
+      tags: [Billing]
+      summary: Create a server-priced Dodo test-mode checkout attempt for a fixed credit pack.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBillingCheckoutRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingCheckout'
+        '201':
+          $ref: '#/components/responses/BillingCheckout'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/checkout/{attemptId}:
+    get:
+      operationId: getBillingCheckout
+      tags: [Billing]
+      summary: Poll an opaque checkout attempt. URL parameters never grant credits.
+      parameters:
+        - $ref: '#/components/parameters/BillingAttemptId'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingCheckout'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/webhooks/dodo:
+    post:
+      operationId: handleDodoWebhook
+      tags: [Billing]
+      summary: Verify a Dodo webhook over raw bytes before parsing and reduce it idempotently.
+      x-idempotency: none
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          $ref: '#/components/responses/DodoWebhookAck'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/WebhookForbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/payments/reconcile:
+    post:
+      operationId: reconcileBillingPayments
+      tags: [Billing]
+      summary: Reconcile the authenticated owner's payment attempts idempotently.
+      description: Owner-scoped; plans, queries the provider, mutates, and counts only attempts, grants, and refund intents attributed to the authenticated owner. Global/operator reconciliation is internal and not reachable from the tenant surface.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/PaymentReconciliation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /auth/magic-links:
     post:
       operationId: requestMagicLink
       x-idempotency: none
       tags: [Auth]
       summary: Request an email magic-link login. Enumeration-safe and rate limited.
+      description: 'Mints a short-lived browser login binding cookie (ocb_login_bind, HttpOnly, the session SameSite policy, Secure) and persists only its SHA-256 digest on the single-use token record. The matching cookie is required by /auth/magic-links/consume, so a link requested in one browser cannot establish a session in another (login CSRF / session fixation).'
       security: []
       requestBody:
         required: true
@@ -784,6 +1345,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Consume a magic-link token and establish a web session. Single use and expiry bound.
+      description: 'Requires the ocb_login_bind cookie issued by /auth/magic-links to match the digest persisted with the token, in addition to the single-use token and expiry checks. Cross-site requests are refused and the binding cookie is cleared on success.'
       security: []
       requestBody:
         required: true
@@ -808,6 +1370,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Begin GitHub OAuth web sign-in and receive the redirect target plus opaque state.
+      description: 'Mints a short-lived browser login binding cookie (ocb_login_bind, HttpOnly, the session SameSite policy, Secure) and persists only its SHA-256 digest on the single-use state record. Cross-site requests are refused.'
       security: []
       requestBody:
         required: true
@@ -830,6 +1393,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Complete GitHub OAuth web sign-in by exchanging state and provider code for a session.
+      description: 'Requires the ocb_login_bind cookie issued by /auth/github/start to match the digest persisted with the state, in addition to the single-use state and provider-code checks. Cross-site requests are refused and the binding cookie is cleared on success.'
       security: []
       requestBody:
         required: true
@@ -1060,7 +1624,7 @@ components:
       name: cursor
       in: query
       required: false
-      description: Opaque tenant-bound pagination cursor from a previous page.
+      description: Opaque tenant-bound pagination cursor from a previous page. MCP tool cursors use the tighter 256-char bound.
       schema:
         type: string
         minLength: 1
@@ -1074,6 +1638,14 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    SessionIdQuery:
+      name: sessionId
+      in: query
+      required: false
+      description: Restrict an account listing to one owned parent session.
+      schema:
+        type: string
+        minLength: 1
     ProjectId:
       name: projectId
       in: path
@@ -1126,6 +1698,27 @@ components:
         maximum: 9999
     PreviewId:
       name: previewId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    SecretReferenceId:
+      name: secretReferenceId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    BillingReservationId:
+      name: reservationId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    BillingAttemptId:
+      name: attemptId
       in: path
       required: true
       schema:
@@ -1235,6 +1828,29 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Preview'
+    SecretReference:
+      description: Workload secret metadata. Values are never returned.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecretReference'
+      headers:
+        Cache-Control:
+          description: Sensitive write responses are never cached.
+          schema:
+            type: string
+    SecretReferencePage:
+      description: Opaque cursor page of workload secret metadata.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecretReferencePage'
+    EnvironmentConfiguration:
+      description: Non-secret environment configuration with ordered secret references.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EnvironmentConfiguration'
     Unauthenticated:
       description: Missing or invalid actor credentials.
       content:
@@ -1283,6 +1899,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Unexpected server error with no internal state exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    WebhookForbidden:
+      description: The configured payment environment forbids this webhook, such as disabled live handling.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     InvalidGrant:
       description: Expired, replayed, or invalid credential or grant (RFC 6749 style, generic).
       content:
@@ -1311,7 +1939,7 @@ components:
       description: New web session issued with Set-Cookie and CSRF token.
       headers:
         Set-Cookie:
-          description: HttpOnly, SameSite=Lax, Secure, Path=/ session cookie.
+          description: "HttpOnly, Secure, Path=/ session cookie; SameSite=Lax by default, SameSite=None in the explicit cross-origin hosting mode."
           schema:
             type: string
       content:
@@ -1322,7 +1950,7 @@ components:
       description: Rotated web session id with a replacement Set-Cookie header.
       headers:
         Set-Cookie:
-          description: Replacement HttpOnly, SameSite=Lax, Secure, Path=/ session cookie.
+          description: "Replacement HttpOnly, Secure, Path=/ session cookie; SameSite=Lax by default, SameSite=None in the explicit cross-origin hosting mode."
           schema:
             type: string
       content:
@@ -1367,6 +1995,84 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/GithubSourceResolution'
+    BillingWallet:
+      description: Derived wallet projection. No mutable authoritative balance exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingWallet'
+    BillingLot:
+      description: Traceable expiring credit lot with issue and expiry dates.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLot'
+    BillingLotPage:
+      description: Opaque cursor page of credit lots.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLotPage'
+    BillingLedgerPage:
+      description: Opaque cursor page of immutable ledger entries.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLedgerPage'
+    BillingReservation:
+      description: Atomic credit reservation with settlement checkpoints.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingReservation'
+    BillingSettlement:
+      description: One-minute settlement checkpoint with refill status.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingSettlement'
+    BillingUsage:
+      description: Immutable attributed usage event.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingUsage'
+    BillingUsagePage:
+      description: Opaque cursor page of owner-scoped usage attribution.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingUsagePage'
+    BillingRateCardPage:
+      description: Opaque cursor page of versioned rate cards.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingRateCardPage'
+    BillingReconciliation:
+      description: Ledger reconstruction with quarantine and alert status.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingReconciliation'
+    BillingCheckout:
+      description: Opaque server-priced checkout attempt. Polling never grants credits.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingCheckout'
+    DodoWebhookAck:
+      description: Verified webhook acknowledgement with safe duplicate replay.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DodoWebhookAck'
+    PaymentReconciliation:
+      description: Polling repair summary for unresolved Dodo attempts.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaymentReconciliation'
   schemas:
     SafeError:
       type: object
@@ -1380,7 +2086,7 @@ components:
         message:
           type: string
           minLength: 1
-          maxLength: 512
+          maxLength: 1024
         retryAfterSeconds:
           type: integer
           minimum: 0
@@ -1494,7 +2200,7 @@ components:
             minLength: 1
         status:
           type: string
-          enum: [active, delete_pending, deleted]
+          enum: [active, delete_pending, deleted, failed]
         version:
           type: integer
           minimum: 1
@@ -2012,6 +2718,29 @@ components:
       properties:
         requestedSpec:
           type: object
+          additionalProperties: false
+          description: Closed allowlist of non-authoritative runtime knobs. Billing authority is server-side only; BYOK/managed is never client-selectable, so byok and billingMode are not part of this schema and are rejected. The MCP `session_create` requestedSpec is a stricter typed subset (integer cpu/memory, no region); see docs/t13-http-contract.md.
+          properties:
+            cpu:
+              type: string
+              minLength: 1
+              maxLength: 64
+            image:
+              type: string
+              minLength: 1
+              maxLength: 512
+            memory:
+              type: string
+              minLength: 1
+              maxLength: 64
+            region:
+              type: string
+              minLength: 1
+              maxLength: 64
+            runtime:
+              type: string
+              minLength: 1
+              maxLength: 64
     CreateExecutionRequest:
       type: object
       additionalProperties: false
@@ -2051,6 +2780,7 @@ components:
           minLength: 1
           maxLength: 1398104
           pattern: '^[A-Za-z0-9+/]+={0,2}$'
+          description: Canonical base64 chunk payload. The contract bound (1398104 chars) covers the worst-case encoding of one 1 MiB decoded chunk; the transport additionally caps the raw string at 2,000,000 chars and rejects payloads decoding past 1 MiB (MAX_CHUNK_BYTES).
         checksum:
           type: string
           pattern: '^[a-f0-9]{64}$'
@@ -2067,6 +2797,136 @@ components:
           type: integer
           minimum: 60
           maximum: 86400
+    SecretReferencePage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretReference'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    CreateSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [name, provider, exposureMode, value]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 64
+        exposureMode:
+          type: string
+          enum: [process, host]
+        allowedHosts:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            minLength: 1
+            maxLength: 253
+        value:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        confirmUnrestrictedHosts:
+          type: boolean
+        confirmProcessExposure:
+          type: boolean
+    RotateSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 32768
+    DeleteSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        confirmInUse:
+          type: boolean
+    DeleteConfirmationRequest:
+      type: object
+      additionalProperties: false
+      description: Optional confirmation for destructive project/environment deletes that gate on live usage.
+      properties:
+        confirmInUse:
+          type: boolean
+    EnvironmentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [environmentId, projectId, variables, policy, secretOrder, updatedAt]
+      properties:
+        environmentId:
+          type: string
+          minLength: 1
+        projectId:
+          type: string
+          minLength: 1
+        variables:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/NonSecretVariable'
+        policy:
+          $ref: '#/components/schemas/EnvironmentPolicy'
+        secretOrder:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        updatedAt:
+          type: string
+          format: date-time
+    NonSecretVariable:
+      type: object
+      additionalProperties: false
+      required: [name, value]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        value:
+          type: string
+          maxLength: 8192
+    EnvironmentPolicy:
+      type: object
+      additionalProperties: false
+      required: [egressMode, requireHostAllowlist]
+      properties:
+        egressMode:
+          type: string
+          enum: [open]
+        requireHostAllowlist:
+          type: boolean
+          enum: [true]
+    UpdateEnvironmentConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [variables, secretOrder]
+      properties:
+        variables:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/NonSecretVariable'
+        secretOrder:
+          type: array
+          items:
+            type: string
+            minLength: 1
     RequestMagicLinkRequest:
       type: object
       additionalProperties: false
@@ -2077,6 +2937,11 @@ components:
           minLength: 3
           maxLength: 320
           pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+        redirectTo:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "Optional same-origin post-login path. Resolved through the server allowlist at issuance and echoed by the consume response."
     MagicLinkAccepted:
       type: object
       additionalProperties: false
@@ -2163,6 +3028,11 @@ components:
           minLength: 32
           maxLength: 256
           pattern: '^[A-Za-z0-9_-]+$'
+        redirectTo:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "Server-resolved post-login path bound to a magic-link token at issuance; present only when the request supplied one."
     StartCliAuthorizationRequest:
       type: object
       additionalProperties: false
@@ -2181,7 +3051,7 @@ components:
         codeChallenge:
           type: string
           minLength: 43
-          maxLength: 128
+          maxLength: 43
           pattern: '^[A-Za-z0-9_-]+$'
         codeChallengeMethod:
           type: string
@@ -2435,5 +3305,440 @@ components:
           minLength: 1
           maxLength: 256
         resolvedAt:
+          type: string
+          format: date-time
+    BillingWallet:
+      type: object
+      additionalProperties: false
+      required: [ownerId, availableMicrocredits, reservedMicrocredits, consumedMicrocredits, expiredMicrocredits, grantedMicrocredits, adjustmentsMicrocredits]
+      properties:
+        ownerId:
+          type: string
+          minLength: 1
+        availableMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        reservedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        consumedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        expiredMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        grantedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        adjustmentsMicrocredits:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)$'
+    BillingLot:
+      type: object
+      additionalProperties: false
+      required: [id, ownerId, source, issuedMicrocredits, remainingMicrocredits, issuedAt, expiresAt]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          enum: [onboarding, purchase, campaign, refund, adjustment]
+        issuedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        remainingMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        issuedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        restrictions:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        externalRef:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+    BillingLotPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingLot'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingLedgerLeg:
+      type: object
+      additionalProperties: false
+      required: [account, amountMicrocredits, sign]
+      properties:
+        account:
+          type: string
+          enum: [wallet, issuance, revenue, forfeiture, adjustment]
+        amountMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        sign:
+          type: integer
+          enum: [1, -1]
+    BillingLedgerEntry:
+      type: object
+      additionalProperties: false
+      required: [id, businessEventId, kind, legs, at, ownerId]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        businessEventId:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum: [grant, purchase, refund, adjustment, correction, capture, expire, release]
+        legs:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/BillingLedgerLeg'
+        at:
+          type: string
+          format: date-time
+        ownerId:
+          type: string
+          minLength: 1
+    BillingLedgerPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingLedgerEntry'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingReservation:
+      type: object
+      additionalProperties: false
+      required: [id, ownerId, state, reservedMicrocredits, remainingMicrocredits, settledMicrocredits, rateCardVersion, rateMicrocreditsPerMinute, createdAt, updatedAt, expiresAt]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum: [active, captured, expired, released]
+        reservedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        remainingMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        settledMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        rateCardVersion:
+          type: string
+          minLength: 1
+        rateMicrocreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    CreateBillingReservationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        minimumMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        rateCardVersion:
+          type: string
+          minLength: 1
+          maxLength: 32
+        rateMicrocreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+    SettleBillingReservationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+    BillingSettlement:
+      type: object
+      additionalProperties: false
+      required: [reservationId, captureMicrocredits, refilled]
+      properties:
+        reservationId:
+          type: string
+          minLength: 1
+        captureMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        refilled:
+          type: boolean
+    BillingUsage:
+      type: object
+      additionalProperties: false
+      required: [eventId, ownerId, billingMode, billable, quantity, unit, source, windowStart, windowEnd, ingestedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        billingMode:
+          type: string
+          enum: [managed, byok]
+          description: Server-authoritative billing mode. `byok` is accepted but ignored: hosted usage is always recorded as `managed`/billable and never becomes non-billable through a client-authored value.
+        billable:
+          type: boolean
+          description: Server-derived billability. Always true for hosted `managed` usage.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        unit:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          minLength: 1
+        windowStart:
+          type: string
+          format: date-time
+        windowEnd:
+          type: string
+          format: date-time
+        ingestedAt:
+          type: string
+          format: date-time
+        providerReportId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        sessionId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+    BillingUsagePage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingUsage'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    IngestBillingUsageRequest:
+      type: object
+      additionalProperties: false
+      required: [eventId, billingMode, quantity, unit, source, windowStart, windowEnd]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        billingMode:
+          type: string
+          enum: [managed, byok]
+          description: Accepted but ignored. The server always ingests as `managed`/billable; send `managed`, and never rely on a `byok` body to change billability.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 32
+        source:
+          type: string
+          minLength: 1
+          maxLength: 64
+        windowStart:
+          type: string
+          format: date-time
+        windowEnd:
+          type: string
+          format: date-time
+        providerReportId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        sessionId:
+          type: string
+          minLength: 1
+          maxLength: 36
+    BillingRateCard:
+      type: object
+      additionalProperties: false
+      required: [version, kind, effectiveFrom, enabled, fixture, microcreditsPerMinute]
+      properties:
+        version:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          minLength: 1
+        effectiveFrom:
+          type: string
+          format: date-time
+        enabled:
+          type: boolean
+        fixture:
+          type: boolean
+        microcreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+    BillingRateCardPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingRateCard'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingReconciliation:
+      type: object
+      additionalProperties: false
+      required: [ownerId, quarantined, mismatches, reconciledAt]
+      properties:
+        ownerId:
+          type: string
+          minLength: 1
+        quarantined:
+          type: boolean
+        mismatches:
+          type: array
+          items:
+            type: string
+        alert:
+          oneOf:
+            - type: string
+            - type: 'null'
+        reconciledAt:
+          type: string
+          format: date-time
+    CreateBillingCheckoutRequest:
+      type: object
+      additionalProperties: false
+      required: [credits]
+      properties:
+        credits:
+          type: integer
+          minimum: 1000
+          maximum: 100000
+    BillingCheckout:
+      type: object
+      additionalProperties: false
+      required: [attemptId, ownerId, credits, amountMinorUnits, currency, catalogVersion, status, providerPaymentId, checkoutUrl, createdAt, updatedAt]
+      properties:
+        attemptId:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        credits:
+          type: integer
+          minimum: 1000
+        amountMinorUnits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        currency:
+          type: string
+          minLength: 1
+        catalogVersion:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [created, pending, paid, failed, cancelled, verification_required, partially_refunded, refunded, disputed]
+        providerPaymentId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        checkoutUrl:
+          oneOf:
+            - type: string
+              format: uri
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DodoWebhookAck:
+      type: object
+      additionalProperties: false
+      required: [received, duplicate]
+      properties:
+        received:
+          type: boolean
+          enum: [true]
+        duplicate:
+          type: boolean
+    PaymentReconciliation:
+      type: object
+      additionalProperties: false
+      required: [checked, repaired, mismatches, reconciledAt]
+      properties:
+        checked:
+          type: integer
+          minimum: 0
+        repaired:
+          type: integer
+          minimum: 0
+        mismatches:
+          type: array
+          items:
+            type: string
+        reconciledAt:
           type: string
           format: date-time

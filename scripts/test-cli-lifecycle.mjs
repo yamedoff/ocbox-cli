@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -184,7 +185,21 @@ async function hostedLifecycle() {
   let executionCancelled = false
   let executionSessionId
   let executionSandboxId
-  const handler = (request, response) => {
+  const manifests = new Map()
+  const sourceKeys = new Map()
+  const workspace = join(root, 'workspace', 'hosted_project')
+  let sourceCreates = 0
+  let chunkUploads = 0
+  let delivered = 0
+  let sourceClock = Date.now()
+  let executionStdout = ''
+  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
+  const publicManifest = ({ chunks, ...manifest }) => manifest
+  const handler = async (request, response) => {
+    const bodyChunks = []
+    for await (const chunk of request) bodyChunks.push(chunk)
+    const rawBody = Buffer.concat(bodyChunks).toString('utf8')
+    const body = rawBody ? JSON.parse(rawBody) : undefined
     const path = new URL(request.url, 'http://127.0.0.1').pathname
     calls.push([request.method, path])
     const send = (body, status = 200) =>
@@ -236,6 +251,126 @@ async function hostedLifecycle() {
       return operation('create', sessionId)
     }
     if (path.startsWith('/v1/operations/')) return send(operations.get(path.split('/').at(-1)))
+    const sourceSession = /^\/v1\/sessions\/([^/]+)\/source\/manifests$/.exec(path)
+    if (sourceSession) {
+      const id = sourceSession[1]
+      assert(sessions.has(id))
+      if (request.method === 'GET')
+        return send({
+          data: [...manifests.values()].filter((item) => item.sessionId === id).map(publicManifest),
+          nextCursor: null,
+        })
+      assert.equal(request.method, 'POST')
+      const key = request.headers['idempotency-key']
+      assert.equal(typeof key, 'string')
+      if (sourceKeys.has(key)) {
+        const previous = sourceKeys.get(key)
+        assert.equal(previous.rawBody, rawBody, 'replay keys must retain their payload')
+        return send(previous.body, 201)
+      }
+      sourceCreates += 1
+      const manifest = {
+        ...body,
+        id: `source_${sourceCreates}`,
+        sessionId: id,
+        createdAt: new Date(++sourceClock).toISOString(),
+        updatedAt: new Date(sourceClock).toISOString(),
+        verified: false,
+        uploadedChunks: 0,
+        chunks: new Map(),
+      }
+      manifests.set(manifest.id, manifest)
+      const created = publicManifest(manifest)
+      sourceKeys.set(key, { rawBody, body: created })
+      return send(created, 201)
+    }
+    const sourceRoute = /^\/v1\/source\/manifests\/([^/]+)\/(?:chunks\/(\d+)|(checksum))$/.exec(
+      path,
+    )
+    if (sourceRoute) {
+      const [, id, index, checksum] = sourceRoute
+      const manifest = manifests.get(id)
+      assert(manifest)
+      assert.equal(typeof request.headers['idempotency-key'], 'string')
+      if (!checksum) {
+        assert.equal(request.method, 'PUT')
+        chunkUploads += 1
+        const bytes = Buffer.from(body.data, 'base64')
+        assert.equal(bytes.toString('base64'), body.data)
+        assert(bytes.length <= 1024 * 1024)
+        assert.equal(sha256(bytes), body.checksum)
+        if (manifest.chunks.has(Number(index)))
+          assert.deepEqual(manifest.chunks.get(Number(index)), bytes)
+        manifest.chunks.set(Number(index), bytes)
+        manifest.uploadedChunks = manifest.chunks.size
+        return send({
+          manifestId: id,
+          chunkIndex: Number(index),
+          chunkChecksum: body.checksum,
+          receivedBytes: bytes.length,
+          uploadedChunks: manifest.uploadedChunks,
+        })
+      }
+      assert.equal(request.method, 'POST')
+      assert.equal(manifest.chunks.size, manifest.chunkCount)
+      const archive = Buffer.concat(
+        Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
+      )
+      assert.equal(archive.length, manifest.totalBytes)
+      assert(archive.length <= 1024 * 1024)
+      assert.equal(sha256(archive), manifest.checksum)
+      if (!manifest.verified) {
+        // Model managed delivery: decode the frozen OCBOXA1 archive into the
+        // project workspace (the same entries the server converts to tar).
+        assert.equal(archive.subarray(0, 8).toString(), 'OCBOXA1\n')
+        const entries = []
+        let offset = 8
+        let fileBytes = 0
+        let fileCount = 0
+        await mkdir(workspace, { recursive: true })
+        for (;;) {
+          const length = archive.readUInt32BE(offset)
+          offset += 4
+          const header = JSON.parse(archive.subarray(offset, offset + length).toString('utf8'))
+          offset += length
+          if (header.type === 'end') {
+            assert.equal(
+              header.snapshotSha256,
+              sha256(Buffer.from(entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''))),
+            )
+            assert.equal(offset, archive.length)
+            break
+          }
+          const entry = header.entry
+          assert(!entry.path.startsWith('/') && !entry.path.split('/').includes('..'))
+          assert.equal(entry.linkTarget, null)
+          if (entries.length)
+            assert(Buffer.compare(Buffer.from(entries.at(-1).path), Buffer.from(entry.path)) < 0)
+          entries.push(entry)
+          const destination = join(workspace, ...entry.path.split('/'))
+          if (entry.type === 'directory') await mkdir(destination, { recursive: true })
+          else {
+            fileCount += 1
+            fileBytes += entry.size
+            assert(entry.size <= 65536 && fileBytes <= 524288 && fileCount <= 100)
+            const bytes = archive.subarray(offset, offset + entry.size)
+            offset += entry.size
+            assert.equal(sha256(bytes), entry.sha256)
+            await mkdir(dirname(destination), { recursive: true })
+            await writeFile(destination, bytes)
+          }
+        }
+        delivered += 1
+        manifest.verified = true
+        manifest.updatedAt = new Date(++sourceClock).toISOString()
+      }
+      return send({
+        manifestId: id,
+        checksum: manifest.checksum,
+        chunkCount: manifest.chunkCount,
+        verified: true,
+      })
+    }
     const matched = /^\/v1\/sessions\/([^/]+)(?:\/(.*))?$/.exec(path)
     if (matched) {
       const [, id, action] = matched
@@ -246,6 +381,9 @@ async function hostedLifecycle() {
         executionSessionId = id
         executionSandboxId = session.primarySandboxId
         executionCancelled = false
+        // Managed commands resolve paths relative to /workspace/<projectId>.
+        executionStdout =
+          body.command === "'cat' 'a.txt'" ? await readFile(join(workspace, 'a.txt'), 'utf8') : ''
         return send(
           {
             id: 'hosted_execution',
@@ -292,8 +430,11 @@ async function hostedLifecycle() {
     if (path === '/v1/executions/hosted_execution/events')
       return send({
         data: [
+          ...(executionStdout
+            ? [{ sequence: 0, at: now, kind: 'stdout', stream: 'stdout', message: executionStdout }]
+            : []),
           {
-            sequence: 0,
+            sequence: executionStdout ? 1 : 0,
             at: now,
             kind: executionCancelled ? 'cancelled' : 'completed',
             stream: null,
@@ -308,7 +449,7 @@ async function hostedLifecycle() {
       return send({
         kind: 'command',
         exitCode: 0,
-        stdout: '',
+        stdout: executionStdout,
         stderr: '',
         truncated: false,
         outputBytes: 0,
@@ -368,12 +509,21 @@ async function hostedLifecycle() {
     try {
       return {
         code: 0,
-        ...(await execFileAsync(process.execPath, [cli, args[0], ...flags, ...args.slice(1)], {
-          cwd: root,
-          env: { ...environment, ...overrides },
-          encoding: 'utf8',
-          timeout: 30_000,
-        })),
+        ...(await execFileAsync(
+          process.execPath,
+          [
+            cli,
+            ...args.slice(0, args[0] === 'sync' ? 2 : 1),
+            ...flags,
+            ...args.slice(args[0] === 'sync' ? 2 : 1),
+          ],
+          {
+            cwd: root,
+            env: { ...environment, ...overrides },
+            encoding: 'utf8',
+            timeout: 30_000,
+          },
+        )),
       }
     } catch (error) {
       return error
@@ -391,19 +541,77 @@ async function hostedLifecycle() {
     return parseEnvelope(result.stderr)
   }
   try {
-    await success(['init', '--json'])
-    await writeFile(
-      config,
-      (await readFile(config, 'utf8')).replace('name = "fake"', 'name = "ocbox"'),
-    )
     await credentials.set(key, credential)
     await metadataStore.save(metadata)
+    await success(['init', '--json'])
     const started = await success(['start', '--json'])
     const hostedId = sessionId
     const localId = started.data.sandbox.id
     assert.equal(creates, 1)
     const status = await success(['status', '--json'])
     assert.equal(status.data.sandbox.id, localId)
+    const source = join(root, 'source')
+    await mkdir(source)
+    await writeFile(join(source, 'a.txt'), 'uploaded a\n')
+    await writeFile(join(source, 'b.txt'), 'uploaded b\n')
+    await writeFile(join(source, 'c.txt'), 'uploaded c\n')
+    const pushArgs = ['sync', 'push', '--local-dir', source, '--json']
+    const pushed = await success(pushArgs)
+    assert.deepEqual(pushed.data.uploadedFiles, ['a.txt', 'b.txt', 'c.txt'])
+    assert.equal(pushed.data.uploadedBytes, 33)
+    assert.equal(sourceCreates, 1)
+    assert.equal(delivered, 1)
+    const uploaded = await success(['exec', '--json', '--', 'cat', 'a.txt'])
+    assert.equal(Buffer.from(uploaded.stdout.data, 'base64').toString(), 'uploaded a\n')
+    assert.equal(uploaded.result.exitCode, 0)
+    const humanCat = await run(['exec', '--', 'cat', 'a.txt'])
+    assert.equal(humanCat.code, 0, humanCat.stderr)
+    assert.equal(humanCat.stdout, 'uploaded a\n')
+    const beforeChunks = chunkUploads
+    const repeated = await success(pushArgs)
+    assert.equal(repeated.data.applied, false)
+    assert.deepEqual(repeated.data.uploadedFiles, [])
+    assert.equal(repeated.data.uploadedBytes, 0)
+    assert.equal(chunkUploads, beforeChunks)
+    assert.equal(sourceCreates, 1)
+    assert.equal(delivered, 1)
+    await writeFile(join(source, 'a.txt'), 'changed a\n')
+    await success(pushArgs)
+    assert.equal((await run(['exec', '--', 'cat', 'a.txt'])).stdout, 'changed a\n')
+    await writeFile(join(source, 'a.txt'), 'uploaded a\n')
+    await success(pushArgs)
+    assert.equal((await run(['exec', '--', 'cat', 'a.txt'])).stdout, 'uploaded a\n')
+    assert.equal(delivered, 3, 'returning to an earlier snapshot must deliver again')
+    const afterRevert = chunkUploads
+    assert.equal((await success(pushArgs)).data.uploadedBytes, 0)
+    assert.equal(chunkUploads, afterRevert)
+    await writeFile(join(source, 'large.txt'), Buffer.alloc(65537))
+    const tooLarge = await failure(pushArgs)
+    assert.equal(tooLarge.data.code, 'SYNC_TOO_LARGE')
+    assert.match(tooLarge.data.message, /large\.txt.*65537.*--exclude/)
+    assert.equal(chunkUploads, afterRevert)
+    await success([...pushArgs, '--exclude', 'large.txt'])
+    for (const command of ['pull', 'diff']) {
+      const unsupported = await failure(['sync', command, '--local-dir', source, '--json'])
+      assert.equal(unsupported.data.code, 'CAPABILITY_UNSUPPORTED')
+      assert.match(unsupported.data.message, /not supported for hosted sandboxes yet/)
+    }
+    await assert.rejects(
+      readFile(
+        join(
+          state,
+          'sync',
+          started.data.session.projectId,
+          started.data.session.id,
+          'remote',
+          'a.txt',
+        ),
+      ),
+      { code: 'ENOENT' },
+    )
+    process.stdout.write(
+      'CLI hosted sync E2E passed (3 files, project cwd exec, unchanged push, size limit, unsupported pull/diff)\n',
+    )
     const executed = await success(['exec', '--json', '--', 'echo', 'mock'])
     assert.equal(executed.result.exitCode, 0)
 
@@ -448,6 +656,7 @@ async function hostedLifecycle() {
     let before = sessionCalls()
     await metadataStore.save({ ...metadata, updatedAt: new Date(Date.now() + 1000).toISOString() })
     assert.equal((await failure(['status', '--json'])).data.code, 'SANDBOX_NOT_FOUND')
+    assert.equal((await failure(pushArgs)).data.code, 'SANDBOX_NOT_FOUND')
     assert.equal(
       (await failure(['cancel', 'hosted_execution', '--json'])).data.code,
       'SANDBOX_NOT_FOUND',

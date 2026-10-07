@@ -49,7 +49,7 @@ describe('hosted source transfer', () => {
       )
     })
     const done = await uploadPreparedSource(api, HOSTED_SESSION, prepared)
-    expect(done).toEqual({ manifestId: 'manifest_1', verified: true })
+    expect(done).toEqual({ manifestId: 'manifest_1', verified: true, uploaded: true })
     expect(seen.some((url) => url.includes('/checksum'))).toBe(true)
   })
 
@@ -152,7 +152,7 @@ describe('hosted source transfer', () => {
       sleep: () => Promise.resolve(),
     })
     expect(chunkCalls).toBe(2)
-    expect(done).toEqual({ manifestId: 'manifest_eventual', verified: true })
+    expect(done).toEqual({ manifestId: 'manifest_eventual', verified: true, uploaded: true })
   })
 
   it('fails fast on a permanent chunk failure without retrying', async () => {
@@ -177,5 +177,102 @@ describe('hosted source transfer', () => {
       }),
     ).rejects.toMatchObject({ code: 'INVALID_SPEC' })
     expect(chunkCalls).toBe(1)
+  })
+  it.each([0, -1, 1.5, 1048577, NaN])(
+    'rejects invalid chunk sizes (%s) without looping',
+    (size) => {
+      expect(() => prepareSourceChunks(Buffer.from('source'), size)).toThrow(
+        'Source chunks must contain',
+      )
+    },
+  )
+
+  it('uses the session and full checksum in replay keys', async () => {
+    const prepared = prepareSourceChunks(Buffer.from('same bytes'))
+    const keys: string[] = []
+    const { api } = await seededApi(async (input, init) => {
+      const path = new URL(String(input)).pathname
+      keys.push(new Headers(init?.headers).get('idempotency-key') ?? '')
+      if (path.endsWith('/source/manifests')) return jsonResponse({ id: 'manifest' }, 201)
+      if (path.includes('/chunks/'))
+        return jsonResponse({ chunkChecksum: prepared.chunks[0]?.checksum })
+      return jsonResponse({
+        manifestId: 'manifest',
+        verified: true,
+        checksum: prepared.checksum,
+        chunkCount: prepared.chunkCount,
+      })
+    })
+    await uploadPreparedSource(api, HOSTED_SESSION, prepared)
+    await uploadPreparedSource(api, HOSTED_SESSION, prepared)
+    await uploadPreparedSource(api, 'another_session', prepared)
+    expect(keys.slice(0, 3)).toEqual(keys.slice(3, 6))
+    for (let i = 0; i < 3; i += 1) expect(keys[i]).not.toBe(keys[i + 6])
+  })
+
+  it('finds an unchanged verified snapshot across pages and revalidates without chunks', async () => {
+    const prepared = prepareSourceChunks(Buffer.from('same bytes'))
+    const calls: string[] = []
+    const now = new Date().toISOString()
+    const { api } = await seededApi(async (input) => {
+      const url = new URL(String(input))
+      calls.push(url.pathname + url.search)
+      if (url.pathname.endsWith('/source/manifests'))
+        return jsonResponse(
+          url.searchParams.has('cursor')
+            ? {
+                data: [
+                  {
+                    id: 'manifest',
+                    createdAt: now,
+                    updatedAt: now,
+                    sessionId: HOSTED_SESSION,
+                    checksum: prepared.checksum,
+                    chunkCount: prepared.chunkCount,
+                    totalBytes: prepared.totalBytes,
+                    uploadedChunks: prepared.chunkCount,
+                    verified: true,
+                  },
+                ],
+                nextCursor: null,
+              }
+            : { data: [], nextCursor: 'page2' },
+        )
+      expect(url.pathname).toBe('/v1/source/manifests/manifest/checksum')
+      return jsonResponse({
+        manifestId: 'manifest',
+        checksum: prepared.checksum,
+        chunkCount: prepared.chunkCount,
+        verified: true,
+      })
+    })
+    await expect(
+      uploadPreparedSource(api, HOSTED_SESSION, prepared, { deduplicate: true }),
+    ).resolves.toEqual({
+      manifestId: 'manifest',
+      verified: true,
+      uploaded: false,
+    })
+    expect(calls).toHaveLength(3)
+    expect(calls[1]).toContain('cursor=page2')
+  })
+
+  it('rejects a forged successful verification for another archive', async () => {
+    const prepared = prepareSourceChunks(Buffer.from('bytes'))
+    const { api } = await seededApi(async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/source/manifests')) return jsonResponse({ id: 'manifest' }, 201)
+      if (path.includes('/chunks/'))
+        return jsonResponse({ chunkChecksum: prepared.chunks[0]?.checksum })
+      return jsonResponse({
+        manifestId: 'manifest',
+        checksum: '0'.repeat(64),
+        chunkCount: prepared.chunkCount,
+        verified: true,
+      })
+    })
+    await expect(uploadPreparedSource(api, HOSTED_SESSION, prepared)).rejects.toMatchObject({
+      code: 'SYNC_INTEGRITY',
+    })
   })
 })

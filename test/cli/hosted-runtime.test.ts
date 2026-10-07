@@ -104,7 +104,7 @@ it('uses the default API for init and start, saves the project, and honors proje
   await (await createLifecycleService({ ...flags, project: 'project_flag', cpu: 2 })).start(true)
   expect(calls.find((call) => call.path === '/v1/projects/project_flag/sessions')).toEqual({
     path: '/v1/projects/project_flag/sessions',
-    body: { requestedSpec: { cpu: 2 } },
+    body: { requestedSpec: { cpu: '2' } },
   })
   await initializeProject({
     ...flags,

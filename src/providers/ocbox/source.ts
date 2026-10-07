@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { z } from 'zod'
+import type { SourceManifest } from '../../api/generated/client.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { toRequestId } from '../../api/client/errors.js'
 import { OcboxError } from '../../errors/index.js'
@@ -9,6 +11,25 @@ import {
   sleepWithSignal,
   type RetryPolicy,
 } from './retry.js'
+
+const HostedSourceManifestPageSchema = z.strictObject({
+  data: z
+    .array(
+      z.strictObject({
+        id: z.string().min(1),
+        createdAt: z.string().datetime({ offset: true }),
+        updatedAt: z.string().datetime({ offset: true }),
+        sessionId: z.string().min(1),
+        checksum: z.string().regex(/^[a-f0-9]{64}$/),
+        chunkCount: z.number().int().min(1).max(10000),
+        totalBytes: z.number().int().min(1).max(536870912),
+        uploadedChunks: z.number().int().min(0),
+        verified: z.boolean(),
+      }),
+    )
+    .max(100),
+  nextCursor: z.string().min(1).nullable(),
+})
 
 export interface SourceChunk {
   readonly index: number
@@ -46,6 +67,13 @@ export function prepareSourceChunks(
       requestId: newRequestId(),
     })
   }
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 1024 * 1024) {
+    throw new OcboxError({
+      code: 'INVALID_SPEC',
+      message: 'Source chunks must contain 1 to 1048576 bytes',
+      requestId: newRequestId(),
+    })
+  }
   const chunks: SourceChunk[] = []
   for (let offset = 0; offset < bytes.length; offset += chunkBytes) {
     const slice = bytes.slice(offset, offset + chunkBytes)
@@ -62,6 +90,7 @@ export function prepareSourceChunks(
 }
 
 export interface UploadSourceOptions {
+  readonly deduplicate?: boolean
   readonly signal?: AbortSignal | undefined
   readonly idempotencyKeyFor?: ((scope: string) => string) | undefined
   readonly maxAttempts?: number | undefined
@@ -100,28 +129,112 @@ export async function uploadPreparedSource(
   hostedSessionId: string,
   prepared: PreparedSource,
   options: UploadSourceOptions = {},
-): Promise<{ manifestId: string; verified: boolean }> {
+): Promise<{ manifestId: string; verified: boolean; uploaded: boolean }> {
   throwIfCancelled(options.signal)
+  let lineage = '[]'
   const keyFor =
-    options.idempotencyKeyFor ?? ((scope: string) => `${prepared.checksum.slice(0, 16)}-${scope}`)
-  const manifest = await api.generated.createSourceManifest({
-    path: { sessionId: hostedSessionId },
-    body: {
-      checksum: prepared.checksum,
-      chunkCount: prepared.chunkCount,
-      totalBytes: prepared.totalBytes,
-    },
-    idempotencyKey: keyFor('manifest'),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  })
-  const created = api.assertSuccess('createSourceManifest', manifest, [200, 201])
-  const manifestId = (created.body as { id: string }).id
+    options.idempotencyKeyFor ??
+    ((scope: string) =>
+      sha256Hex(Buffer.from(JSON.stringify([hostedSessionId, prepared.checksum, lineage, scope]))))
+  let existing: SourceManifest | undefined
+  if (options.deduplicate === true) {
+    let cursor: string | undefined
+    const verifiedManifests: SourceManifest[] = []
+    const cursors = new Set<string>()
+    for (let pageIndex = 0; ; pageIndex += 1) {
+      throwIfCancelled(options.signal)
+      if (pageIndex >= 100)
+        throw new OcboxError({
+          code: 'SYNC_FAILED',
+          message: 'Hosted source manifest listing exceeded its page limit',
+          requestId: newRequestId(),
+        })
+      const response = await api.generated.listSourceManifests({
+        path: { sessionId: hostedSessionId },
+        query: { limit: 100, ...(cursor === undefined ? {} : { cursor }) },
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      })
+      const parsed = HostedSourceManifestPageSchema.safeParse(
+        api.assertSuccess('listSourceManifests', response, [200]).body,
+      )
+      if (!parsed.success) {
+        throw new OcboxError({
+          code: 'SYNC_INTEGRITY',
+          message: 'Invalid hosted source manifest page',
+          requestId: newRequestId(),
+        })
+      }
+      const page = parsed.data
+      verifiedManifests.push(
+        ...page.data.filter((item) => item.verified && item.sessionId === hostedSessionId),
+      )
+      if (page.nextCursor === null) break
+      if (cursors.has(page.nextCursor))
+        throw new OcboxError({
+          code: 'SYNC_INTEGRITY',
+          message: 'Hosted source manifest cursor repeated',
+          requestId: newRequestId(),
+        })
+      cursors.add(page.nextCursor)
+      cursor = page.nextCursor
+    }
+    // A -> B -> A must create a fresh delivery, rather than replay A's old
+    // successful apply. Keep the predecessor set stable across interrupted
+    // uploads so retries still reuse their manifest and immutable chunks.
+    lineage = JSON.stringify(
+      verifiedManifests
+        .filter((item) => item.checksum !== prepared.checksum)
+        .map((item) => [item.id, item.checksum])
+        .sort((a, b) => Buffer.compare(Buffer.from(String(a[0])), Buffer.from(String(b[0])))),
+    )
+    const matching = verifiedManifests
+      .filter(
+        (item) =>
+          item.checksum === prepared.checksum &&
+          item.totalBytes === prepared.totalBytes &&
+          item.chunkCount === prepared.chunkCount,
+      )
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0]
+    // Tied or newer receipts for another snapshot leave the delivered tree
+    // ambiguous. Replay the content-addressed upload instead of skipping it.
+    if (
+      matching &&
+      Number.isFinite(Date.parse(matching.updatedAt)) &&
+      verifiedManifests.every(
+        (item) =>
+          item.checksum === prepared.checksum ||
+          Date.parse(item.updatedAt) < Date.parse(matching.updatedAt),
+      )
+    )
+      existing = matching
+  }
+  let manifestId = existing?.id
+  if (manifestId === undefined) {
+    const manifest = await api.generated.createSourceManifest({
+      path: { sessionId: hostedSessionId },
+      body: {
+        checksum: prepared.checksum,
+        chunkCount: prepared.chunkCount,
+        totalBytes: prepared.totalBytes,
+      },
+      idempotencyKey: keyFor('manifest'),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+    const created = api.assertSuccess('createSourceManifest', manifest, [200, 201])
+    manifestId = (created.body as { id: string }).id
+  }
+  if (typeof manifestId !== 'string' || manifestId.length === 0)
+    throw new OcboxError({
+      code: 'SYNC_INTEGRITY',
+      message: 'Invalid hosted source manifest identity',
+      requestId: newRequestId(),
+    })
   const maxAttempts = options.maxAttempts ?? 3
   const policy = options.policy ?? DEFAULT_RETRY_POLICY
   const random = options.random ?? Math.random
   const sleep =
     options.sleep ?? ((milliseconds: number) => sleepWithSignal(milliseconds, options.signal))
-  for (const chunk of prepared.chunks) {
+  for (const chunk of existing === undefined ? prepared.chunks : []) {
     let attempt = 0
     for (;;) {
       throwIfCancelled(options.signal)
@@ -169,13 +282,25 @@ export async function uploadPreparedSource(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   })
   const done = api.assertSuccess('verifySourceChecksum', verified, [200])
-  const body = done.body as { manifestId: string; verified: boolean }
-  if (!body.verified) {
+  const body = done.body as {
+    manifestId: string
+    verified: boolean
+    checksum: string
+    chunkCount: number
+  }
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    body.verified !== true ||
+    body.manifestId !== manifestId ||
+    body.checksum !== prepared.checksum ||
+    body.chunkCount !== prepared.chunkCount
+  ) {
     throw new OcboxError({
       code: 'SYNC_INTEGRITY',
       message: 'The hosted source verification did not match',
       requestId: toRequestId(done.meta.requestId),
     })
   }
-  return { manifestId: body.manifestId, verified: true }
+  return { manifestId: body.manifestId, verified: true, uploaded: existing === undefined }
 }
