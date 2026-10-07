@@ -15,13 +15,19 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate (${{ matrix.os }})
+    name: Validate (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            node: 24.20.0
+          - os: windows-latest
+            node: 24.20.0
+          - os: ubuntu-latest
+            node: 22
     env:
       CI: true
       COREPACK_ENABLE_STRICT: 1
@@ -64,3 +70,56 @@ jobs:
         run: pnpm run build
       - name: Smoke-test CLI shell
         run: pnpm run cli:smoke
+      - name: Set up Node.js 22 for runtime compatibility tests
+        if: matrix.node == 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          check-latest: false
+      - name: Test Node.js 22 runtime
+        if: matrix.node == 22
+        # Keep the contributor pin; bypass it only for compatibility checks.
+        run: |
+          pnpm --config.runtimeOnFail=ignore run test:unit
+          pnpm --config.runtimeOnFail=ignore run test:cli
+
+  package:
+    name: Install npm tarball (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up contributor Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+      - name: Activate exact pnpm
+        run: |
+          npm install --global corepack@0.36.0 --force
+          corepack enable
+          corepack prepare pnpm@11.24.0 --activate
+      - name: Build and pack
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+          npm pack --pack-destination "$RUNNER_TEMP"
+      - name: Set up runtime Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install tarball and smoke-test CLI
+        working-directory: ${{ runner.temp }}
+        run: |
+          prefix=$(mktemp -d)
+          npm i -g --prefix "$prefix" ./opencloudbox-*.tgz
+          "$prefix/bin/ocbox" --version
+          "$prefix/bin/ocbox" --help
+          "$prefix/bin/opencloudbox" --version
+          auth_root=$(mktemp -d)
+          XDG_CONFIG_HOME="$auth_root/config" XDG_STATE_HOME="$auth_root/state" \
+            "$prefix/bin/ocbox" auth status | grep -Fx 'Not logged in'

@@ -2,7 +2,6 @@
   "name": "opencloudbox",
   "version": "0.1.0",
   "description": "Public command-line interface for OpenCloudBox",
-  "private": true,
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -19,7 +18,8 @@
     "opencloudbox": "./dist/index.js"
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "oclif.manifest.json"
   ],
   "exports": {
@@ -34,7 +34,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": "24.20.0"
+    "node": ">=22"
   },
   "devEngines": {
     "runtime": {
@@ -45,7 +45,7 @@
     "packageManager": {
       "name": "pnpm",
       "version": "11.24.0",
-      "onFail": "error"
+      "onFail": "warn"
     }
   },
   "packageManager": "pnpm@11.24.0",
@@ -72,7 +72,8 @@
     "test:cli:metadata": "node scripts/test-cli-metadata.mjs",
     "test:image-verifier": "node scripts/test-image-verifier.mjs",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test:unit"
   },
   "dependencies": {
     "@oclif/core": "4.14.0",
@@ -87,5 +88,16 @@
     "tsup": "8.5.1",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
+  },
+  "keywords": [
+    "opencloudbox",
+    "ocbox",
+    "cli",
+    "cloud",
+    "sandbox"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

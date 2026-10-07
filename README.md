@@ -5,6 +5,17 @@ surface contains the oclif shell, provider-neutral domain and adapter contracts,
 the execution engine/helper boundary, the manifest-based `sync diff|push|pull`
 source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle commands use the issuer-bound login credential.
 
+## Install
+
+Requires Node.js ≥22.
+
+```sh
+npm i -g opencloudbox
+ocbox --help
+```
+
+The `opencloudbox` command is also available as an alias for `ocbox`.
+
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
 
