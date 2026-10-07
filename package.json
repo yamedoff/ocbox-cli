@@ -73,7 +73,8 @@
     "test:image-verifier": "node scripts/test-image-verifier.mjs",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test:unit"
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test:unit",
+    "accept:installed": "node scripts/accept-installed.mjs --self-test"
   },
   "dependencies": {
     "@oclif/core": "4.14.0",
