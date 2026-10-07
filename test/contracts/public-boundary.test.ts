@@ -9,7 +9,7 @@ interface PackageMetadata {
   exports: {
     './contracts': { import: string; types: string }
   }
-  private: boolean
+  private?: boolean
 }
 
 async function collectTypeScriptFiles(directory: string): Promise<readonly string[]> {
@@ -34,7 +34,7 @@ describe('public contract boundary', () => {
   it('publishes contracts through a deterministic side-effect-free package export', async () => {
     const packageUrl = new URL('../../package.json', import.meta.url)
     const metadata = JSON.parse(await readFile(packageUrl, 'utf8')) as PackageMetadata
-    expect(metadata.private).toBe(true)
+    expect(metadata).not.toHaveProperty('private')
     expect(metadata.exports['./contracts']).toEqual({
       types: './dist/contracts.d.ts',
       import: './dist/contracts.js',
