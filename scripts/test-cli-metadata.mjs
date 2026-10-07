@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -52,6 +52,42 @@ const project = {
 }
 const resourceEnvironment = { ...project, id: randomUUID(), projectId: project.id, selected: false }
 let responseMode = 'normal'
+let onboardingCreated = false
+const hostedOperation = {
+  id: 'op_onboarding',
+  kind: 'session_create',
+  state: 'succeeded',
+  progress: 100,
+  projectId: project.id,
+  sessionId: 'sess_onboarding',
+  requestId: randomUUID(),
+  resource: null,
+  error: null,
+  createdAt: project.createdAt,
+  updatedAt: project.updatedAt,
+}
+const hostedSession = {
+  id: 'sess_onboarding',
+  projectId: project.id,
+  normalizedState: 'running',
+  rawState: 'running',
+  primarySandboxId: 'sbx_onboarding',
+  requestedSpec: {},
+  effectiveSpec: {},
+  sandboxes: [
+    {
+      role: 'primary',
+      ordinal: 0,
+      active: true,
+      sandboxId: 'sbx_onboarding',
+      state: 'running',
+      boundAt: project.createdAt,
+      releasedAt: null,
+    },
+  ],
+  createdAt: project.createdAt,
+  updatedAt: project.updatedAt,
+}
 const server = createServer(async (request, response) => {
   // Never emit bearer values, even on fixture assertion failures.
   const authorized = request.headers.authorization === `Bearer ${credential.accessToken}`
@@ -84,13 +120,44 @@ const server = createServer(async (request, response) => {
     )
     return
   }
+  if (
+    responseMode === 'onboarding' &&
+    url.pathname.endsWith('/sessions') &&
+    request.method === 'POST'
+  ) {
+    response
+      .writeHead(202, { 'content-type': 'application/json' })
+      .end(JSON.stringify(hostedOperation))
+    return
+  }
+  if (responseMode === 'onboarding' && url.pathname.includes('/operations/')) {
+    response
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify(hostedOperation))
+    return
+  }
+  if (responseMode === 'onboarding' && url.pathname.includes('/sessions/')) {
+    response
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify(hostedSession))
+    return
+  }
   if (url.pathname === '/v1/projects' && request.method === 'GET') {
-    result = { data: [project], nextCursor: 'next+/=' }
+    result =
+      responseMode === 'onboarding'
+        ? {
+            data: onboardingCreated ? [{ ...project, name: basename(temporary) }] : [],
+            nextCursor: null,
+          }
+        : { data: [project], nextCursor: 'next+/=' }
   } else if (url.pathname.endsWith('/environments') && request.method === 'GET') {
     result = { data: [resourceEnvironment], nextCursor: null }
   } else if (url.pathname.includes('/environments')) {
     result = { ...resourceEnvironment, ...body }
-  } else result = { ...project, ...body }
+  } else {
+    result = { ...project, ...body }
+    if (responseMode === 'onboarding' && request.method === 'POST') onboardingCreated = true
+  }
   if (responseMode === 'private') result.privateToken = 'fixture-private-field'
   response
     .writeHead(request.method === 'POST' ? 201 : 200, {
@@ -253,6 +320,35 @@ try {
   responseMode = 'malformed'
   const malformed = JSON.stringify(await run(['project', 'list'], {}, true))
   assert(malformed.includes('INTERNAL') && !malformed.includes('fixture-pr'))
+  responseMode = 'onboarding'
+  const beforeInit = calls.length
+  await run(['init'])
+  assert.equal(calls[beforeInit].method, 'GET')
+  assert.deepEqual(calls[beforeInit + 1].body, { name: basename(temporary) })
+  const workspacePath = join(temporary, 'opencloudbox.toml')
+  const config = await readFile(workspacePath, 'utf8')
+  assert(config.includes('name = "ocbox"') && config.includes(project.id))
+  const beforeRepeat = calls.length
+  await run(['init'])
+  assert.equal(calls.length, beforeRepeat, 'saved project must avoid redundant API onboarding')
+  await rm(workspacePath)
+  await run(['init'])
+  assert.equal(
+    calls.length,
+    beforeRepeat + 1,
+    'matching directory project must be reused without POST',
+  )
+  await run(['start'])
+  const creation = calls.findLast(
+    (call) => call.path.endsWith('/sessions') && call.method === 'POST',
+  )
+  assert.equal(creation.path, `/v1/projects/${project.id}/sessions`)
+  assert.deepEqual(creation.body, {}, 'no flags/config overrides means server free default')
+  await run(['start', '--new', '--cpu', '2', '--image', 'node:24'])
+  assert.deepEqual(
+    calls.findLast((call) => call.path.endsWith('/sessions') && call.method === 'POST').body,
+    { requestedSpec: { cpu: 2, image: 'node:24' } },
+  )
   responseMode = 'normal'
   const callCount = calls.length
   await metadata.save({ ...binding, issuer: 'https://foreign.test' })
@@ -267,7 +363,7 @@ try {
   )
   assert.equal(calls.length, callCount, 'static environment tokens must never reach HTTP')
   console.log(
-    'CLI metadata: eight authenticated HTTP commands, pagination, replay keys, protected issuer binding, and fail-closed output passed',
+    'CLI metadata: zero-config init/create/reuse/start/spec and eight authenticated HTTP commands, pagination, replay keys, protected issuer binding, and fail-closed output passed',
   )
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose))

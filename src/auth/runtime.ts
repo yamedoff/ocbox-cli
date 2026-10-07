@@ -11,6 +11,7 @@ import {
 } from '../credentials/index.js'
 import { OcboxError } from '../errors/index.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
+import { DEFAULT_API_URL } from '../providers/ocbox/defaults.js'
 import { AuthenticatedHttpClient } from './authenticated-client.js'
 import { PlatformBrowserOpener } from './browser.js'
 import { type ClockPort, systemClock } from './clock.js'
@@ -33,7 +34,7 @@ import { CliOAuthClient } from './oauth-client.js'
 import type { BrowserOpenerPort, FetchPort } from './ports.js'
 import { AuthSessionService } from './service.js'
 import { createSessionGate } from './session-gate.js'
-import { type RefreshGate, HostedTokenManager } from './token-manager.js'
+import { HostedTokenManager, type RefreshGate } from './token-manager.js'
 
 export interface AuthCommandFlags extends RuntimeFlags {
   readonly 'api-url'?: string | undefined
@@ -74,7 +75,7 @@ function configError(message: string): OcboxError {
 }
 
 /**
- * Resolves the hosted API endpoints from flags/environment, or fails closed.
+ * Resolves the hosted API endpoints from flags/environment or the hosted default.
  *
  * The browser authorization page defaults to the canonical T16 consent
  * surface under the configured deployment base
@@ -89,7 +90,7 @@ export function resolveAuthEndpoints(
   const issuer =
     // Environment is an index signature; bracket access is required by TypeScript.
     // biome-ignore lint/complexity/useLiteralKeys: see explanation above
-    flags['api-url'] ?? environment['OCBOX_API_URL']
+    flags['api-url'] ?? environment['OCBOX_API_URL'] ?? DEFAULT_API_URL
   if (typeof issuer !== 'string' || issuer.trim().length === 0) {
     throw configError(
       'Set the hosted API URL with --api-url or the OCBOX_API_URL environment variable',

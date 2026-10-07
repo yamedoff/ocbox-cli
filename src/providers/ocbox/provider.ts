@@ -66,6 +66,11 @@ import {
   type OperationCheckpointStore,
   waitForHostedOperation,
 } from './operations.js'
+import {
+  admissionError,
+  friendlyAdmissionFailure,
+  type HostedRequestedSpec,
+} from './requested-spec.js'
 import type { HostedExecutionEvent } from './wire.js'
 
 const HOSTED_CAPABILITIES: ProviderCapabilities = {
@@ -126,6 +131,7 @@ export function executionWaitDeadlineMilliseconds(
 type SandboxRecord = HostedSandboxMapping
 
 export interface OcboxProviderOptions {
+  readonly requestedSpec?: HostedRequestedSpec | undefined
   readonly mappingScope?: (() => Promise<string>) | undefined
   readonly api: OcboxApiClient
   readonly hostedProjectId: string
@@ -258,6 +264,7 @@ class ExecEventQueue {
 /** Hosted `ocbox` provider over the pinned `/v1` contract. */
 export class OcboxSandboxProvider implements SandboxProvider {
   readonly name = 'ocbox'
+  readonly #requestedSpec: HostedRequestedSpec | undefined
   readonly #api: OcboxApiClient
   readonly #hostedProjectId: string
   readonly #now: () => string
@@ -287,6 +294,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
       throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
     }
+    this.#requestedSpec = options.requestedSpec
     this.#mappingScope = options.mappingScope
     this.#api = options.api
     this.#hostedProjectId = options.hostedProjectId
@@ -434,14 +442,21 @@ export class OcboxSandboxProvider implements SandboxProvider {
     await this.#assertProject(context.requestId)
     const created = await this.#api.generated.createSession({
       path: { projectId: this.#hostedProjectId },
-      body: {},
+      body:
+        this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
+          ? {}
+          : { requestedSpec: this.#requestedSpec },
       idempotencyKey: context.idempotencyKey,
     })
+    if (created.status >= 400) {
+      const denial = admissionError(envelopeOf(created.body).code, toRequestId(created.requestId))
+      if (denial) throw denial
+    }
     const started = this.#api.assertSuccess('createSession', created, [200, 202])
     const hostedOp = started.body as HostedOperation
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
       store: this.#checkpointStore,
-    })
+    }).catch(friendlyAdmissionFailure)
     const hostedSessionId = waited.operation.sessionId ?? (hostedOp.sessionId as string | null)
     if (hostedSessionId === null || hostedSessionId === undefined) {
       throw new OcboxError({

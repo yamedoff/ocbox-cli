@@ -51,7 +51,8 @@ const runtimeFlags = ['--config', configPath, '--state-dir', stateDirectory]
 
 try {
   const initialized = parseEnvelope(
-    (await invoke(projectDirectory, ['init', ...runtimeFlags, '--json'])).stdout,
+    (await invoke(projectDirectory, ['init', '--provider', 'fake', ...runtimeFlags, '--json']))
+      .stdout,
   )
   assert.equal(initialized.name, 'project.initialized')
   assert.equal(initialized.data, 'created')

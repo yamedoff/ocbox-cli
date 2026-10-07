@@ -3,8 +3,7 @@
 `ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
 surface contains the oclif shell, provider-neutral domain and adapter contracts,
 the execution engine/helper boundary, the manifest-based `sync diff|push|pull`
-source transport, and OAuth 2.1 PKCE CLI authentication. Provider integrations
-remain out of scope.
+source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle commands use the issuer-bound login credential.
 
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
@@ -29,10 +28,25 @@ recovery, hook exit contract, Windows discovery, and byte-preserving edits.
 
 ## Hosted project and environment onboarding
 
-After `ocbox auth login --api-url https://your-api.example`, set `OCBOX_API_URL`
-to that same API base (or pass `--api-url` on each metadata command). Metadata
-commands use the protected, issuer-bound login credential and work before a
-hosted project has been selected. They never accept a static environment bearer.
+Log in once, then initialize and run a hosted sandbox without environment variables:
+
+```sh
+ocbox auth login
+ocbox init
+ocbox start
+ocbox exec -- node --version
+```
+
+The default API is staging (`https://api.staging.opencloudbox.dev`), switched to
+production at launch via `DEFAULT_API_URL`. `--api-url` and `OCBOX_API_URL`
+override it. `init` reuses a project named after the current directory or creates
+one and saves its ID in `opencloudbox.toml`. Project selection is `--project`,
+then `OCBOX_PROJECT_ID`, then the saved ID. Use `ocbox init --provider fake` for
+the offline harness. Hosted configs omit resource overrides by default so the
+server chooses the free tier. Optional `--cpu` (cores), `--memory` (bytes),
+`--image`, `--region`, and `--runtime` request explicit resources.
+
+Metadata commands also use the protected login credential:
 
 ```sh
 ocbox project list --limit 20 --json
@@ -51,11 +65,6 @@ Mutation commands accept `--idempotency-key` for a safe retry across invocations
 otherwise they generate a new UUID per invocation. Environment update accepts
 `--name`, `--selected true`, or `--selected false` and requires at least one.
 
-For hosted lifecycle commands such as `start`, use the existing provider config
-(`provider.name = "ocbox"`) and set `OCBOX_PROJECT_ID` to the returned hosted
-project ID in the same shell. Metadata commands do not persist project selection
-or rewrite `opencloudbox.toml`. Server environment selection is metadata and does
-not replace the existing sandbox specification's environment configuration.
 Use `--state-dir` consistently with login if you override the auth state root.
 
 ## Toolchain

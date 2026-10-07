@@ -1,9 +1,16 @@
+import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
 import { initializeProject } from '../cli/runtime.js'
 
 export default class Init extends OcboxCommand {
   static override description = 'Create or validate opencloudbox.toml safely'
-  static override flags = runtimeFlags
+  static override flags = {
+    ...runtimeFlags,
+    provider: Flags.string({
+      options: ['fake', 'ocbox'],
+      description: 'Provider; defaults to ocbox after login, otherwise fake',
+    }),
+  }
 
   async run(): Promise<void> {
     const { flags } = await this.parse(Init)

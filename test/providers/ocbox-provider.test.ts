@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import { MemoryOperationCheckpointStore } from '../../src/providers/ocbox/operations.js'
 import {
   executionWaitDeadlineMilliseconds,
   OcboxSandboxProvider,
 } from '../../src/providers/ocbox/provider.js'
+import {
+  ADMISSION_MESSAGES,
+  requestedSpecFromConfig,
+} from '../../src/providers/ocbox/requested-spec.js'
 import {
   errorResponse,
   HOSTED_PROJECT,
@@ -628,4 +633,110 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(second.operation.idempotencyResolution?.kind).toBe('replayed_result')
     expect(second.sandbox.lifecycle.normalizedState).toBe('deleted')
   })
+})
+
+describe('hosted create request and admission', () => {
+  it('maps only explicit workspace fields to the five closed hosted names', () => {
+    expect(requestedSpecFromConfig(DEFAULT_PROJECT_CONFIG)).toEqual({
+      cpu: 1,
+      memory: 2147483648,
+      image: 'fake-node-24',
+      region: 'local',
+      runtime: 'container',
+    })
+    const minimal = DEFAULT_PROJECT_CONFIG.replace(
+      'runtimeClass = "container"\nregion = "local"\n',
+      '',
+    )
+      .replace('image = { kind = "template", reference = "fake-node-24" }\n', '')
+      .replace(/\[sandbox.resources\]\n[\s\S]*?\n\n/, '')
+    expect(requestedSpecFromConfig(minimal)).toEqual({})
+    expect(
+      requestedSpecFromConfig(minimal.replace('[provider]', '[provider]\nregion = "eu-west"')),
+    ).toEqual({ region: 'eu-west' })
+  })
+
+  it.each([
+    undefined,
+    {},
+    { cpu: 2, memory: 4096, image: 'node:24', region: 'eu-west', runtime: 'container' },
+    { image: 'node:24' },
+  ])('sends requestedSpec only when explicit (%j)', async (requestedSpec) => {
+    let body: unknown
+    const route = routeFetch('happy')
+    const { api } = await seededApi((input, init) => {
+      if (String(input).endsWith('/sessions') && init?.method === 'POST')
+        body = JSON.parse(String(init.body))
+      return route(input, init)
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      requestedSpec,
+    })
+    await provider.create(
+      operationContext() as never,
+      {
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec(),
+      } as never,
+    )
+    expect(body).toEqual(
+      requestedSpec && Object.keys(requestedSpec).length ? { requestedSpec } : {},
+    )
+  })
+
+  it.each(Object.entries(ADMISSION_MESSAGES))(
+    'explains admission denial from operation polling %s',
+    async (code, message) => {
+      const route = routeFetch('happy')
+      const { api } = await seededApi((input, init) =>
+        String(input).includes('/operations/')
+          ? Promise.resolve(
+              jsonResponse(
+                hostedOperationFixture({
+                  state: 'failed',
+                  error: { code, message: 'opaque denial' },
+                }),
+              ),
+            )
+          : route(input, init),
+      )
+      const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+      await expect(
+        provider.create(
+          operationContext() as never,
+          {
+            projectId: LOCAL_IDS.project,
+            sessionId: LOCAL_IDS.session,
+            specification: testSpec(),
+          } as never,
+        ),
+      ).rejects.toMatchObject({ message, providerCode: code })
+    },
+  )
+
+  it.each(Object.entries(ADMISSION_MESSAGES))(
+    'explains admission denial %s',
+    async (code, message) => {
+      const route = routeFetch('happy')
+      const { api } = await seededApi((input, init) =>
+        String(input).endsWith('/sessions') && init?.method === 'POST'
+          ? Promise.resolve(errorResponse(code, 403))
+          : route(input, init),
+      )
+      const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+      await expect(
+        provider.create(
+          operationContext() as never,
+          {
+            projectId: LOCAL_IDS.project,
+            sessionId: LOCAL_IDS.session,
+            specification: testSpec(),
+          } as never,
+        ),
+      ).rejects.toMatchObject({ message, providerCode: code })
+    },
+  )
 })
