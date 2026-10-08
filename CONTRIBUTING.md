@@ -20,3 +20,8 @@ pnpm run licenses:check
 
 Never commit credentials, generated build output, local environment files, or
 unrelated changes. Commit messages should explain one coherent change.
+
+This public repository runs a content guard for internal terms on pull requests
+and branch pushes. It checks added lines and new filenames; the private pattern
+list is maintained only in a repository secret. When that secret is unavailable,
+including on fork pull requests, the guard skips with a notice.
