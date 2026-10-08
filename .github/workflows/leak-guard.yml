@@ -1,0 +1,60 @@
+name: Content guard
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  leak-guard:
+    name: Check added content
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check pattern availability
+        id: patterns
+        env:
+          LEAK_GUARD_PATTERNS: ${{ secrets.LEAK_GUARD_PATTERNS }}
+        shell: bash
+        run: |
+          if [[ -z "${LEAK_GUARD_PATTERNS//[[:space:]]/}" ]]; then
+            echo '::notice::Leak guard skipped: LEAK_GUARD_PATTERNS is unavailable (including fork PRs).'
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out complete history
+        if: steps.patterns.outputs.available == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        if: steps.patterns.outputs.available == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          check-latest: false
+      - name: Ensure diff endpoints are available
+        if: steps.patterns.outputs.available == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.after }}
+        shell: bash
+        run: |
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if [[ "$sha" =~ ^0+$ ]]; then
+              continue
+            fi
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$sha"
+            fi
+          done
+      - name: Scan added lines and new filenames
+        if: steps.patterns.outputs.available == 'true'
+        env:
+          LEAK_GUARD_PATTERNS: ${{ secrets.LEAK_GUARD_PATTERNS }}
+        run: node scripts/leak-guard.mjs
