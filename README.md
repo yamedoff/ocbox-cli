@@ -149,4 +149,26 @@ pnpm run licenses:check
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
 [docs/dependency-policy.md](docs/dependency-policy.md) for pinning policy.
 
+The installed-CLI acceptance harness packs and installs the CLI into an isolated
+directory and exercises login and the hosted journey. Its offline self-test uses
+a local HTTP fixture:
+
+```sh
+node scripts/accept-installed.mjs --self-test
+node scripts/accept-installed.mjs --api-url https://api.example.test
+```
+
+Live runs use manual browser login unless `OCB_TEST_MAILBOX_API_KEY` and
+`OCB_TEST_MAILBOX_NAMESPACE` are set. For automated login, also set
+`OCB_TEST_MAILBOX_API_URL` to the test mailbox API base URL and
+`OCB_TEST_MAILBOX_DOMAIN` to its receiving email domain; no service hostname is
+built in. The mailbox adapter provides `address(tag)` and
+`messages({ tag, since })` to the browser driver. Its HTTP implementation reads
+`api/json` relative to the configured base URL using `apikey`, `namespace`, `tag`,
+`timestamp_from`, and `livequery=false`, and accepts a `result: "success"` response
+with an `emails` array containing `tag`, `timestamp`, `text`, and `html` fields.
+Set `OCB_ACCEPT_WEB_ORIGIN` if the login web origin differs from the API's
+corresponding app origin. Credentials and mailbox bodies stay out of JSONL
+evidence and the installed CLI's environment.
+
 Use `ocbox cancel [execution-id] [--sandbox <local-id>]` from any terminal to cancel an execution; `--wait-timeout` bounds the wait in milliseconds.
