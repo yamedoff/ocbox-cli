@@ -4,6 +4,7 @@ import { resolve, sep } from 'node:path'
 import { test } from 'node:test'
 import {
   browserLogin,
+  createMailboxAdapter,
   parseArgs,
   privateEnvironment,
   redact,
@@ -48,7 +49,10 @@ test('child isolation excludes operator credentials and runtime overrides', () =
   const previous = { ...process.env }
   try {
     Object.assign(process.env, {
-      TESTMAIL_API_KEY: 'private',
+      OCB_TEST_MAILBOX_API_KEY: 'private',
+      OCB_TEST_MAILBOX_NAMESPACE: 'private',
+      OCB_TEST_MAILBOX_API_URL: 'https://mailbox.example.test',
+      OCB_TEST_MAILBOX_DOMAIN: 'inbox.example.test',
       OCBOX_TOKEN_URL: 'https://foreign.example',
       OCBOX_PROJECT_ID: 'foreign-project',
       NODE_OPTIONS: '--require=foreign',
@@ -58,7 +62,10 @@ test('child isolation excludes operator credentials and runtime overrides', () =
     const root = resolve('private-root')
     const env = privateEnvironment(root)
     for (const name of [
-      'TESTMAIL_API_KEY',
+      'OCB_TEST_MAILBOX_API_KEY',
+      'OCB_TEST_MAILBOX_NAMESPACE',
+      'OCB_TEST_MAILBOX_API_URL',
+      'OCB_TEST_MAILBOX_DOMAIN',
       'OCBOX_TOKEN_URL',
       'OCBOX_PROJECT_ID',
       'NODE_OPTIONS',
@@ -116,6 +123,66 @@ test('authorization binding rejects foreign callbacks, duplicate parameters and 
     const url = authorization(origin)
     mutate(url)
     assert.throws(() => validateAuthorization(url.href, origin))
+  }
+})
+
+test('mailbox adapter uses the configured base URL and domain and filters unrelated or old messages', async () => {
+  let status = 200
+  let result = 'success'
+  const server = createServer((request, response) => {
+    const url = new URL(request.url, origin)
+    assert.equal(url.pathname, '/mailbox/api/json')
+    assert.deepEqual(Object.fromEntries(url.searchParams), {
+      apikey: 'private-mail-key',
+      namespace: 'fixture',
+      tag: 'current',
+      timestamp_from: '100',
+      livequery: 'false',
+    })
+    response.writeHead(status, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        result,
+        emails: [
+          { tag: 'other', timestamp: 101, text: 'unrelated' },
+          { tag: 'current', timestamp: 99, text: 'old' },
+          { tag: 'current', text: 'missing timestamp' },
+          { tag: 'current', timestamp: 100, text: 'plain', html: '<p>html</p>' },
+        ],
+      }),
+    )
+  })
+  await new Promise((done) => server.listen(0, '127.0.0.1', done))
+  const origin = `http://127.0.0.1:${server.address().port}`
+  const config = {
+    apiUrl: `${origin}/mailbox`,
+    key: 'private-mail-key',
+    namespace: 'fixture',
+    domain: 'inbox.example.test',
+  }
+  try {
+    const mailbox = createMailboxAdapter(config)
+    assert.equal(mailbox.address('current'), 'fixture.current@inbox.example.test')
+    assert.deepEqual(await mailbox.messages({ tag: 'current', since: 100 }), ['plain\n<p>html</p>'])
+    status = 503
+    await assert.rejects(mailbox.messages({ tag: 'current', since: 100 }), /mailbox_http_status/)
+    status = 200
+    result = 'failure'
+    await assert.rejects(mailbox.messages({ tag: 'current', since: 100 }), /mailbox_result/)
+    for (const change of [
+      { apiUrl: undefined },
+      { apiUrl: 'https://user:private@mailbox.example.test' },
+      { apiUrl: 'file:///mailbox' },
+      { domain: undefined },
+      { domain: 'invalid@domain' },
+      { key: '' },
+      { namespace: 'invalid@namespace' },
+    ])
+      assert.throws(() => createMailboxAdapter({ ...config, ...change }))
+  } finally {
+    await new Promise((done) => {
+      server.close(done)
+      server.closeAllConnections()
+    })
   }
 })
 
@@ -189,9 +256,12 @@ for (const boundary of ['foreign redirect', 'widened consent']) {
         browserLogin(authorization(origin).href, {
           apiOrigin: origin,
           webOrigin: origin,
-          key: 'private-mail-key',
-          namespace: 'mail',
-          mailboxOrigin: origin,
+          mailbox: createMailboxAdapter({
+            apiUrl: origin,
+            key: 'private-mail-key',
+            namespace: 'mail',
+            domain: 'inbox.example.test',
+          }),
         }),
       )
       assert.equal(logout, 1)
