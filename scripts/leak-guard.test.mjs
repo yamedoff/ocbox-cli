@@ -4,7 +4,14 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { compilePatterns, eventRange, run, scanAddedLines, scanRepository } from './leak-guard.mjs'
+import {
+  compilePatterns,
+  eventRange,
+  run,
+  scanAddedLines,
+  scanFullTree,
+  scanRepository,
+} from './leak-guard.mjs'
 
 const patterns = compilePatterns('forbiddenterm\nmadeup[- ]term')
 const sha = '1'.repeat(40)
@@ -211,6 +218,147 @@ test('CLI results contain only paths, line numbers, and indexes; failures are re
   writeFileSync(env.GITHUB_EVENT_PATH, '{forbiddenterm')
   assert.equal(run({ cwd: repo.cwd, env, log }), 1)
   assert.deepEqual(output, ['::error::Leak guard could not complete.'])
+})
+
+test('PR scans use the merge base and event head despite a checked-out merge ref', (t) => {
+  const repo = repository(t)
+  repo.write('README.md', 'forbiddenterm\n')
+  repo.write('.devcontainer/Dockerfile', 'forbiddenterm\n')
+  repo.write('scripts/accept-installed.mjs', 'forbiddenterm\n')
+  const common = repo.commit()
+  repo.write('README.md', 'safe\n')
+  repo.write('.devcontainer/Dockerfile', 'safe\n')
+  repo.write('base-only.txt', 'forbiddenterm\n')
+  const base = repo.commit()
+  repo.git('checkout', '--quiet', '-b', 'topic', common)
+  repo.write('src/provider.txt', 'safe\nforbiddenterm\n')
+  const head = repo.commit()
+  repo.git('checkout', '--quiet', '--detach', base)
+  repo.git('merge', '--quiet', '--no-ff', '-m', 'Fixture', head)
+  const merge = repo.git('rev-parse', 'HEAD')
+  repo.git('update-ref', 'refs/pull/17/merge', merge)
+  const output = []
+  assert.equal(
+    run({
+      cwd: repo.cwd,
+      env: {
+        ...repo.eventEnv('pull_request', {
+          pull_request: { base: { sha: base }, head: { sha: head } },
+        }),
+        GITHUB_SHA: merge,
+        GITHUB_REF: 'refs/pull/17/merge',
+      },
+      log: (line) => output.push(JSON.parse(line)),
+    }),
+    1,
+  )
+  assert.deepEqual(output, [{ file: 'src/provider.txt', line: 2, pattern: 1 }])
+  // A two-dot diff resurrects base-only removals; a merge-head scan includes base-only additions.
+  assert(scanRepository(repo.cwd, { base, head }, patterns).some((hit) => hit.file === 'README.md'))
+  assert(
+    scanRepository(repo.cwd, { base: common, head: merge }, patterns).some(
+      (hit) => hit.file === 'base-only.txt',
+    ),
+  )
+})
+
+test('an older PR target and a new-branch push include inherited additions', (t) => {
+  const repo = repository(t)
+  const olderBase = repo.commit()
+  repo.write('scripts/accept-installed.mjs', 'forbiddenterm\n')
+  const base = repo.commit()
+  repo.write('src/provider.txt', 'safe\n')
+  const head = repo.commit()
+  const inherited = [{ file: 'scripts/accept-installed.mjs', line: 1, pattern: 1 }]
+  assert.deepEqual(
+    scanRepository(repo.cwd, { base: olderBase, head, mergeBase: true }, patterns),
+    inherited,
+  )
+  assert.deepEqual(scanRepository(repo.cwd, { base, head, mergeBase: true }, patterns), [])
+  assert.deepEqual(scanRepository(repo.cwd, { base, head }, patterns), [])
+  assert.deepEqual(scanRepository(repo.cwd, { base: null, head }, patterns), inherited)
+})
+
+test('PR scans fail closed in shallow checkouts even when both endpoints are present', (t) => {
+  const repo = repository(t)
+  repo.write('existing.txt', 'forbiddenterm\n')
+  const base = repo.commit()
+  repo.write('topic.txt', 'safe\n')
+  const head = repo.commit()
+  const shallow = join(repo.cwd, 'shallow')
+  repo.git('clone', '--quiet', '--depth', '2', new URL(`file://${repo.cwd}`).href, shallow)
+  assert.throws(() => scanRepository(shallow, { base, head, mergeBase: true }, patterns), {
+    message: 'PR scans require complete repository history.',
+  })
+})
+
+test('full-tree audit reads tracked working-tree files, binary bytes, names, and symlink targets', (t) => {
+  const repo = repository(t)
+  repo.write('existing.txt', 'safe\n')
+  repo.write('binary.dat', '\0safe\nforbiddenterm\n')
+  repo.write('empty-madeup-term.txt', '')
+  const special = '-[odd]\t"\nfile.txt'
+  repo.write(special, 'forbiddenterm\n')
+  symlinkSync('forbiddenterm-missing.txt', join(repo.cwd, 'link'))
+  repo.commit()
+  repo.write('existing.txt', 'safe\nFORBIDDENTERM\n')
+  repo.write('untracked.txt', 'forbiddenterm\n')
+  const expected = [
+    { file: special, line: 1, pattern: 1 },
+    { file: 'binary.dat', line: 2, pattern: 1 },
+    { file: 'empty-madeup-term.txt', line: 0, pattern: 2 },
+    { file: 'existing.txt', line: 2, pattern: 1 },
+    { file: 'link', line: 1, pattern: 1 },
+  ]
+  assert.deepEqual(scanFullTree(repo.cwd, patterns), expected)
+  mkdirSync(join(repo.cwd, 'nested'))
+  assert.deepEqual(scanFullTree(join(repo.cwd, 'nested'), patterns), expected)
+  const result = spawnSync(
+    process.execPath,
+    [new URL('./leak-guard.mjs', import.meta.url).pathname, '--full-tree'],
+    {
+      cwd: repo.cwd,
+      env: {
+        ...process.env,
+        LEAK_GUARD_PATTERNS: 'forbiddenterm\nmadeup[- ]term',
+        GITHUB_EVENT_PATH: '/absent',
+      },
+      encoding: 'utf8',
+    },
+  )
+  assert.equal(result.status, 1)
+  assert.equal(result.stderr, '')
+  assert.deepEqual(
+    result.stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line)),
+    expected,
+  )
+  assert(!result.stdout.includes('FORBIDDENTERM'))
+})
+
+test('full-tree audit succeeds silently when clean and refuses unavailable patterns or invalid flags', (t) => {
+  const repo = repository(t)
+  repo.write('safe.txt', 'safe\n')
+  repo.commit()
+  const output = []
+  const log = (line) => output.push(line)
+  assert.equal(
+    run({
+      cwd: repo.cwd,
+      argv: ['--full-tree'],
+      env: { LEAK_GUARD_PATTERNS: 'forbiddenterm' },
+      log,
+    }),
+    0,
+  )
+  assert.deepEqual(output, [])
+  assert.equal(run({ cwd: repo.cwd, argv: ['--full-tree'], env: {}, log }), 1)
+  assert.deepEqual(output, ['::error::Full-tree audit requires patterns.'])
+  output.length = 0
+  assert.equal(run({ argv: ['--unexpected'], env: {}, log }), 1)
+  assert.deepEqual(output, ['::error::Usage: leak-guard.mjs [--full-tree].'])
 })
 
 test('clean diffs and branch deletion succeed', (t) => {

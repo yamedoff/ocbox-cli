@@ -7,7 +7,8 @@
  *
  * node scripts/accept-installed.mjs --self-test
  * node scripts/accept-installed.mjs --api-url https://api.staging.opencloudbox.dev
- * Optional live env: TESTMAIL_API_KEY, TESTMAIL_NAMESPACE, OCB_ACCEPT_WEB_ORIGIN.
+ * Optional live env: OCB_TEST_MAILBOX_API_KEY, OCB_TEST_MAILBOX_NAMESPACE,
+ * OCB_TEST_MAILBOX_API_URL, OCB_TEST_MAILBOX_DOMAIN, OCB_ACCEPT_WEB_ORIGIN.
  * npm install uses a loopback registry of the installed runtime dependency graph,
  * so neither mode needs the public npm registry or the operator's npm credentials.
  */
@@ -318,7 +319,7 @@ export async function dependencyRegistry(root, npm, env) {
   return registry
 }
 
-// HTTP bodies stay private and bounded, including Testmail responses and cookies.
+// HTTP bodies stay private and bounded, including test mailbox responses and cookies.
 async function request(url, init = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 20_000)
@@ -375,11 +376,46 @@ export function validateAuthorization(raw, apiOrigin) {
   return url
 }
 
+// Mailbox adapter contract: address(tag) and messages({ tag, since }).
+// Keep the HTTP query and response format separate from the browser journey.
+export function createMailboxAdapter({ apiUrl, key, namespace, domain }) {
+  const base = new URL(apiUrl)
+  assert(
+    ['http:', 'https:'].includes(base.protocol) &&
+      !base.username &&
+      !base.password &&
+      !base.search &&
+      !base.hash,
+    'mailbox_api_url',
+  )
+  assert(typeof key === 'string' && key.length > 0, 'mailbox_api_key')
+  assert(typeof namespace === 'string' && /^[A-Za-z0-9_-]+$/.test(namespace), 'mailbox_namespace')
+  assert(typeof domain === 'string' && /^[A-Za-z0-9.-]+$/.test(domain), 'mailbox_domain')
+  if (!base.pathname.endsWith('/')) base.pathname += '/'
+  return {
+    address: (tag) => `${namespace}.${tag}@${domain}`,
+    async messages({ tag, since }) {
+      const url = new URL('api/json', base)
+      for (const [name, value] of Object.entries({
+        apikey: key,
+        namespace,
+        tag,
+        timestamp_from: String(since),
+        livequery: 'false',
+      }))
+        url.searchParams.set(name, value)
+      const response = await request(url)
+      assert.equal(response.status, 200, 'mailbox_http_status')
+      assert.equal(response.json?.result, 'success', 'mailbox_result')
+      return (response.json.emails ?? [])
+        .filter((email) => email.tag === tag && Number(email.timestamp) >= since)
+        .map((email) => `${email.text ?? ''}\n${email.html ?? ''}`)
+    },
+  }
+}
+
 // Same browser session for binding cookie, magic-link consume, CSRF and consent.
-export async function browserLogin(
-  raw,
-  { apiOrigin, webOrigin, key, namespace, mailboxOrigin = 'https://api.testmail.app' },
-) {
+export async function browserLogin(raw, { apiOrigin, webOrigin, mailbox }) {
   const url = validateAuthorization(raw, apiOrigin)
   const cookies = new Map()
   let csrf
@@ -411,7 +447,7 @@ export async function browserLogin(
     assert.equal(
       (
         await browser('/v1/auth/magic-links', 'POST', {
-          email: `${namespace}.${tag}@inbox.testmail.app`,
+          email: mailbox.address(tag),
         })
       ).accepted,
       true,
@@ -419,21 +455,8 @@ export async function browserLogin(
     let token
     const deadline = Date.now() + 150_000
     while (Date.now() < deadline && !token) {
-      const mailbox = new URL('/api/json', mailboxOrigin)
-      for (const [name, value] of Object.entries({
-        apikey: key,
-        namespace,
-        tag,
-        timestamp_from: String(since),
-        livequery: 'false',
-      }))
-        mailbox.searchParams.set(name, value)
-      const response = await request(mailbox)
-      assert.equal(response.status, 200, 'mailbox_http_status')
-      assert.equal(response.json?.result, 'success', 'mailbox_result')
-      for (const email of response.json.emails ?? []) {
-        if (email.tag !== tag || Number(email.timestamp) < since) continue
-        const content = `${email.text ?? ''}\n${email.html ?? ''}`.replace(/&amp;/g, '&')
+      for (const message of await mailbox.messages({ tag, since })) {
+        const content = message.replace(/&amp;/g, '&')
         for (const match of content.matchAll(/https?:\/\/[^\s<>"']+/g)) {
           let link
           try {
@@ -654,7 +677,8 @@ export async function main(argv) {
     const apiOrigin = mock?.origin ?? options.apiUrl
     env.OCBOX_API_URL = apiOrigin
     const automated =
-      options.selfTest || Boolean(process.env.TESTMAIL_API_KEY && process.env.TESTMAIL_NAMESPACE)
+      options.selfTest ||
+      Boolean(process.env.OCB_TEST_MAILBOX_API_KEY && process.env.OCB_TEST_MAILBOX_NAMESPACE)
     const webOrigin =
       mock?.origin ?? process.env.OCB_ACCEPT_WEB_ORIGIN ?? apiOrigin.replace(/\/\/api\./, '//app.')
     await required('login', async (evidence) => {
@@ -670,9 +694,14 @@ export async function main(argv) {
               await browserLogin(event.data.url, {
                 apiOrigin,
                 webOrigin,
-                key: options.selfTest ? 'mock-key' : process.env.TESTMAIL_API_KEY,
-                namespace: options.selfTest ? 'mock' : process.env.TESTMAIL_NAMESPACE,
-                ...(mock ? { mailboxOrigin: mock.origin } : {}),
+                mailbox: createMailboxAdapter({
+                  apiUrl: mock?.origin ?? process.env.OCB_TEST_MAILBOX_API_URL,
+                  key: options.selfTest ? 'mock-key' : process.env.OCB_TEST_MAILBOX_API_KEY,
+                  namespace: options.selfTest ? 'mock' : process.env.OCB_TEST_MAILBOX_NAMESPACE,
+                  domain: options.selfTest
+                    ? 'mailbox.example.test'
+                    : process.env.OCB_TEST_MAILBOX_DOMAIN,
+                }),
               })
             else
               process.stderr.write(

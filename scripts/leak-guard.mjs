@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { lstatSync, readFileSync, readlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 class GuardError extends Error {}
@@ -79,8 +80,17 @@ function git(cwd, args) {
 }
 
 export function scanRepository(cwd, range, patterns) {
-  const base = range.base ?? git(cwd, ['hash-object', '-t', 'tree', '--stdin']).trim()
-  const revisions = range.mergeBase ? [`${base}...${range.head}`] : [base, range.head]
+  let base = range.base ?? git(cwd, ['hash-object', '-t', 'tree', '--stdin']).trim()
+  if (range.mergeBase) {
+    if (git(cwd, ['rev-parse', '--is-shallow-repository']).trim() !== 'false')
+      throw new GuardError('PR scans require complete repository history.')
+    // Resolve the three-dot base once for both the file list and line patches.
+    // Never use checkout HEAD: on PR events it can be a synthetic merge commit.
+    const bases = git(cwd, ['merge-base', '--all', base, range.head]).trim().split('\n')
+    if (bases.length !== 1) throw new GuardError('PR scan requires a unique merge base.')
+    base = bases[0]
+  }
+  const revisions = [base, range.head]
   const options = ['--no-ext-diff', '--no-textconv', '--no-renames', '--no-color']
   const entries = git(cwd, [
     'diff',
@@ -114,20 +124,58 @@ export function scanRepository(cwd, range, patterns) {
   return findings
 }
 
-export function run({ env = process.env, cwd = process.cwd(), log = console.log } = {}) {
+export function scanFullTree(cwd, patterns) {
+  cwd = git(cwd, ['rev-parse', '--show-toplevel']).trim()
+  const entries = git(cwd, ['ls-files', '--stage', '-z']).split('\0').slice(0, -1)
+  const findings = []
+  for (const entry of entries) {
+    const tab = entry.indexOf('\t')
+    const [mode, , stage] = entry.slice(0, tab).split(' ')
+    if (stage !== '0') throw new GuardError('Full-tree audit requires a resolved index.')
+    // A tracked submodule is a separate repository, not a file in this tree.
+    if (mode === '160000') continue
+    const file = entry.slice(tab + 1)
+    findings.push(...matches(file, file, 0, patterns))
+    // Read working-tree bytes so audits include edits before they are committed.
+    // Scan symlink targets without following links outside the repository.
+    const path = join(cwd, file)
+    const contents = lstatSync(path).isSymbolicLink()
+      ? readlinkSync(path)
+      : readFileSync(path, 'utf8')
+    const lines = contents ? contents.split('\n') : []
+    if (contents.endsWith('\n')) lines.pop()
+    for (const [offset, line] of lines.entries())
+      findings.push(...matches(line, file, offset + 1, patterns))
+  }
+  return findings
+}
+
+export function run({ env = process.env, cwd = process.cwd(), log = console.log, argv = [] } = {}) {
   try {
+    if (argv.length && (argv.length !== 1 || argv[0] !== '--full-tree'))
+      throw new GuardError('Usage: leak-guard.mjs [--full-tree].')
+    const fullTree = argv[0] === '--full-tree'
     const value = env.LEAK_GUARD_PATTERNS ?? ''
     if (!value.trim()) {
+      if (fullTree) throw new GuardError('Full-tree audit requires patterns.')
       log('::notice::Leak guard skipped: LEAK_GUARD_PATTERNS is unavailable (including fork PRs).')
       return 0
     }
     const patterns = compilePatterns(value)
-    const range = eventRange(env.GITHUB_EVENT_NAME, JSON.parse(readFileSync(env.GITHUB_EVENT_PATH)))
-    if (!range) {
-      log('::notice::Leak guard skipped: branch deletion has no added content.')
-      return 0
+    let findings
+    if (fullTree) {
+      findings = scanFullTree(cwd, patterns)
+    } else {
+      const range = eventRange(
+        env.GITHUB_EVENT_NAME,
+        JSON.parse(readFileSync(env.GITHUB_EVENT_PATH)),
+      )
+      if (!range) {
+        log('::notice::Leak guard skipped: branch deletion has no added content.')
+        return 0
+      }
+      findings = scanRepository(cwd, range, patterns)
     }
-    const findings = scanRepository(cwd, range, patterns)
     // JSON escaping prevents filenames from injecting log commands or extra lines.
     for (const finding of findings) log(JSON.stringify(finding))
     return findings.length ? 1 : 0
@@ -140,5 +188,5 @@ export function run({ env = process.env, cwd = process.cwd(), log = console.log 
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = run()
+  process.exitCode = run({ argv: process.argv.slice(2) })
 }

@@ -1,6 +1,6 @@
 {
   "artifact": "openapi.yaml",
-  "sourceRepository": "OpenCloudBox hosted API contract",
+  "source": "hosted-service",
   "sourceCommit": "1810efe",
   "sourcePath": "openapi/openapi.yaml",
   "sha256": "bb33674177d836448fff59a3cdd0049d600eb10ceb199a5b2f5cb610641f46b6",
@@ -10,5 +10,5 @@
   "version": "0.1.0",
   "consumedAs": "published-contract-artifact-only",
   "generated": ["src/api/generated/client.ts"],
-  "note": "This public CLI consumes only the reviewed, published OpenAPI contract artifact at the pinned source commit."
+  "note": "This public CLI consumes only the reviewed, published OpenAPI contract artifact at the pinned source commit. No private implementation, domain, or test code is imported or copied."
 }
