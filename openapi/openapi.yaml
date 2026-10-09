@@ -326,6 +326,7 @@ paths:
     post:
       operationId: createSession
       tags: [Sessions]
+      description: Accepts a durable create intent and admission. Returns within an 8 second provisioning budget with an operation and session snapshot; a fast completion uses the same 202 shape. Poll the operation Location or getSession until running or terminal failure. The hosted session starts in provisioning.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -337,7 +338,16 @@ paths:
               $ref: '#/components/schemas/CreateSessionRequest'
       responses:
         '202':
-          $ref: '#/components/responses/Operation'
+          description: Accepted session create (may already be complete). The top-level id is the operation id.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Relative URL of the operation to poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreateResponse'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -2303,7 +2313,7 @@ components:
         normalizedState:
           type: string
           enum:
-            [created, starting, running, pausing, paused, stopping, stopped, destroying, destroyed]
+            [created, provisioning, starting, running, pausing, paused, stopping, stopped, destroying, destroyed]
         rawState:
           type: string
           minLength: 1
@@ -2375,6 +2385,56 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ResourceLink'
             - type: 'null'
+    SessionCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [id, createdAt, updatedAt, kind, projectId, sessionId, state, progress, requestId, error, resource, session]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 64
+        projectId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        sessionId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        state:
+          type: string
+          enum: [pending, running, succeeded, cancelled, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        requestId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/SafeError'
+            - type: 'null'
+        resource:
+          oneOf:
+            - $ref: '#/components/schemas/ResourceLink'
+            - type: 'null'
+        session:
+          $ref: '#/components/schemas/Session'
     Execution:
       type: object
       additionalProperties: false
@@ -2721,6 +2781,11 @@ components:
           additionalProperties: false
           description: Closed allowlist of non-authoritative runtime knobs. Billing authority is server-side only; BYOK/managed is never client-selectable, so byok and billingMode are not part of this schema and are rejected. The MCP `session_create` requestedSpec is a stricter typed subset (integer cpu/memory, no region); see docs/t13-http-contract.md.
           properties:
+            lifetimeSeconds:
+              type: integer
+              minimum: 300
+              maximum: 7200
+              description: Optional shorter lifetime in seconds; must also be at or below the deployment maxLifetimeSeconds.
             cpu:
               type: string
               minLength: 1

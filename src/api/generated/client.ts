@@ -1,16 +1,16 @@
 /**
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
- * Pinned source commit: a10fef5
- * Pinned source SHA-256: fc619a7450b65b9b340e9c8a40626735001c8be68e5666fd0ae6890a6d0ef500
+ * Pinned source commit: 1810efe
+ * Pinned source SHA-256: bb33674177d836448fff59a3cdd0049d600eb10ceb199a5b2f5cb610641f46b6
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
  * Node runtime. It never imports private implementation or domain code.
  */
 
-export const OPENAPI_SOURCE_COMMIT = "a10fef5" as const
-export const OPENAPI_CHECKSUM = "sha256:fc619a7450b65b9b340e9c8a40626735001c8be68e5666fd0ae6890a6d0ef500" as const
+export const OPENAPI_SOURCE_COMMIT = "1810efe" as const
+export const OPENAPI_CHECKSUM = "sha256:bb33674177d836448fff59a3cdd0049d600eb10ceb199a5b2f5cb610641f46b6" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -30,6 +30,7 @@ export interface ApiResult<ResponseType> {
   readonly body: ResponseType
   readonly requestId: string | null
   readonly replay: boolean
+  readonly retryAfter?: string | null
 }
 
 export interface SafeError {
@@ -110,7 +111,7 @@ export interface Session {
   readonly projectId: string
   readonly requestedSpec: Record<string, unknown>
   readonly effectiveSpec: Record<string, unknown>
-  readonly normalizedState: "created" | "starting" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "destroying" | "destroyed"
+  readonly normalizedState: "created" | "provisioning" | "starting" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "destroying" | "destroyed"
   readonly rawState: string
   readonly sandboxes: readonly SandboxBinding[]
   readonly primarySandboxId: string | null
@@ -133,6 +134,21 @@ export interface Operation {
   readonly requestId: string
   readonly error: SafeError | null
   readonly resource: ResourceLink | null
+}
+
+export interface SessionCreateResponse {
+  readonly id: string
+  readonly createdAt: string
+  readonly updatedAt: string
+  readonly kind: string
+  readonly projectId: string | null
+  readonly sessionId: string | null
+  readonly state: "pending" | "running" | "succeeded" | "cancelled" | "failed"
+  readonly progress: number
+  readonly requestId: string
+  readonly error: SafeError | null
+  readonly resource: ResourceLink | null
+  readonly session: Session
 }
 
 export interface Execution {
@@ -266,7 +282,7 @@ export interface UpdateEnvironmentRequest {
 }
 
 export interface CreateSessionRequest {
-  readonly requestedSpec?: { readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
+  readonly requestedSpec?: { readonly lifetimeSeconds?: number; readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
 }
 
 export interface CreateExecutionRequest {
@@ -631,7 +647,7 @@ export interface OpenCloudBoxClient {
   updateEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body: UpdateEnvironmentRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<SessionCreateResponse | ErrorEnvelope>>
   getSession(args: { readonly path: { readonly sessionId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   startSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   pauseSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -717,6 +733,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -737,6 +754,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -754,6 +772,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -774,6 +793,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -794,6 +814,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -815,6 +836,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -835,6 +857,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -852,6 +875,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -872,6 +896,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -892,6 +917,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -913,10 +939,11 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
-    async createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<SessionCreateResponse | ErrorEnvelope>> {
       const url = new URL(`${normalizedBase}/v1/projects/${encodeURIComponent(String(args.path.projectId))}/sessions`)
       const headers: Record<string, string> = { ...defaultHeaders }
       if (args?.body !== undefined) headers['content-type'] = 'application/json'
@@ -930,9 +957,10 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const text = await response.text()
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
-        body: parsed as unknown,
+        body: parsed as SessionCreateResponse | ErrorEnvelope,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -950,6 +978,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -968,6 +997,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -986,6 +1016,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1004,6 +1035,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1022,6 +1054,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1044,6 +1077,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1061,6 +1095,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1079,6 +1114,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1099,6 +1135,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1116,6 +1153,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1137,6 +1175,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1154,6 +1193,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1172,6 +1212,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1193,6 +1234,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1213,6 +1255,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1233,6 +1276,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1251,6 +1295,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1271,6 +1316,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1289,6 +1335,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1310,6 +1357,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1330,6 +1378,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1347,6 +1396,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1367,6 +1417,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1384,6 +1435,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1404,6 +1456,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1424,6 +1477,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1442,6 +1496,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1459,6 +1514,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1480,6 +1536,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1501,6 +1558,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1519,6 +1577,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1539,6 +1598,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1559,6 +1619,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1577,6 +1638,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1598,6 +1660,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1618,6 +1681,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1635,6 +1699,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1652,6 +1717,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1672,6 +1738,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1689,6 +1756,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1708,6 +1776,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1726,6 +1795,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1745,6 +1815,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1764,6 +1835,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1783,6 +1855,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1802,6 +1875,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1819,6 +1893,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1836,6 +1911,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1853,6 +1929,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1872,6 +1949,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1891,6 +1969,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1910,6 +1989,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1927,6 +2007,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1944,6 +2025,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },
@@ -1963,6 +2045,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
         status: response.status,
       }
     },

@@ -55,6 +55,29 @@ describe('hosted operation waiter', () => {
     expect(sleeps[0]).toBe(5000)
   })
 
+  it('honours a header-only Retry-After while polling', async () => {
+    let calls = 0
+    const { api } = await seededApi(async () => {
+      if (++calls === 1)
+        return new Response(
+          JSON.stringify({
+            error: { code: 'RATE_LIMITED', message: 'Try later' },
+            requestId: REQUEST_ID,
+          }),
+          { status: 429, headers: { 'retry-after': '2' } },
+        )
+      return jsonResponse(hostedOperationFixture())
+    })
+    const sleeps: number[] = []
+    const result = await waitForHostedOperation(api, 'op_hosted_1', {
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds)
+      },
+    })
+    expect(result.operation.state).toBe('succeeded')
+    expect(sleeps).toEqual([2000])
+  })
+
   it('maps terminal failures and cancellations losslessly', async () => {
     const { api: failedApi } = await seededApi(() =>
       Promise.resolve(

@@ -141,7 +141,6 @@ export function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Pro
       signal?.removeEventListener('abort', onAbort)
       resolve()
     }, milliseconds)
-    timer.unref?.()
     signal?.addEventListener('abort', onAbort, { once: true })
   })
 }

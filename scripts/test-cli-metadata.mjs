@@ -53,6 +53,12 @@ const project = {
 const resourceEnvironment = { ...project, id: randomUUID(), projectId: project.id, selected: false }
 let responseMode = 'normal'
 let onboardingCreated = false
+let provisioning = false
+let operationPolls = 0
+let provisioningPolls = 0
+let destroying = false
+let deletionPolls = 0
+let executionEventsRead = false
 const hostedOperation = {
   id: 'op_onboarding',
   kind: 'session_create',
@@ -125,21 +131,120 @@ const server = createServer(async (request, response) => {
     url.pathname.endsWith('/sessions') &&
     request.method === 'POST'
   ) {
+    provisioning = true
+    destroying = false
+    operationPolls = 0
+    provisioningPolls = 0
     response
-      .writeHead(202, { 'content-type': 'application/json' })
-      .end(JSON.stringify(hostedOperation))
+      .writeHead(202, {
+        'content-type': 'application/json',
+        location: `/v1/operations/${hostedOperation.id}`,
+      })
+      .end(
+        JSON.stringify({
+          ...hostedOperation,
+          state: 'pending',
+          progress: 0,
+          session: { ...hostedSession, normalizedState: 'provisioning', rawState: 'provisioning' },
+        }),
+      )
     return
   }
   if (responseMode === 'onboarding' && url.pathname.includes('/operations/')) {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        ...hostedOperation,
+        state: ++operationPolls === 1 ? 'running' : 'succeeded',
+      }),
+    )
+    return
+  }
+  if (responseMode === 'onboarding' && url.pathname.endsWith('/destroy')) {
+    destroying = true
+    deletionPolls = 0
+    response.writeHead(503, { 'content-type': 'application/json', 'retry-after': '0' }).end(
+      JSON.stringify({
+        error: { code: 'SERVICE_UNAVAILABLE', message: 'Sandbox is destroying' },
+        requestId: randomUUID(),
+      }),
+    )
+    return
+  }
+  if (responseMode === 'onboarding' && url.pathname.includes('/executions')) {
+    assert(!provisioning && !destroying, 'exec requires a running sandbox')
+    const output = 'hosted-exec-ok\n'
+    let executionResult
+    if (url.pathname.endsWith('/events')) {
+      executionResult = {
+        data: executionEventsRead
+          ? []
+          : [
+              {
+                at: project.updatedAt,
+                sequence: 0,
+                kind: 'stdout',
+                stream: 'stdout',
+                message: output,
+              },
+            ],
+        nextCursor: null,
+      }
+      executionEventsRead = true
+    } else if (url.pathname.endsWith('/result')) {
+      executionResult = {
+        kind: 'command',
+        exitCode: 0,
+        stdout: output,
+        stderr: '',
+        outputBytes: output.length,
+        outputLimitBytes: 1048576,
+        truncated: false,
+      }
+    } else {
+      executionResult = {
+        id: 'exec_onboarding',
+        command: 'echo hosted-exec-ok',
+        sessionId: hostedSession.id,
+        sandboxId: hostedSession.primarySandboxId,
+        state: 'completed',
+        exitCode: 0,
+        failure: null,
+        failureKind: null,
+        outputBytes: output.length,
+        outputLimitBytes: 1048576,
+        truncated: false,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+      }
+    }
     response
-      .writeHead(200, { 'content-type': 'application/json' })
-      .end(JSON.stringify(hostedOperation))
+      .writeHead(request.method === 'POST' ? 202 : 200, { 'content-type': 'application/json' })
+      .end(JSON.stringify(executionResult))
     return
   }
   if (responseMode === 'onboarding' && url.pathname.includes('/sessions/')) {
-    response
-      .writeHead(200, { 'content-type': 'application/json' })
-      .end(JSON.stringify(hostedSession))
+    if (provisioning && ++provisioningPolls > 1) provisioning = false
+    const deleted = destroying && ++deletionPolls > 2
+    response.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        ...hostedSession,
+        normalizedState: destroying
+          ? deleted
+            ? 'destroyed'
+            : 'destroying'
+          : provisioning
+            ? 'provisioning'
+            : 'running',
+        rawState: destroying
+          ? deleted
+            ? 'destroyed'
+            : 'destroying'
+          : provisioning
+            ? 'provisioning'
+            : 'running',
+        ...(deleted ? { sandboxes: [], primarySandboxId: null } : {}),
+      }),
+    )
     return
   }
   if (url.pathname === '/v1/projects' && request.method === 'GET') {
@@ -170,10 +275,16 @@ const server = createServer(async (request, response) => {
 
 async function run(args, extraEnvironment = {}, fails = false) {
   let output
+  const separator = args.indexOf('--')
+  const commonFlags = ['--json', '--state-dir', stateRoot]
+  const cliArgs =
+    separator < 0
+      ? [...args, ...commonFlags]
+      : [...args.slice(0, separator), ...commonFlags, ...args.slice(separator)]
   try {
     output = await promisify(execFile)(
       process.execPath,
-      [join(packageRoot, 'dist', 'index.js'), ...args, '--json', '--state-dir', stateRoot],
+      [join(packageRoot, 'dist', 'index.js'), ...cliArgs],
       {
         cwd: temporary,
         env: { ...environment, ...extraEnvironment },
@@ -338,7 +449,12 @@ try {
     beforeRepeat + 1,
     'matching directory project must be reused without POST',
   )
-  await run(['start'])
+  const started = await run(['start'])
+  assert.equal(started.data.session.state, 'active')
+  assert(operationPolls >= 2 && provisioningPolls >= 2, 'start must wait through provisioning')
+  const executed = await run(['exec', '--', 'echo', 'hosted-exec-ok'])
+  assert.equal(executed.outcome, 'remote_result')
+  assert.equal(executed.result.exitCode, 0)
   const creation = calls.findLast(
     (call) => call.path.endsWith('/sessions') && call.method === 'POST',
   )
@@ -349,6 +465,9 @@ try {
     calls.findLast((call) => call.path.endsWith('/sessions') && call.method === 'POST').body,
     { requestedSpec: { cpu: '2', image: 'node:24' } },
   )
+  const destroyed = await run(['destroy', '--yes'])
+  assert.equal(destroyed.data.session.state, 'destroyed')
+  assert(deletionPolls >= 3, 'destroy must wait for delayed confirmation')
   responseMode = 'normal'
   const callCount = calls.length
   await metadata.save({ ...binding, issuer: 'https://foreign.test' })
