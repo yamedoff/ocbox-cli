@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { OcboxApiClient } from '../../api/client/client.js'
-import { envelopeOf, toRequestId } from '../../api/client/errors.js'
+import type { ApiResult } from '../../api/generated/client.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type {
   Operation as HostedOperation,
   Session as HostedSession,
@@ -72,12 +73,19 @@ import {
   type OperationCheckpointDurability,
   type OperationCheckpointStore,
   waitForHostedOperation,
+  type WaitOperationOptions,
 } from './operations.js'
 import {
   admissionError,
   friendlyAdmissionFailure,
   type HostedRequestedSpec,
 } from './requested-spec.js'
+import {
+  Deadline,
+  parseRetryAfterSeconds,
+  resolvePollDelayMilliseconds,
+  sleepWithSignal,
+} from './retry.js'
 import {
   type HostedExecutionEvent,
   HostedExecutionSchema,
@@ -156,6 +164,7 @@ export interface OcboxProviderOptions {
    */
   readonly checkpointStore?: OperationCheckpointStore | undefined
   readonly checkpointDurability?: OperationCheckpointDurability | undefined
+  readonly waitOptions?: WaitOperationOptions | undefined
 }
 
 function notFoundSandbox(requestId: RequestId): OcboxError {
@@ -275,6 +284,7 @@ class ExecEventQueue {
 /** Hosted `ocbox` provider over the pinned `/v1` contract. */
 export class OcboxSandboxProvider implements SandboxProvider {
   readonly name = 'ocbox'
+  readonly #waitOptions: WaitOperationOptions
   readonly #requestedSpec: HostedRequestedSpec | undefined
   readonly #api: OcboxApiClient
   readonly #hostedProjectId: string
@@ -305,6 +315,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
       throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
     }
+    this.#waitOptions = options.waitOptions ?? {}
     this.#requestedSpec = options.requestedSpec
     this.#mappingScope = options.mappingScope
     this.#api = options.api
@@ -502,22 +513,61 @@ export class OcboxSandboxProvider implements SandboxProvider {
       const denial = admissionError(envelopeOf(created.body).code, toRequestId(created.requestId))
       if (denial) throw denial
     }
-    const started = this.#api.assertSuccess('createSession', created, [200, 202])
-    const hostedOp = started.body as HostedOperation
+    const started = this.#assertSuccess('createSession', created, [200, 201, 202])
+    const hostedOp = started.body as HostedOperation & { session?: HostedSession }
+    const deadline = this.#lifecycleDeadline()
+    let record: SandboxRecord | undefined
+    const remember = async (session: HostedSession): Promise<void> => {
+      assertOwnedSession(session, this.#hostedProjectId)
+      const primary = resolvePrimaryBinding(session)
+      const sandboxId = primary?.sandboxId ?? session.primarySandboxId
+      if (sandboxId === null) return
+      if (record !== undefined && record.hostedSandboxId !== sandboxId) {
+        throw new OcboxError({
+          code: 'INVALID_STATE',
+          message: 'The hosted primary binding changed during provisioning',
+          providerCode: 'PRIMARY_BINDING_CHANGED',
+          requestId: context.requestId,
+        })
+      }
+      const now = this.#now()
+      record = record ?? {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSandboxId: sandboxId,
+        hostedSessionId: session.id,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
+    if (hostedOp.session !== undefined) await remember(hostedOp.session)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+      ...this.#waitOptions,
+      deadlineMilliseconds: deadline.remainingMilliseconds(),
       store: this.#checkpointStore,
     }).catch(friendlyAdmissionFailure)
-    const hostedSessionId = waited.operation.sessionId ?? (hostedOp.sessionId as string | null)
-    if (hostedSessionId === null || hostedSessionId === undefined) {
+    const hostedSessionId = waited.operation.sessionId ?? hostedOp.sessionId
+    if (!hostedSessionId || (record !== undefined && record.hostedSessionId !== hostedSessionId)) {
       throw new OcboxError({
         code: 'PROVIDER_UNAVAILABLE',
-        message: 'The hosted service did not return a session for the created operation',
+        message: 'The hosted service did not return the expected session for the created operation',
         requestId: toRequestId(waited.requestId),
       })
     }
-    const session = await this.#getOwnedSession(hostedSessionId)
-    const primary = resolvePrimaryBinding(session)
-    if (primary === null) {
+    const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
+      await remember(observed)
+      return (
+        observed.normalizedState === 'running' &&
+        resolvePrimaryBinding(observed)?.state === 'running'
+      )
+    }).catch(friendlyAdmissionFailure)
+    const primary = session === null ? null : resolvePrimaryBinding(session)
+    if (record === undefined || primary === null) {
       throw new OcboxError({
         code: 'INVALID_STATE',
         message: 'The hosted session has no active primary sandbox binding',
@@ -526,20 +576,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       })
     }
     const now = this.#now()
-    const localId = SandboxIdSchema.parse(this.#createId())
-    const record: SandboxRecord = {
-      deleted: false,
-      stale: false,
-      createdAt: now,
-      hostedSandboxId: primary.sandboxId,
-      hostedSessionId: session.id,
-      localId,
-      localProjectId: request.projectId,
-      localSessionId: request.sessionId,
-      spec: request.specification,
-      updatedAt: now,
-    }
-    await this.#saveRecord(record)
+    const localId = record.localId
     const sandbox = this.#sandboxOf(record, primary.state, now, request.specification, session)
     const operation = this.#operationOf(context, {
       action: 'create',
@@ -663,25 +700,96 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(result.requestId ?? envelope.requestId),
       })
     }
-    const { body } = this.#api.assertSuccess('getSession', result, [200])
+    const { body } = this.#assertSuccess('getSession', result, [200])
     const session = body as HostedSession
     assertOwnedSession(session, this.#hostedProjectId)
     return session
   }
 
-  async #confirmDeleted(hostedSessionId: string): Promise<void> {
-    try {
-      const session = await this.#getOwnedSession(hostedSessionId)
-      if (session.normalizedState !== 'destroyed' || resolvePrimaryBinding(session) !== null) {
+  #assertSuccess<T>(operation: string, result: ApiResult<T>, expected: readonly number[]) {
+    const retryAfterSeconds = parseRetryAfterSeconds(result.retryAfter)
+    if (!expected.includes(result.status) && retryAfterSeconds !== null) {
+      const envelope = envelopeOf(result.body)
+      const mapped = mapApiFailureToOcboxError({
+        operation,
+        requestId: result.requestId ?? envelope.requestId,
+        responseRequestId: envelope.requestId,
+        retryAfterSeconds,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        status: result.status,
+      })
+      if (result.status === 429) {
         throw new OcboxError({
-          code: 'INVALID_STATE',
-          message: 'Hosted sandbox deletion has not been verified',
+          code: mapped.code,
+          requestId: mapped.requestId,
+          ...(mapped.providerCode === undefined ? {} : { providerCode: mapped.providerCode }),
+          ...(mapped.details === undefined ? {} : { details: mapped.details }),
+          message: `${mapped.message} Retry after ${retryAfterSeconds} seconds.`,
+        })
+      }
+      throw mapped
+    }
+    return this.#api.assertSuccess(operation, result, expected)
+  }
+
+  #lifecycleDeadline(): Deadline {
+    return new Deadline(
+      this.#waitOptions.deadlineMilliseconds ?? this.#waitOptions.maxWaitMilliseconds ?? 5 * 60_000,
+      this.#waitOptions.now,
+    )
+  }
+
+  async #waitForSession(
+    hostedSessionId: string,
+    deadline: Deadline,
+    complete: (session: HostedSession) => Promise<boolean>,
+    allowDeleted = false,
+  ): Promise<HostedSession | null> {
+    let attempt = 0
+    for (;;) {
+      if (deadline.exceeded()) {
+        throw new OcboxError({
+          code: 'OPERATION_TIMEOUT',
+          message: 'The hosted sandbox did not reach the requested state in time',
           requestId: toRequestId(null),
         })
       }
-    } catch (error) {
-      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+      let retryAfterSeconds: number | null = null
+      try {
+        const session = await this.#getOwnedSession(hostedSessionId)
+        if (await complete(session)) return session
+      } catch (error) {
+        if (!(error instanceof OcboxError)) throw error
+        if (allowDeleted && error.code === 'SANDBOX_NOT_FOUND') return null
+        if (!error.retryable) throw error
+        // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+        const hint = error.details?.['retryAfterSeconds']
+        retryAfterSeconds = typeof hint === 'number' ? hint : null
+      }
+      attempt += 1
+      await (this.#waitOptions.sleep ?? sleepWithSignal)(
+        Math.min(
+          resolvePollDelayMilliseconds({
+            attempt,
+            retryAfterSeconds,
+            policy: this.#waitOptions.policy,
+            random: this.#waitOptions.random,
+          }),
+          deadline.remainingMilliseconds(),
+        ),
+      )
     }
+  }
+
+  async #confirmDeleted(hostedSessionId: string, deadline: Deadline): Promise<void> {
+    await this.#waitForSession(
+      hostedSessionId,
+      deadline,
+      async (session) =>
+        session.normalizedState === 'destroyed' && resolvePrimaryBinding(session) === null,
+      true,
+    )
   }
 
   async #mutate(
@@ -721,25 +829,45 @@ export class OcboxSandboxProvider implements SandboxProvider {
         }),
     }[action]
     if (!(action === 'destroy' && record.deleted)) await this.#mappedSession(record)
+    const deadline = this.#lifecycleDeadline()
     const initiated = await invoke()
     if (initiated.status === 404) {
       await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
       throw this.#staleMapping(context.requestId)
     }
-    const started = this.#api.assertSuccess(`${action}Session`, initiated, [200, 202])
-    const hostedOp = started.body as HostedOperation
-    const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
-      store: this.#checkpointStore,
-    })
-    const now = this.#now()
-    record.updatedAt = now
+    let replay = initiated.replay
+    let waitedRequestId = initiated.requestId
+    try {
+      const started = this.#assertSuccess(`${action}Session`, initiated, [200, 202])
+      replay = started.meta.replay
+      const hostedOp = started.body as HostedOperation
+      const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+        ...this.#waitOptions,
+        deadlineMilliseconds: deadline.remainingMilliseconds(),
+        store: this.#checkpointStore,
+      }).catch(friendlyAdmissionFailure)
+      waitedRequestId = waited.requestId
+    } catch (error) {
+      if (
+        action !== 'destroy' ||
+        !(error instanceof OcboxError) ||
+        !error.retryable ||
+        initiated.status < 400
+      )
+        throw error
+      const session = await this.#getOwnedSession(record.hostedSessionId)
+      if (session.normalizedState !== 'destroying' && session.normalizedState !== 'destroyed')
+        throw error
+    }
     if (expected === 'deleted') {
-      await this.#confirmDeleted(record.hostedSessionId)
+      await this.#confirmDeleted(record.hostedSessionId, deadline)
+      const now = this.#now()
+      record.updatedAt = now
       await this.#saveRecord({ ...record, deleted: true })
       const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, null, 'deleted')
       const operation = this.#operationOf(context, {
         action,
-        replay: started.meta.replay,
+        replay,
         sandboxId: record.localId,
         sessionId: record.localSessionId,
         verifiedAt: now,
@@ -747,19 +875,21 @@ export class OcboxSandboxProvider implements SandboxProvider {
       return { operation, sandbox }
     }
     const session = await this.#mappedSession(record)
+    const now = this.#now()
+    record.updatedAt = now
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
         code: 'INVALID_STATE',
         message: 'The hosted primary binding changed during the operation',
         providerCode: 'PRIMARY_BINDING_CHANGED',
-        requestId: toRequestId(waited.requestId),
+        requestId: toRequestId(waitedRequestId),
       })
     }
     const sandbox = this.#sandboxOf(record, primary.state, now, record.spec, session, expected)
     const operation = this.#operationOf(context, {
       action,
-      replay: started.meta.replay,
+      replay,
       sandboxId: record.localId,
       sessionId: record.localSessionId,
       verifiedAt: now,

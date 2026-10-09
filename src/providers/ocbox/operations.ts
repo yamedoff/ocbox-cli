@@ -14,6 +14,7 @@ import {
   type RetryPolicy,
   resolvePollDelayMilliseconds,
   sleepWithSignal,
+  parseRetryAfterSeconds,
 } from './retry.js'
 import {
   HostedOperationSchema,
@@ -280,7 +281,10 @@ export async function waitForHostedOperation(
         operation: 'getOperation',
         requestId: result.requestId ?? envelope.requestId ?? null,
         responseRequestId: envelope.requestId ?? result.requestId ?? null,
-        retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
+        retryAfterSeconds:
+          parseRetryAfterSeconds(result.retryAfter) ??
+          envelope.retryAfterSeconds ??
+          retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
         status: result.status,
@@ -292,7 +296,8 @@ export async function waitForHostedOperation(
             attempt,
             policy,
             random,
-            retryAfterSeconds: retryAfterOf(result.body),
+            retryAfterSeconds:
+              parseRetryAfterSeconds(result.retryAfter) ?? retryAfterOf(result.body),
           }),
           deadline.remainingMilliseconds(),
         )
@@ -404,7 +409,10 @@ export async function cancelHostedOperation(
         operation: 'cancelOperation',
         requestId: result.requestId ?? envelope.requestId ?? null,
         responseRequestId: envelope.requestId ?? result.requestId ?? null,
-        retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
+        retryAfterSeconds:
+          parseRetryAfterSeconds(result.retryAfter) ??
+          envelope.retryAfterSeconds ??
+          retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
         status: result.status,
@@ -421,7 +429,11 @@ export async function cancelHostedOperation(
       }
       await sleepWithSignal(
         Math.min(
-          resolvePollDelayMilliseconds({ attempt, retryAfterSeconds: retryAfterOf(result.body) }),
+          resolvePollDelayMilliseconds({
+            attempt,
+            retryAfterSeconds:
+              parseRetryAfterSeconds(result.retryAfter) ?? retryAfterOf(result.body),
+          }),
           remaining,
         ),
         signal,
