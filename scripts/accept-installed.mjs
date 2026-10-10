@@ -653,7 +653,7 @@ export async function browserLogin(
       else cookies.set(name, { value })
     }
     // The echoed header identifies the CSRF cookie without assuming its name.
-    const echoed = response.headers.get('x-csrf-token')
+    const echoed = response.headers.get('x-ocb-csrf-token')
     const matchedCookie =
       echoed &&
       [...cookies].find(
@@ -1469,8 +1469,6 @@ export async function mockHosted({
           return send(undefined, 204)
         }
         assert(req.headers.cookie.includes('ocb_session=mock_web'), 'session_cookie_required')
-        if (loginFault !== 'missing_csrf')
-          assert(req.headers.cookie.includes(`browser_csrf=${csrf}`), 'csrf_cookie_required')
         if (req.method === 'GET') {
           counts.session++
           return send(
@@ -1482,7 +1480,10 @@ export async function mockHosted({
               authMethod: 'magic_link',
             },
             200,
-            { 'x-csrf-token': csrf },
+            loginFault !== 'missing_csrf_echo' &&
+              req.headers.cookie.split('; ').includes(`browser_csrf=${csrf}`)
+              ? { 'x-ocb-csrf-token': csrf }
+              : {},
           )
         }
         assert.equal(req.method, 'GET')
