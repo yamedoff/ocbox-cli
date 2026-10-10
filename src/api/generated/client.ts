@@ -1,16 +1,16 @@
 /**
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
- * Pinned source commit: 1810efe
- * Pinned source SHA-256: bb33674177d836448fff59a3cdd0049d600eb10ceb199a5b2f5cb610641f46b6
+ * Pinned source commit: unavailable
+ * Pinned source SHA-256: 45c3392516f0cf7f522a24409cc87482af11126a187e3a981f58d134568a102b
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
  * Node runtime. It never imports private implementation or domain code.
  */
 
-export const OPENAPI_SOURCE_COMMIT = "1810efe" as const
-export const OPENAPI_CHECKSUM = "sha256:bb33674177d836448fff59a3cdd0049d600eb10ceb199a5b2f5cb610641f46b6" as const
+export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
+export const OPENAPI_CHECKSUM = "sha256:45c3392516f0cf7f522a24409cc87482af11126a187e3a981f58d134568a102b" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -37,6 +37,7 @@ export interface SafeError {
   readonly code: string
   readonly message: string
   readonly retryAfterSeconds?: number
+  readonly reason?: "provider_region_unavailable" | "provider_toolbox_unreachable" | "provider_timeout" | "provider_refused" | "provider_error" | "user_active_limit" | "global_capacity" | "admission_closed" | "budget_exhausted" | "spec_not_allowed" | "admission_unavailable" | "workspace_busy" | "source_apply_revoked"
 }
 
 export interface User {
