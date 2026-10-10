@@ -69,6 +69,11 @@ export function failureEvidence(error) {
         ...(['web', 'api', 'other', 'missing'].includes(error.redirectOrigin)
           ? { redirectOrigin: error.redirectOrigin }
           : {}),
+        ...(error.check === 'callback_parameters' &&
+        Number.isInteger(error.unexpectedParameterCount) &&
+        error.unexpectedParameterCount > 0
+          ? { unexpectedParameterCount: error.unexpectedParameterCount }
+          : {}),
       }
     : { failure: 'operation_failed' }
 }
@@ -544,6 +549,64 @@ export function validateAuthorization(raw, apiOrigin) {
   return url
 }
 
+export function validateCallback(raw, { redirectUri, state, apiOrigin, allowMockHttp = false }) {
+  let callback
+  try {
+    callback = new URL(raw)
+  } catch {
+    throw new CheckFailure('callback_origin')
+  }
+  const expectedCallback = new URL(redirectUri)
+  assert(
+    callback.origin === expectedCallback.origin && !callback.username && !callback.password,
+    'callback_origin',
+  )
+  assert(callback.pathname === expectedCallback.pathname && !callback.hash, 'callback_path')
+  const allowed = new Set(['code', 'state', 'iss'])
+  const seen = new Set()
+  let unexpectedParameterCount = 0
+  for (const name of callback.searchParams.keys()) {
+    if (!allowed.has(name) || seen.has(name)) unexpectedParameterCount++
+    seen.add(name)
+  }
+  if (unexpectedParameterCount) {
+    const error = new CheckFailure('callback_parameters')
+    error.unexpectedParameterCount = unexpectedParameterCount
+    throw error
+  }
+  assert(
+    callback.searchParams.getAll('state').length === 1 &&
+      callback.searchParams.get('state') === state,
+    'callback_state',
+  )
+  assert(
+    callback.searchParams.getAll('code').length === 1 && callback.searchParams.get('code'),
+    'callback_code',
+  )
+  if (callback.searchParams.has('iss')) {
+    let issuer
+    try {
+      issuer = new URL(callback.searchParams.get('iss'))
+    } catch {
+      throw new CheckFailure('callback_issuer')
+    }
+    // The CLI derives its configured issuer from the API URL (auth/config.ts),
+    // but its loopback handler only checks iss for duplicates (auth/loopback.ts).
+    // Bind this otherwise unvalidated URL to the API origin; HTTP is mock-only.
+    assert(
+      issuer.origin === apiOrigin &&
+        (issuer.protocol === 'https:' ||
+          (allowMockHttp && issuer.protocol === 'http:' && issuer.hostname === '127.0.0.1')) &&
+        !issuer.username &&
+        !issuer.password &&
+        !issuer.search &&
+        !issuer.hash,
+      'callback_issuer',
+    )
+  }
+  return callback
+}
+
 // Mailbox adapter contract: address(tag) and messages({ tag, since }).
 // Keep the HTTP query and response format separate from the browser journey.
 export function createMailboxAdapter({ apiUrl, key, namespace, domain, onTrace }) {
@@ -619,7 +682,15 @@ export function findMagicLink(messages, apiOrigin) {
 
 export async function browserLogin(
   raw,
-  { apiOrigin, webOrigin, mailbox, onTrace, mailboxTimeoutMs = 150_000, pollIntervalMs = 2000 },
+  {
+    apiOrigin,
+    webOrigin,
+    mailbox,
+    onTrace,
+    allowMockHttp = false,
+    mailboxTimeoutMs = 150_000,
+    pollIntervalMs = 2000,
+  },
 ) {
   const url = validateAuthorization(raw, apiOrigin)
   const cookies = new Map()
@@ -745,30 +816,8 @@ export async function browserLogin(
       consent = response.json
     }
     assert.equal(consent?.status, 'authorized', 'authorize_result')
-    let callback
-    try {
-      callback = new URL(consent.redirectUri)
-    } catch {
-      /* checked below */
-    }
-    const expectedCallback = new URL(binding.redirectUri)
-    assert(
-      callback &&
-        callback.origin === expectedCallback.origin &&
-        callback.pathname === expectedCallback.pathname &&
-        !callback.username &&
-        !callback.password &&
-        !callback.hash,
-      'callback_mismatch',
-    )
-    assert.deepEqual(
-      [...callback.searchParams.keys()].sort(),
-      ['code', 'state'],
-      'callback_mismatch',
-    )
-    assert.equal(callback.searchParams.get('state'), binding.state, 'callback_mismatch')
-    assert(callback.searchParams.get('code'), 'callback_code')
-    checkStatus(await request(callback, {}, onTrace), 'loopback_callback', 200)
+    validateCallback(consent.redirectUri, { ...binding, apiOrigin, allowMockHttp })
+    checkStatus(await request(consent.redirectUri, {}, onTrace), 'loopback_callback', 200)
   } catch (error) {
     primaryFailure = error
   } finally {
@@ -1050,6 +1099,7 @@ export async function main(argv, { loginFault } = {}) {
               await browserLogin(event.data.url, {
                 apiOrigin,
                 webOrigin,
+                allowMockHttp: options.selfTest,
                 onTrace: trace,
                 mailbox: createMailboxAdapter({
                   onTrace: trace,
@@ -1276,6 +1326,7 @@ export async function mockHosted({
   consumeLocation,
   consumeOrigin = 'web',
   rotateCsrf = false,
+  includeIssuer = true,
 } = {}) {
   const now = new Date().toISOString()
   const requestId = '11111111-1111-4111-8111-111111111111'
@@ -1446,7 +1497,17 @@ export async function mockHosted({
           'state',
           loginFault === 'callback_state' ? 'different' : body.state,
         )
+        if (includeIssuer)
+          redirect.searchParams.set(
+            'iss',
+            loginFault === 'callback_issuer' ? 'https://foreign.example.test' : mock.origin,
+          )
         if (loginFault === 'callback_duplicate') redirect.searchParams.append('state', body.state)
+        if (loginFault === 'callback_duplicate_issuer')
+          redirect.searchParams.append('iss', mock.origin)
+        if (loginFault === 'callback_parameters')
+          redirect.searchParams.append('private-parameter', 'private-value')
+        if (loginFault === 'callback_code') redirect.searchParams.delete('code')
         if (loginFault === 'callback_path') redirect.pathname = '/other'
         if (loginFault === 'callback_origin') redirect.port = '1'
         if (rotateCsrf) csrf = 'rotated_csrf'.padEnd(48, 'c')
