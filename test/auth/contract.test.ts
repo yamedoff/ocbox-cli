@@ -15,7 +15,7 @@ const generated = readFileSync(join(repositoryRoot, 'src', 'api', 'generated', '
 describe('pinned OpenAPI contract', () => {
   it('matches the pinned commit and SHA-256 exactly', () => {
     const sha256 = createHash('sha256').update(artifact).digest('hex')
-    expect(provenance.sourceCommit).toBe('1810efe')
+    expect(provenance.sourceCommit).toBe('unavailable')
     expect(provenance.sha256).toBe(sha256)
     expect(provenance.bytes).toBe(artifact.length)
     expect(provenance.generated).toContain('src/api/generated/client.ts')

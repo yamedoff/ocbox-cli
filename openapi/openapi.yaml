@@ -528,6 +528,7 @@ paths:
   /sessions/{sessionId}/executions:
     post:
       operationId: createExecution
+      description: Accept a command and return its durable execution ID promptly. Pending means launch is starting. Poll getExecution until running or terminal; replay with the same idempotency key returns the same execution without advancing launch.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -558,6 +559,7 @@ paths:
   /executions/{executionId}:
     get:
       operationId: getExecution
+      description: Advance at most one bounded launch or supervision stage and return the current execution. Continue polling pending and running states.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -615,6 +617,7 @@ paths:
   /executions/{executionId}/cancel:
     post:
       operationId: cancelExecution
+      description: Persist cancellation intent promptly. Before dispatch the execution becomes cancelled; after a dispatch fence polls adopt and cancel the launched command, then drain output. A 202 may still be pending or running. Poll getExecution until terminal.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -719,12 +722,15 @@ paths:
     post:
       operationId: verifySourceChecksum
       tags: [Source]
+      description: Freeze the uploaded archive. Returns verification if already applied, otherwise a durable source.apply operation. Poll GET /operations/{id} until terminal, then replay checksum for verification. Polls advance one bounded stage; destroy revokes apply.
       parameters:
         - $ref: '#/components/parameters/ManifestId'
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           $ref: '#/components/responses/SourceVerification'
+        '202':
+          $ref: '#/components/responses/Operation'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -1791,7 +1797,7 @@ components:
           schema:
             $ref: '#/components/schemas/OperationPage'
     Execution:
-      description: Execution resource.
+      description: Durable execution resource. Pending includes accepted commands whose launch is starting; running includes cancellation awaiting confirmation.
       content:
         application/json:
           schema:
@@ -2100,6 +2106,10 @@ components:
         retryAfterSeconds:
           type: integer
           minimum: 0
+        reason:
+          type: string
+          description: Safe provider failure category; contains no provider coordinates or messages.
+          enum: [provider_region_unavailable, provider_toolbox_unreachable, provider_timeout, provider_refused, provider_error, user_active_limit, global_capacity, admission_closed, budget_exhausted, spec_not_allowed, admission_unavailable, workspace_busy, source_apply_revoked]
     ErrorEnvelope:
       type: object
       additionalProperties: false
