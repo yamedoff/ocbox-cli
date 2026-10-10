@@ -18,6 +18,7 @@ import {
   privateEnvironment,
   redact,
   validateAuthorization,
+  validateCallback,
 } from './accept-installed.mjs'
 
 const scopes = ['source:read', 'product:read', 'product:edit', 'product:run']
@@ -141,6 +142,184 @@ test('authorization binding rejects foreign callbacks, duplicate parameters and 
   }
 })
 
+const callbackBinding = {
+  redirectUri: 'http://127.0.0.1:23456/callback',
+  state: 's'.repeat(32),
+  apiOrigin: 'https://api.example.test',
+}
+function callbackUrl() {
+  const url = new URL(callbackBinding.redirectUri)
+  url.searchParams.set('code', 'c'.repeat(48))
+  url.searchParams.set('state', callbackBinding.state)
+  url.searchParams.set('iss', callbackBinding.apiOrigin)
+  return url
+}
+
+test('callback accepts a same-origin issuer URL or no issuer and preserves the URL', () => {
+  for (const issuer of [callbackBinding.apiOrigin, `${callbackBinding.apiOrigin}/issuer/`, null]) {
+    const url = callbackUrl()
+    if (issuer === null) url.searchParams.delete('iss')
+    else url.searchParams.set('iss', issuer)
+    const raw = url.href.replace('code=c', 'code=%63')
+    assert.equal(validateCallback(raw, callbackBinding).href, raw)
+  }
+})
+
+for (const [name, mutate, check, unexpectedParameterCount] of [
+  [
+    'foreign origin',
+    (url) => {
+      url.hostname = 'localhost'
+    },
+    'callback_origin',
+  ],
+  [
+    'wrong port',
+    (url) => {
+      url.port = '1'
+    },
+    'callback_origin',
+  ],
+  [
+    'wrong scheme',
+    (url) => {
+      url.protocol = 'https:'
+    },
+    'callback_origin',
+  ],
+  [
+    'credentials',
+    (url) => {
+      url.username = 'private-user'
+      url.password = 'private-value'
+    },
+    'callback_origin',
+  ],
+  [
+    'wrong path',
+    (url) => {
+      url.pathname = '/other'
+    },
+    'callback_path',
+  ],
+  [
+    'fragment',
+    (url) => {
+      url.hash = '#private-value'
+    },
+    'callback_path',
+  ],
+  ['missing state', (url) => url.searchParams.delete('state'), 'callback_state'],
+  ['empty state', (url) => url.searchParams.set('state', ''), 'callback_state'],
+  ['wrong state', (url) => url.searchParams.set('state', 'private-value'), 'callback_state'],
+  ['missing code', (url) => url.searchParams.delete('code'), 'callback_code'],
+  ['empty code', (url) => url.searchParams.set('code', ''), 'callback_code'],
+  [
+    'duplicate code',
+    (url) => url.searchParams.append('code', 'private-value'),
+    'callback_parameters',
+    1,
+  ],
+  [
+    'duplicate state',
+    (url) => url.searchParams.append('state', callbackBinding.state),
+    'callback_parameters',
+    1,
+  ],
+  [
+    'duplicate issuer',
+    (url) => url.searchParams.append('iss', callbackBinding.apiOrigin),
+    'callback_parameters',
+    1,
+  ],
+  [
+    'unknown parameter',
+    (url) => url.searchParams.append('private-name', 'private-value'),
+    'callback_parameters',
+    1,
+  ],
+  [
+    'multiple unexpected parameters',
+    (url) => {
+      url.searchParams.append('private-name', 'private-value')
+      url.searchParams.append('private-name', 'private-value')
+      url.searchParams.append('state', callbackBinding.state)
+    },
+    'callback_parameters',
+    3,
+  ],
+]) {
+  test(`callback rejects ${name} with specific, bounded evidence`, () => {
+    const url = callbackUrl()
+    mutate(url)
+    assert.throws(
+      () => validateCallback(url.href, callbackBinding),
+      (error) => {
+        assert.deepEqual(failureEvidence(error), {
+          failure: 'assertion_failed',
+          check,
+          ...(unexpectedParameterCount === undefined ? {} : { unexpectedParameterCount }),
+        })
+        assert(!JSON.stringify(failureEvidence(error)).includes('private'))
+        return true
+      },
+    )
+  })
+}
+
+for (const issuer of [
+  '',
+  'invalid',
+  '/issuer',
+  'https://foreign.example.test',
+  'http://api.example.test',
+  'https://api.example.test:444',
+  'https://private-user:private-value@api.example.test',
+  'https://api.example.test?private-name=private-value',
+  'https://api.example.test#private-value',
+  'file:///issuer',
+]) {
+  test('callback rejects an unsafe or mismatched issuer without exposing it', () => {
+    const url = callbackUrl()
+    url.searchParams.set('iss', issuer)
+    assert.throws(
+      () => validateCallback(url.href, callbackBinding),
+      (error) => {
+        assert.deepEqual(failureEvidence(error), {
+          failure: 'assertion_failed',
+          check: 'callback_issuer',
+        })
+        return true
+      },
+    )
+  })
+}
+
+test('HTTP issuer is accepted only for the explicitly enabled local mock', () => {
+  const url = callbackUrl()
+  const binding = { ...callbackBinding, apiOrigin: 'http://127.0.0.1:54321' }
+  url.searchParams.set('iss', binding.apiOrigin)
+  assert.throws(
+    () => validateCallback(url.href, binding),
+    (error) => failureEvidence(error).check === 'callback_issuer',
+  )
+  assert.equal(validateCallback(url.href, { ...binding, allowMockHttp: true }).href, url.href)
+  const remoteBinding = {
+    ...callbackBinding,
+    apiOrigin: 'http://api.example.test',
+    allowMockHttp: true,
+  }
+  url.searchParams.set('iss', remoteBinding.apiOrigin)
+  assert.throws(
+    () => validateCallback(url.href, remoteBinding),
+    (error) => failureEvidence(error).check === 'callback_issuer',
+  )
+  assert.throws(
+    () => validateCallback('http://[invalid', callbackBinding),
+    (error) => failureEvidence(error).check === 'callback_origin',
+  )
+})
+
 test('mailbox adapter uses the configured base URL and domain and filters unrelated or old messages', async () => {
   let status = 200
   let result = 'success'
@@ -211,13 +390,20 @@ const failures = {
   missing_csrf_echo: ['csrf_missing', 200, 0],
   authorize_status: ['authorize_status', 403, 1],
   widened_consent: ['consent_scopes', undefined, 1],
-  callback_origin: ['callback_mismatch', undefined, 2],
-  callback_path: ['callback_mismatch', undefined, 2],
-  callback_state: ['callback_mismatch', undefined, 2],
-  callback_duplicate: ['callback_mismatch', undefined, 2],
+  callback_origin: ['callback_origin', undefined, 2],
+  callback_path: ['callback_path', undefined, 2],
+  callback_state: ['callback_state', undefined, 2],
+  callback_code: ['callback_code', undefined, 2],
+  callback_issuer: ['callback_issuer', undefined, 2],
+  callback_duplicate: ['callback_parameters', undefined, 2, undefined, 1],
+  callback_duplicate_issuer: ['callback_parameters', undefined, 2, undefined, 1],
+  callback_parameters: ['callback_parameters', undefined, 2, undefined, 1],
 }
 
-for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.entries(failures)) {
+for (const [
+  fault,
+  [label, status, authorizeCount, redirectOrigin, unexpectedParameterCount],
+] of Object.entries(failures)) {
   test(`browser self-test rejects ${fault} with safe evidence`, async () => {
     const mock = await mockHosted({ loginFault: fault })
     const traces = []
@@ -226,6 +412,7 @@ for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.en
         browserLogin(authorization(mock.origin).href, {
           apiOrigin: mock.origin,
           webOrigin: mock.webOrigin,
+          allowMockHttp: true,
           mailbox: createMailboxAdapter({
             apiUrl: mock.origin,
             key: 'mock-key',
@@ -243,6 +430,7 @@ for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.en
             check: label,
             ...(status === undefined ? {} : { httpStatus: status }),
             ...(redirectOrigin === undefined ? {} : { redirectOrigin }),
+            ...(unexpectedParameterCount === undefined ? {} : { unexpectedParameterCount }),
           })
           return true
         },
@@ -267,7 +455,16 @@ for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.en
         assert(/^(GET|POST|DELETE)$/.test(event.method))
       }
       const output = JSON.stringify(traces)
-      for (const secret of ['mock-key', 'opaque', 'mock_web', 'mock_binding', 'mock_csrf', '@'])
+      for (const secret of [
+        'mock-key',
+        'opaque',
+        'mock_web',
+        'mock_binding',
+        'mock_csrf',
+        'private-parameter',
+        'private-value',
+        '@',
+      ])
         assert(!output.includes(secret))
     } finally {
       await mock.stop()
@@ -276,7 +473,8 @@ for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.en
 }
 
 for (const [name, options] of [
-  ['web-origin redirect', {}],
+  ['web-origin redirect with issuer', {}],
+  ['callback without issuer', { includeIssuer: false }],
   ['API-origin redirect', { consumeOrigin: 'api' }],
   ['relative API-origin redirect', { consumeLocation: '/signed-in' }],
   ['CSRF cookie rotation', { rotateCsrf: true }],
@@ -285,7 +483,11 @@ for (const [name, options] of [
     let callbackRequests = 0
     const callbackServer = createServer((request, response) => {
       callbackRequests++
-      assert.equal(new URL(request.url, 'http://localhost').pathname, '/callback')
+      const expected = new URL('/callback', 'http://localhost')
+      expected.searchParams.set('code', 'mock_code'.padEnd(48, 'k'))
+      expected.searchParams.set('state', 's'.repeat(32))
+      if (options.includeIssuer !== false) expected.searchParams.set('iss', mock.origin)
+      assert.equal(request.url, `${expected.pathname}${expected.search}`)
       response.writeHead(200).end('signed in')
     })
     await new Promise((done) => callbackServer.listen(0, '127.0.0.1', done))
@@ -300,6 +502,7 @@ for (const [name, options] of [
       await browserLogin(url.href, {
         apiOrigin: mock.origin,
         webOrigin: mock.webOrigin,
+        allowMockHttp: true,
         mailbox: createMailboxAdapter({
           apiUrl: mock.origin,
           key: 'mock-key',
