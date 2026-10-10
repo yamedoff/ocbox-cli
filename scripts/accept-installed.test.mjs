@@ -208,6 +208,7 @@ const failures = {
   consume_redirect: ['consume_redirect', 303, 0, 'other'],
   missing_session: ['session_cookie_missing', 303, 0, 'web'],
   missing_csrf: ['csrf_missing', 200, 0],
+  missing_csrf_echo: ['csrf_missing', 200, 0],
   authorize_status: ['authorize_status', 403, 1],
   widened_consent: ['consent_scopes', undefined, 1],
   callback_origin: ['callback_mismatch', undefined, 2],
@@ -249,7 +250,13 @@ for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.en
       assert.equal(mock.counts.authorize, authorizeCount)
       assert.equal(
         mock.counts.webLogout,
-        ['missing_binding', 'missing_parameters', 'missing_session', 'missing_csrf'].includes(fault)
+        [
+          'missing_binding',
+          'missing_parameters',
+          'missing_session',
+          'missing_csrf',
+          'missing_csrf_echo',
+        ].includes(fault)
           ? 0
           : 1,
       )
@@ -407,14 +414,25 @@ test('mock revocation requires the web Origin, session and CSRF cookies, and mat
       .getSetCookie()
       .slice(1)
       .map((cookie) => cookie.split(';')[0])
+    for (const cookie of [cookies[0], `${cookies[0]}; browser_csrf=wrong`]) {
+      const session = await fetch(`${mock.origin}/v1/auth/sessions/current`, {
+        headers: { origin: mock.webOrigin, cookie },
+      })
+      assert.equal(session.status, 200)
+      assert.equal(session.headers.get('x-ocb-csrf-token'), null)
+      assert.equal(session.headers.get('x-csrf-token'), null)
+      await session.arrayBuffer()
+    }
     const session = await fetch(`${mock.origin}/v1/auth/sessions/current`, {
       headers: { origin: mock.webOrigin, cookie: cookies.join('; ') },
     })
     assert.equal(session.status, 200)
+    assert.equal(session.headers.get('x-ocb-csrf-token'), cookies[1].split('=')[1])
+    assert.equal(session.headers.get('x-csrf-token'), null)
     const headers = {
       origin: mock.webOrigin,
       cookie: cookies.join('; '),
-      'x-csrf-token': session.headers.get('x-csrf-token'),
+      'x-csrf-token': session.headers.get('x-ocb-csrf-token'),
     }
     for (const change of [
       { origin: undefined },
