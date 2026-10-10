@@ -3,10 +3,12 @@ import { z } from 'zod'
 import type { SourceManifest } from '../../api/generated/client.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { toRequestId } from '../../api/client/errors.js'
-import { OcboxError } from '../../errors/index.js'
+import { OcboxError, OcboxErrorDataSchema } from '../../errors/index.js'
+import { waitForHostedOperation } from './operations.js'
 import { newRequestId } from '../../auth/errors.js'
 import {
   DEFAULT_RETRY_POLICY,
+  Deadline,
   resolvePollDelayMilliseconds,
   sleepWithSignal,
   type RetryPolicy,
@@ -90,6 +92,8 @@ export function prepareSourceChunks(
 }
 
 export interface UploadSourceOptions {
+  readonly deadlineMilliseconds?: number | undefined
+  readonly now?: (() => number) | undefined
   readonly deduplicate?: boolean
   readonly signal?: AbortSignal | undefined
   readonly idempotencyKeyFor?: ((scope: string) => string) | undefined
@@ -276,12 +280,49 @@ export async function uploadPreparedSource(
     }
   }
   throwIfCancelled(options.signal)
-  const verified = await api.generated.verifySourceChecksum({
-    path: { manifestId },
-    idempotencyKey: keyFor('verify'),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  })
-  const done = api.assertSuccess('verifySourceChecksum', verified, [200])
+  const verifyKey = keyFor('verify')
+  const deadline = new Deadline(options.deadlineMilliseconds ?? 5 * 60_000, options.now)
+  let done: ReturnType<OcboxApiClient['assertSuccess']>
+  for (;;) {
+    throwIfCancelled(options.signal)
+    if (deadline.exceeded())
+      throw new OcboxError({
+        code: 'OPERATION_TIMEOUT',
+        message: 'The hosted source apply did not complete in time',
+        requestId: newRequestId(),
+      })
+    const verified = await api.generated.verifySourceChecksum({
+      path: { manifestId },
+      idempotencyKey: verifyKey,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+    done = api.assertSuccess('verifySourceChecksum', verified, [200, 202])
+    if (verified.status === 200) break
+    const { operation } = await waitForHostedOperation(api, (done.body as { id: string }).id, {
+      deadlineMilliseconds: deadline.remainingMilliseconds(),
+      signal: options.signal,
+      sleep,
+      now: options.now,
+      policy,
+      random,
+      returnTerminalFailure: true,
+    })
+    if (operation.state !== 'succeeded') {
+      const fallback = {
+        code: 'SYNC_FAILED' as const,
+        message: 'The hosted source apply failed',
+        requestId: toRequestId(operation.requestId),
+      }
+      const failure = {
+        ...fallback,
+        details: { providerRequestId: operation.requestId },
+        message: operation.error?.message ?? fallback.message,
+        ...(operation.error === null ? {} : { providerCode: operation.error.code }),
+      }
+      const safe = OcboxErrorDataSchema.safeParse({ ...failure, retryable: true })
+      throw new OcboxError(safe.success ? failure : fallback)
+    }
+  }
   const body = done.body as {
     manifestId: string
     verified: boolean

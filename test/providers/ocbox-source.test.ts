@@ -4,9 +4,44 @@ import {
   sha256Hex,
   uploadPreparedSource,
 } from '../../src/providers/ocbox/source.js'
-import { HOSTED_SESSION, errorResponse, jsonResponse, seededApi } from './doubles.js'
+import { HOSTED_SESSION, errorResponse, hostedOperationFixture, jsonResponse, seededApi } from './doubles.js'
 
 describe('hosted source transfer', () => {
+  it.each([false, true])('bounds repeated checksum 202 replays (timeout=%s)', async (timeout) => {
+    const prepared = prepareSourceChunks(Buffer.from('source'))
+    const keys: string[] = []
+    let elapsed = 0, polls = 0
+    const { api } = await seededApi(async (input, init) => {
+      elapsed += 1
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/source/manifests')) return jsonResponse({ id: 'manifest' }, 201)
+      if (path.includes('/chunks/'))
+        return jsonResponse({ chunkChecksum: prepared.chunks[0]?.checksum })
+      if (path.includes('/operations/')) {
+        polls += 1
+        return jsonResponse(hostedOperationFixture({ kind: 'source.apply' }))
+      }
+      keys.push(new Headers(init?.headers).get('idempotency-key') ?? '')
+      return keys.length < 3
+        ? jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'pending' }), 202)
+        : jsonResponse({ manifestId: 'manifest', verified: true,
+          checksum: prepared.checksum, chunkCount: prepared.chunkCount })
+    })
+    const result = uploadPreparedSource(api, HOSTED_SESSION, prepared, {
+      deadlineMilliseconds: timeout ? 3 : 100,
+      now: () => elapsed,
+      sleep: async () => {},
+      idempotencyKeyFor: (scope) => `${scope}-${keys.length}`,
+    })
+    if (timeout) await expect(result).rejects.toMatchObject({ code: 'OPERATION_TIMEOUT' })
+    else {
+      await expect(result).resolves.toMatchObject({ verified: true })
+      expect(polls).toBe(2)
+      expect(keys).toHaveLength(3)
+    }
+    expect(new Set(keys).size).toBe(1)
+  })
+
   it('chunks deterministically with per-chunk checksums', () => {
     const bytes = new TextEncoder().encode('hello hosted world')
     const first = prepareSourceChunks(bytes, 4)

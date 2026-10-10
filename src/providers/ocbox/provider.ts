@@ -422,7 +422,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   /** Upload only through the owned, persisted sandbox-to-session mapping. */
-  async uploadSource(sandboxId: string, prepared: PreparedSource) {
+  async uploadSource(sandboxId: string, prepared: PreparedSource, signal?: AbortSignal) {
     const requestId = toRequestId(null)
     const record = await this.#record(sandboxId, requestId)
     if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
@@ -439,7 +439,10 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId,
       })
     }
-    return uploadPreparedSource(this.#api, record.hostedSessionId, prepared, { deduplicate: true })
+    return uploadPreparedSource(this.#api, record.hostedSessionId, prepared, {
+      deduplicate: true,
+      signal,
+    })
   }
 
   readonly exec: ProviderExecution = {
