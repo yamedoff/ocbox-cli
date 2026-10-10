@@ -66,6 +66,9 @@ export function failureEvidence(error) {
         failure: 'assertion_failed',
         check: error.check,
         ...(Number.isInteger(error.status) ? { httpStatus: error.status } : {}),
+        ...(['web', 'api', 'other', 'missing'].includes(error.redirectOrigin)
+          ? { redirectOrigin: error.redirectOrigin }
+          : {}),
       }
     : { failure: 'operation_failed' }
 }
@@ -620,7 +623,8 @@ export async function browserLogin(
 ) {
   const url = validateAuthorization(raw, apiOrigin)
   const cookies = new Map()
-  let csrf, primaryFailure
+  let csrfCookieName, primaryFailure
+  const csrfToken = () => cookies.get(csrfCookieName)?.value
   const browser = async (target, method = 'POST', body, navigation = false) => {
     const response = await request(
       new URL(target, apiOrigin),
@@ -633,7 +637,7 @@ export async function browserLogin(
           ...(cookies.size
             ? { cookie: [...cookies].map(([name, cookie]) => `${name}=${cookie.value}`).join('; ') }
             : {}),
-          ...(csrf && !navigation ? { 'x-csrf-token': csrf } : {}),
+          ...(csrfToken() && !navigation ? { 'x-csrf-token': csrfToken() } : {}),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
@@ -650,14 +654,13 @@ export async function browserLogin(
     }
     // The echoed header identifies the CSRF cookie without assuming its name.
     const echoed = response.headers.get('x-csrf-token')
-    if (
+    const matchedCookie =
       echoed &&
-      [...cookies].some(
+      [...cookies].find(
         ([name, cookie]) =>
           !['ocb_session', 'ocb_login_bind'].includes(name) && cookie.value === echoed,
       )
-    )
-      csrf = echoed
+    if (matchedCookie) csrfCookieName = matchedCookie[0]
     return response
   }
   try {
@@ -678,23 +681,35 @@ export async function browserLogin(
     }
     assert(link, sawMessage ? 'magic_link_not_found' : 'mailbox_deadline')
     const consumed = await browser(link, 'GET', undefined, true)
-    checkStatus(consumed, 'consume_status', 303)
+    const location = consumed.headers.get('location')
     let redirect
     try {
-      redirect = new URL(consumed.headers.get('location'), apiOrigin)
+      if (location?.trim()) redirect = new URL(location, apiOrigin)
     } catch {
       /* checked below */
     }
-    assert(
-      consumed.headers.get('location') &&
-        redirect?.origin === apiOrigin &&
-        !redirect.username &&
-        !redirect.password &&
-        !redirect.hash,
-      'consume_redirect',
-      consumed.status,
-    )
-    assert(cookies.get('ocb_session')?.value, 'session_cookie_missing', consumed.status)
+    const redirectOrigin = !location?.trim()
+      ? 'missing'
+      : redirect?.origin === webOrigin
+        ? 'web'
+        : redirect?.origin === apiOrigin
+          ? 'api'
+          : 'other'
+    try {
+      checkStatus(consumed, 'consume_status', 303)
+      assert(
+        (redirectOrigin === 'web' || redirectOrigin === 'api') &&
+          !redirect.username &&
+          !redirect.password &&
+          !redirect.hash,
+        'consume_redirect',
+        consumed.status,
+      )
+      assert(cookies.get('ocb_session')?.value, 'session_cookie_missing', consumed.status)
+    } catch (error) {
+      if (error instanceof CheckFailure) error.redirectOrigin = redirectOrigin
+      throw error
+    }
     const session = await browser('/v1/auth/sessions/current', 'GET')
     checkStatus(session, 'session_status')
     assert(
@@ -704,7 +719,7 @@ export async function browserLogin(
       'session_binding',
       session.status,
     )
-    assert(csrf, 'csrf_missing', session.status)
+    assert(csrfToken(), 'csrf_missing', session.status)
     const params = url.searchParams
     const binding = {
       clientId: params.get('client_id'),
@@ -759,7 +774,7 @@ export async function browserLogin(
   } finally {
     try {
       if (cookies.get('ocb_session')?.value) {
-        if (!csrf) await browser('/v1/auth/sessions/current', 'GET')
+        if (!csrfToken()) await browser('/v1/auth/sessions/current', 'GET')
         const revoked = await browser('/v1/auth/sessions/current', 'DELETE')
         checkStatus(revoked, 'web_logout_status')
       }
@@ -1019,7 +1034,9 @@ export async function main(argv, { loginFault } = {}) {
       options.selfTest ||
       Boolean(process.env.OCB_TEST_MAILBOX_API_KEY && process.env.OCB_TEST_MAILBOX_NAMESPACE)
     const webOrigin =
-      mock?.origin ?? process.env.OCB_ACCEPT_WEB_ORIGIN ?? apiOrigin.replace(/\/\/api\./, '//app.')
+      mock?.webOrigin ??
+      process.env.OCB_ACCEPT_WEB_ORIGIN ??
+      apiOrigin.replace(/\/\/api\./, '//app.')
     await required('login', async (evidence) => {
       let authorizationSeen = false
       const login = invoke(['auth', 'login', '--api-url', apiOrigin, '--no-browser', '--jsonl'], {
@@ -1254,7 +1271,12 @@ export async function main(argv, { loginFault } = {}) {
 }
 
 /** Hosted patterns from test-cli-{auth,lifecycle}.mjs, combined for one journey. */
-export async function mockHosted({ loginFault } = {}) {
+export async function mockHosted({
+  loginFault,
+  consumeLocation,
+  consumeOrigin = 'web',
+  rotateCsrf = false,
+} = {}) {
   const now = new Date().toISOString()
   const requestId = '11111111-1111-4111-8111-111111111111'
   const access = 'mock_access'.padEnd(48, 'a'),
@@ -1265,7 +1287,7 @@ export async function mockHosted({ loginFault } = {}) {
     secret: 'opaque secret +/=',
     extra: 'opaque extra',
   }
-  const csrf = 'mock_csrf'.padEnd(48, 'c')
+  let csrf = 'mock_csrf'.padEnd(48, 'c')
   const consentId = 'mock_consent'.padEnd(32, 's')
   const codes = new Map(),
     operations = new Map(),
@@ -1280,6 +1302,7 @@ export async function mockHosted({ loginFault } = {}) {
     token: 0,
     revoke: 0,
     webLogout: 0,
+    webNavigation: 0,
     create: 0,
     stop: 0,
     start: 0,
@@ -1294,7 +1317,7 @@ export async function mockHosted({ loginFault } = {}) {
     namespace,
     magicConsumed = false,
     consentBinding
-  let mock, failure
+  let mock, web, failure
   const publicManifest = ({ chunks, ...manifest }) => manifest
   mock = await listen(async (req, res) => {
     try {
@@ -1320,7 +1343,7 @@ export async function mockHosted({ loginFault } = {}) {
       const absent = () =>
         send({ error: { code: 'NOT_FOUND', message: 'Missing' }, requestId }, 404)
       if (path === '/v1/auth/magic-links') {
-        assert.equal(req.headers.origin, mock.origin)
+        assert.equal(req.headers.origin, web.origin)
         assert.equal(req.method, 'POST')
         assert.equal(++counts.mail, 1, 'one_email_only')
         const [address] = body.email.split('@')
@@ -1369,12 +1392,17 @@ export async function mockHosted({ loginFault } = {}) {
         assert(!magicConsumed, 'single_use_link')
         magicConsumed = true
         counts.consume++
+        const location =
+          consumeLocation !== undefined
+            ? typeof consumeLocation === 'function'
+              ? consumeLocation({ apiOrigin: mock.origin, webOrigin: web.origin })
+              : consumeLocation
+            : loginFault === 'consume_redirect'
+              ? 'https://foreign.example.test/'
+              : `${consumeOrigin === 'api' ? mock.origin : web.origin}/signed-in`
         return res
           .writeHead(loginFault === 'consume_status' ? 200 : 303, {
-            location:
-              loginFault === 'consume_redirect'
-                ? 'https://foreign.example.test/'
-                : `${mock.origin}/signed-in`,
+            ...(location === null ? {} : { location }),
             'set-cookie': [
               'ocb_login_bind=; Max-Age=0; Path=/',
               ...(loginFault === 'missing_session'
@@ -1388,7 +1416,7 @@ export async function mockHosted({ loginFault } = {}) {
           .end()
       }
       if (path === '/v1/auth/cli/authorize') {
-        assert.equal(req.headers.origin, mock.origin)
+        assert.equal(req.headers.origin, web.origin)
         assert(req.headers.cookie.includes('ocb_session=mock_web'))
         assert.equal(req.headers['x-csrf-token'], csrf)
         assert.equal(body.codeChallengeMethod, 'S256')
@@ -1421,9 +1449,25 @@ export async function mockHosted({ loginFault } = {}) {
         if (loginFault === 'callback_duplicate') redirect.searchParams.append('state', body.state)
         if (loginFault === 'callback_path') redirect.pathname = '/other'
         if (loginFault === 'callback_origin') redirect.port = '1'
-        return send({ status: 'authorized', redirectUri: redirect.href, expiresAt: now })
+        if (rotateCsrf) csrf = 'rotated_csrf'.padEnd(48, 'c')
+        return send(
+          { status: 'authorized', redirectUri: redirect.href, expiresAt: now },
+          200,
+          rotateCsrf ? { 'set-cookie': `browser_csrf=${csrf}; SameSite=Lax; Path=/` } : {},
+        )
       }
       if (path === '/v1/auth/sessions/current') {
+        if (req.method === 'DELETE') {
+          if (
+            req.headers.origin !== web.origin ||
+            !req.headers.cookie?.split('; ').includes('ocb_session=mock_web') ||
+            !req.headers.cookie?.split('; ').includes(`browser_csrf=${csrf}`) ||
+            req.headers['x-csrf-token'] !== csrf
+          )
+            return send({ error: { code: 'CSRF_TOKEN_INVALID' } }, 403)
+          counts.webLogout++
+          return send(undefined, 204)
+        }
         assert(req.headers.cookie.includes('ocb_session=mock_web'), 'session_cookie_required')
         if (loginFault !== 'missing_csrf')
           assert(req.headers.cookie.includes(`browser_csrf=${csrf}`), 'csrf_cookie_required')
@@ -1441,12 +1485,7 @@ export async function mockHosted({ loginFault } = {}) {
             { 'x-csrf-token': csrf },
           )
         }
-        assert.equal(req.method, 'DELETE')
-        if (req.headers['x-csrf-token'] !== csrf)
-          return send({ error: { code: 'CSRF_TOKEN_INVALID' } }, 403)
-        assert(req.headers.cookie.includes('ocb_session=mock_web'))
-        counts.webLogout++
-        return send(undefined, 204)
+        assert.equal(req.method, 'GET')
       }
       if (path === '/v1/auth/cli/token') {
         assert.equal(body.grantType, 'authorization_code')
@@ -1725,11 +1764,21 @@ export async function mockHosted({ loginFault } = {}) {
       throw error
     }
   })
+  web = await listen((_req, res) => {
+    counts.webNavigation++
+    res.writeHead(200).end('signed in')
+  })
   return {
     ...mock,
+    webOrigin: web.origin,
+    stop: async () => {
+      await mock.stop()
+      await web.stop()
+    },
     counts,
     assertComplete(steps) {
       assert(!failure, 'mock_contract')
+      assert.equal(counts.webNavigation, 0, 'consume_redirect_not_followed')
       if (steps.some((step) => !step.pass)) return
       for (const name of [
         'mail',

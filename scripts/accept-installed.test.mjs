@@ -204,9 +204,9 @@ test('mailbox adapter uses the configured base URL and domain and filters unrela
 const failures = {
   missing_binding: ['binding_cookie_missing', 200, 0],
   missing_parameters: ['magic_link_not_found', undefined, 0],
-  consume_status: ['consume_status', 200, 0],
-  consume_redirect: ['consume_redirect', 303, 0],
-  missing_session: ['session_cookie_missing', 303, 0],
+  consume_status: ['consume_status', 200, 0, 'web'],
+  consume_redirect: ['consume_redirect', 303, 0, 'other'],
+  missing_session: ['session_cookie_missing', 303, 0, 'web'],
   missing_csrf: ['csrf_missing', 200, 0],
   authorize_status: ['authorize_status', 403, 1],
   widened_consent: ['consent_scopes', undefined, 1],
@@ -216,7 +216,7 @@ const failures = {
   callback_duplicate: ['callback_mismatch', undefined, 2],
 }
 
-for (const [fault, [label, status, authorizeCount]] of Object.entries(failures)) {
+for (const [fault, [label, status, authorizeCount, redirectOrigin]] of Object.entries(failures)) {
   test(`browser self-test rejects ${fault} with safe evidence`, async () => {
     const mock = await mockHosted({ loginFault: fault })
     const traces = []
@@ -224,7 +224,7 @@ for (const [fault, [label, status, authorizeCount]] of Object.entries(failures))
       await assert.rejects(
         browserLogin(authorization(mock.origin).href, {
           apiOrigin: mock.origin,
-          webOrigin: mock.origin,
+          webOrigin: mock.webOrigin,
           mailbox: createMailboxAdapter({
             apiUrl: mock.origin,
             key: 'mock-key',
@@ -241,6 +241,7 @@ for (const [fault, [label, status, authorizeCount]] of Object.entries(failures))
             failure: 'assertion_failed',
             check: label,
             ...(status === undefined ? {} : { httpStatus: status }),
+            ...(redirectOrigin === undefined ? {} : { redirectOrigin }),
           })
           return true
         },
@@ -267,57 +268,182 @@ for (const [fault, [label, status, authorizeCount]] of Object.entries(failures))
   })
 }
 
-test('browser self-test completes the navigation and confirms the session before consent', async () => {
-  let callbackRequests = 0
-  const callbackServer = createServer((request, response) => {
-    callbackRequests++
-    assert.equal(new URL(request.url, 'http://localhost').pathname, '/callback')
-    response.writeHead(200).end('signed in')
+for (const [name, options] of [
+  ['web-origin redirect', {}],
+  ['API-origin redirect', { consumeOrigin: 'api' }],
+  ['relative API-origin redirect', { consumeLocation: '/signed-in' }],
+  ['CSRF cookie rotation', { rotateCsrf: true }],
+]) {
+  test(`browser self-test accepts ${name} and confirms the session before consent`, async () => {
+    let callbackRequests = 0
+    const callbackServer = createServer((request, response) => {
+      callbackRequests++
+      assert.equal(new URL(request.url, 'http://localhost').pathname, '/callback')
+      response.writeHead(200).end('signed in')
+    })
+    await new Promise((done) => callbackServer.listen(0, '127.0.0.1', done))
+    const mock = await mockHosted(options)
+    try {
+      const url = authorization(mock.origin)
+      url.searchParams.set(
+        'redirect_uri',
+        `http://127.0.0.1:${callbackServer.address().port}/callback`,
+      )
+      const traces = []
+      await browserLogin(url.href, {
+        apiOrigin: mock.origin,
+        webOrigin: mock.webOrigin,
+        mailbox: createMailboxAdapter({
+          apiUrl: mock.origin,
+          key: 'mock-key',
+          namespace: 'mock',
+          domain: 'mailbox.example.test',
+        }),
+        onTrace: (event) => traces.push(event),
+      })
+      assert.equal(callbackRequests, 1)
+      assert.equal(mock.counts.consume, 1)
+      assert.equal(mock.counts.session, 1)
+      assert.equal(mock.counts.authorize, 2)
+      assert.equal(mock.counts.webLogout, 1)
+      assert.equal(mock.counts.webNavigation, 0)
+      assert.deepEqual(
+        traces.map(({ method, path, status }) => [method, path, status]),
+        [
+          ['POST', '/v1/auth/magic-links', 200],
+          ['GET', '/v1/auth/browser/magic-links/consume', 303],
+          ['GET', '/v1/auth/sessions/current', 200],
+          ['POST', '/v1/auth/cli/authorize', 200],
+          ['POST', '/v1/auth/cli/authorize', 200],
+          ['GET', '/callback', 200],
+          ['DELETE', '/v1/auth/sessions/current', 204],
+        ],
+      )
+      mock.assertComplete([{ pass: false }])
+    } finally {
+      await mock.stop()
+      await new Promise((done) => {
+        callbackServer.close(done)
+        callbackServer.closeAllConnections()
+      })
+    }
   })
-  await new Promise((done) => callbackServer.listen(0, '127.0.0.1', done))
+}
+
+for (const [name, consumeLocation, redirectOrigin] of [
+  ['foreign origin', 'https://foreign.example.test/private?token=private-token', 'other'],
+  ['wrong scheme', ({ webOrigin }) => webOrigin.replace('http:', 'https:'), 'other'],
+  [
+    'wrong port',
+    ({ webOrigin }) => {
+      const url = new URL(webOrigin)
+      url.port = '1'
+      return url.href
+    },
+    'other',
+  ],
+  ['web credentials', ({ webOrigin }) => webOrigin.replace('//', '//user:private@'), 'web'],
+  ['API credentials', ({ apiOrigin }) => apiOrigin.replace('//', '//user:private@'), 'api'],
+  ['fragment', ({ webOrigin }) => `${webOrigin}/signed-in#private`, 'web'],
+  ['missing location', null, 'missing'],
+  ['empty location', '', 'missing'],
+  ['malformed location', 'http://[invalid', 'other'],
+]) {
+  test(`browser self-test rejects redirect with ${name} without exposing the URL`, async () => {
+    const mock = await mockHosted({ consumeLocation })
+    try {
+      await assert.rejects(
+        browserLogin(authorization(mock.origin).href, {
+          apiOrigin: mock.origin,
+          webOrigin: mock.webOrigin,
+          mailbox: createMailboxAdapter({
+            apiUrl: mock.origin,
+            key: 'mock-key',
+            namespace: 'mock',
+            domain: 'mailbox.example.test',
+          }),
+        }),
+        (error) => {
+          assert.deepEqual(failureEvidence(error), {
+            failure: 'assertion_failed',
+            check: 'consume_redirect',
+            httpStatus: 303,
+            redirectOrigin,
+          })
+          return true
+        },
+      )
+      assert.equal(mock.counts.authorize, 0)
+      assert.equal(mock.counts.webLogout, 1)
+      mock.assertComplete([{ pass: false }])
+    } finally {
+      await mock.stop()
+    }
+  })
+}
+
+test('mock revocation requires the web Origin, session and CSRF cookies, and matching CSRF header', async () => {
   const mock = await mockHosted()
   try {
-    const url = authorization(mock.origin)
-    url.searchParams.set(
-      'redirect_uri',
-      `http://127.0.0.1:${callbackServer.address().port}/callback`,
-    )
-    const traces = []
-    await browserLogin(url.href, {
-      apiOrigin: mock.origin,
-      webOrigin: mock.origin,
-      mailbox: createMailboxAdapter({
-        apiUrl: mock.origin,
-        key: 'mock-key',
-        namespace: 'mock',
-        domain: 'mailbox.example.test',
-      }),
-      onTrace: (event) => traces.push(event),
+    const issued = await fetch(`${mock.origin}/v1/auth/magic-links`, {
+      method: 'POST',
+      headers: { origin: mock.webOrigin, 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'mock.current@mailbox.example.test' }),
     })
-    assert.equal(callbackRequests, 1)
-    assert.equal(mock.counts.consume, 1)
-    assert.equal(mock.counts.session, 1)
-    assert.equal(mock.counts.authorize, 2)
+    assert.equal(issued.status, 200)
+    const mailbox = createMailboxAdapter({
+      apiUrl: mock.origin,
+      key: 'mock-key',
+      namespace: 'mock',
+      domain: 'mailbox.example.test',
+    })
+    const link = findMagicLink(await mailbox.messages({ tag: 'current', since: 0 }), mock.origin)
+    const consumed = await fetch(link, {
+      redirect: 'manual',
+      headers: { accept: 'text/html', cookie: issued.headers.getSetCookie()[0].split(';')[0] },
+    })
+    assert.equal(consumed.status, 303)
+    const cookies = consumed.headers
+      .getSetCookie()
+      .slice(1)
+      .map((cookie) => cookie.split(';')[0])
+    const session = await fetch(`${mock.origin}/v1/auth/sessions/current`, {
+      headers: { origin: mock.webOrigin, cookie: cookies.join('; ') },
+    })
+    assert.equal(session.status, 200)
+    const headers = {
+      origin: mock.webOrigin,
+      cookie: cookies.join('; '),
+      'x-csrf-token': session.headers.get('x-csrf-token'),
+    }
+    for (const change of [
+      { origin: undefined },
+      { origin: mock.origin },
+      { origin: 'https://foreign.example.test' },
+      { cookie: undefined },
+      { cookie: cookies[0] },
+      { cookie: cookies[1] },
+      { 'x-csrf-token': undefined },
+      { 'x-csrf-token': 'wrong' },
+    ]) {
+      const response = await fetch(`${mock.origin}/v1/auth/sessions/current`, {
+        method: 'DELETE',
+        headers: Object.fromEntries(
+          Object.entries({ ...headers, ...change }).filter(([, value]) => value !== undefined),
+        ),
+      })
+      assert.equal(response.status, 403)
+      await response.arrayBuffer()
+    }
+    const revoked = await fetch(`${mock.origin}/v1/auth/sessions/current`, {
+      method: 'DELETE',
+      headers,
+    })
+    assert.equal(revoked.status, 204)
     assert.equal(mock.counts.webLogout, 1)
-    assert.deepEqual(
-      traces.map(({ method, path, status }) => [method, path, status]),
-      [
-        ['POST', '/v1/auth/magic-links', 200],
-        ['GET', '/v1/auth/browser/magic-links/consume', 303],
-        ['GET', '/v1/auth/sessions/current', 200],
-        ['POST', '/v1/auth/cli/authorize', 200],
-        ['POST', '/v1/auth/cli/authorize', 200],
-        ['GET', '/callback', 200],
-        ['DELETE', '/v1/auth/sessions/current', 204],
-      ],
-    )
     mock.assertComplete([{ pass: false }])
   } finally {
     await mock.stop()
-    await new Promise((done) => {
-      callbackServer.close(done)
-      callbackServer.closeAllConnections()
-    })
   }
 })
 
@@ -369,7 +495,7 @@ test('an empty test mailbox produces a deadline label', async () => {
     await assert.rejects(
       browserLogin(authorization(mock.origin).href, {
         apiOrigin: mock.origin,
-        webOrigin: mock.origin,
+        webOrigin: mock.webOrigin,
         mailbox: { address: () => 'mock.current@mailbox.example.test', messages: async () => [] },
         mailboxTimeoutMs: 10,
         pollIntervalMs: 1,
