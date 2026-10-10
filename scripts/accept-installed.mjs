@@ -6,13 +6,13 @@
  * after installing the repository dependencies from the lockfile.
  *
  * node scripts/accept-installed.mjs --self-test
- * node scripts/accept-installed.mjs --api-url https://api.staging.opencloudbox.dev
+ * node scripts/accept-installed.mjs --api-url <hosted API origin>
  * Optional live env: OCB_TEST_MAILBOX_API_KEY, OCB_TEST_MAILBOX_NAMESPACE,
  * OCB_TEST_MAILBOX_API_URL, OCB_TEST_MAILBOX_DOMAIN, OCB_ACCEPT_WEB_ORIGIN.
  * npm install uses a loopback registry of the installed runtime dependency graph,
  * so neither mode needs the public npm registry or the operator's npm credentials.
  */
-import assert from 'node:assert/strict'
+import nodeAssert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -22,7 +22,53 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+class CheckFailure extends Error {
+  constructor(check, status) {
+    super(check)
+    this.check = check
+    this.status = status
+  }
+}
+
+// Only labels supplied by this harness can cross the evidence boundary.
+const labeledAssertion =
+  (fn, messageIndex) =>
+  (...args) => {
+    try {
+      return fn(...args)
+    } catch {
+      const label = args[messageIndex]
+      throw new CheckFailure(
+        typeof label === 'string' && /^[a-z_]{1,64}$/.test(label) ? label : 'assertion_failed',
+        args[messageIndex + 1],
+      )
+    }
+  }
+const assert = Object.assign(
+  labeledAssertion(nodeAssert, 1),
+  Object.fromEntries(
+    ['equal', 'deepEqual', 'match'].map((name) => [name, labeledAssertion(nodeAssert[name], 2)]),
+  ),
+)
+function checkStatus(response, label, expected) {
+  if (
+    expected === undefined
+      ? response.status < 200 || response.status >= 300
+      : response.status !== expected
+  )
+    throw new CheckFailure(label, response.status)
+}
+export function failureEvidence(error) {
+  return error instanceof CheckFailure
+    ? {
+        failure: 'assertion_failed',
+        check: error.check,
+        ...(Number.isInteger(error.status) ? { httpStatus: error.status } : {}),
+      }
+    : { failure: 'operation_failed' }
+}
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const limits = { command: 120_000, login: 240_000, build: 180_000, body: 2 * 1024 * 1024 }
@@ -46,7 +92,7 @@ function packageManager(name) {
       if (existsSync(candidate)) return [process.execPath, candidate]
     }
   }
-  throw new Error('package_manager_missing')
+  throw new CheckFailure('package_manager_missing')
 }
 
 export function redact(value) {
@@ -54,7 +100,7 @@ export function redact(value) {
     return value
       .replace(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
       .replace(
-        /([?&](?:token|apikey|code|state|code_challenge|code_verifier|secret)=)[^&\s]+/gi,
+        /([?&](?:token|apikey|code|state|code_challenge|code_verifier|challenge|userId|secret)=)[^&\s]+/gi,
         '$1[redacted]',
       )
       .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
@@ -67,9 +113,11 @@ export function redact(value) {
 
 export function parseArgs(argv) {
   let selfTest = false
+  let verbose = false
   let apiUrl
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--self-test' && !selfTest) selfTest = true
+    else if (argv[i] === '--verbose' && !verbose) verbose = true
     else if (argv[i] === '--api-url' && !apiUrl) apiUrl = argv[++i]
     else throw new Error('usage')
   }
@@ -87,7 +135,7 @@ export function parseArgs(argv) {
       throw new Error('usage')
     apiUrl = url.origin
   }
-  return { selfTest, apiUrl }
+  return { selfTest, apiUrl, verbose }
 }
 
 export function privateEnvironment(root) {
@@ -115,7 +163,11 @@ export function privateEnvironment(root) {
 }
 
 // Every command is its own process. Capture is bounded and never dumped on error.
-function launch(command, args, { cwd, env, timeout = limits.command, onEvent } = {}) {
+function launch(
+  command,
+  args,
+  { cwd, env, timeout = limits.command, onEvent, onTrace, onComplete } = {},
+) {
   const started = Date.now()
   if (Array.isArray(command)) {
     args = [...command.slice(1), ...args]
@@ -130,6 +182,7 @@ function launch(command, args, { cwd, env, timeout = limits.command, onEvent } =
   children.add(child)
   let stdout = '',
     stderr = '',
+    pendingError = '',
     pending = '',
     timedOut = false,
     overflow = false
@@ -149,6 +202,20 @@ function launch(command, args, { cwd, env, timeout = limits.command, onEvent } =
       }
       if (stream === 'stderr') {
         stderr += chunk.toString()
+        pendingError += chunk.toString()
+        let newline = pendingError.indexOf('\n')
+        while (newline >= 0) {
+          const line = pendingError.slice(0, newline)
+          pendingError = pendingError.slice(newline + 1)
+          if (line.startsWith('accept-http:')) {
+            try {
+              onTrace?.(JSON.parse(line.slice('accept-http:'.length)))
+            } catch {
+              /* private stream */
+            }
+          }
+          newline = pendingError.indexOf('\n')
+        }
         return
       }
       stdout += chunk.toString()
@@ -175,7 +242,7 @@ function launch(command, args, { cwd, env, timeout = limits.command, onEvent } =
     const complete = (code, signal, spawnError = false) => {
       clearTimeout(timer)
       children.delete(child)
-      finish({
+      const result = {
         code,
         signal,
         spawnError,
@@ -185,7 +252,9 @@ function launch(command, args, { cwd, env, timeout = limits.command, onEvent } =
         stderr,
         events,
         durationMs: Date.now() - started,
-      })
+      }
+      onComplete?.(result)
+      finish(result)
     }
     child.on('error', () => complete(null, null, true))
     child.on('close', (code, signal) => complete(code, signal))
@@ -247,7 +316,7 @@ export async function dependencyRegistry(root, npm, env) {
         .find(existsSync)
       if (!location) {
         if (manifest.optionalDependencies?.[name]) continue
-        throw new Error('dependency_missing')
+        throw new CheckFailure('dependency_missing')
       }
       const path = await realpath(location)
       const dependency = JSON.parse(await readFile(path, 'utf8'))
@@ -274,7 +343,7 @@ export async function dependencyRegistry(root, npm, env) {
       { cwd: root, env },
     )
     if (packed.code !== 0) {
-      const error = new Error('dependency_pack')
+      const error = new CheckFailure('dependency_pack')
       error.package = record.manifest.name
       error.exitCode = packed.code
       error.npmCode = /^npm error code ([A-Z_0-9]+)$/m.exec(packed.stderr)?.[1]
@@ -320,11 +389,14 @@ export async function dependencyRegistry(root, npm, env) {
 }
 
 // HTTP bodies stay private and bounded, including test mailbox responses and cookies.
-async function request(url, init = {}) {
+async function request(url, init = {}, onTrace) {
+  const started = Date.now()
+  let status = null
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 20_000)
   try {
     const response = await fetch(url, { ...init, redirect: 'manual', signal: controller.signal })
+    status = response.status
     let text = '',
       size = 0
     for await (const chunk of response.body ?? []) {
@@ -339,47 +411,145 @@ async function request(url, init = {}) {
       /* HTML callback/consent page */
     }
     return { status: response.status, headers: response.headers, json, text }
+  } catch (error) {
+    if (error instanceof CheckFailure) throw error
+    throw new CheckFailure('http_request_failed')
   } finally {
     clearTimeout(timer)
+    onTrace?.({
+      method: init.method ?? 'GET',
+      path: safeHttpPath(new URL(url).pathname),
+      status,
+      durationMs: Date.now() - started,
+    })
+  }
+}
+
+// Trace route templates only; resource identifiers and query values stay private.
+export function safeHttpPath(path) {
+  if (
+    /^\/v1\/auth\/(?:magic-links|browser\/magic-links\/consume|sessions\/current|cli\/(?:authorize|token)|revoke)$/.test(
+      path,
+    )
+  )
+    return path
+  if (path === '/callback') return path
+  if (path.endsWith('/api/json')) return '/api/json'
+  const words = new Set([
+    'v1',
+    'projects',
+    'sessions',
+    'source',
+    'manifests',
+    'chunks',
+    'checksum',
+    'operations',
+    'sandboxes',
+    'executions',
+    'events',
+    'cancel',
+    'stop',
+    'start',
+    'destroy',
+    'delivery',
+    'deliveries',
+    'files',
+  ])
+  return path
+    .split('/')
+    .map((part) => (!part || words.has(part) ? part : ':id'))
+    .join('/')
+}
+
+// Loaded only into the isolated installed CLI when verbose tracing is requested.
+function installFetchTrace(safePath) {
+  const original = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const started = Date.now()
+    let status = null
+    try {
+      const response = await original(input, init)
+      status = response.status
+      return response
+    } finally {
+      const url = new URL(input instanceof Request ? input.url : input)
+      const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
+      process.stderr.write(
+        `accept-http:${JSON.stringify({
+          method,
+          path: safePath(url.pathname),
+          status,
+          durationMs: Date.now() - started,
+        })}\n`,
+      )
+    }
   }
 }
 
 export function validateAuthorization(raw, apiOrigin) {
-  const url = new URL(raw)
+  let url
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new CheckFailure('authorization_url')
+  }
   assert.equal(url.origin, apiOrigin, 'authorization_origin')
   assert.equal(url.pathname, '/v1/auth/cli/authorize', 'authorization_path')
   assert(!url.username && !url.password && !url.hash, 'authorization_url')
-  assert.deepEqual([...url.searchParams.keys()].sort(), [
-    'audience',
-    'client_id',
-    'code_challenge',
-    'code_challenge_method',
-    'redirect_uri',
-    'response_type',
-    'scope',
-    'state',
-  ])
-  assert.equal(url.searchParams.get('response_type'), 'code')
-  assert.equal(url.searchParams.get('client_id'), 'ocb_cli')
-  assert.equal(url.searchParams.get('audience'), 'cli')
-  assert.equal(url.searchParams.get('code_challenge_method'), 'S256')
-  assert.match(url.searchParams.get('code_challenge'), /^[A-Za-z0-9_-]{43}$/)
-  assert.match(url.searchParams.get('state'), /^[A-Za-z0-9_-]{16,128}$/)
-  assert.deepEqual(url.searchParams.get('scope').split(' ').sort(), [...scopes].sort())
-  const callback = new URL(url.searchParams.get('redirect_uri'))
-  assert.equal(callback.hostname, '127.0.0.1')
-  assert.equal(callback.protocol, 'http:')
-  assert.equal(callback.pathname, '/callback')
+  assert.deepEqual(
+    [...url.searchParams.keys()].sort(),
+    [
+      'audience',
+      'client_id',
+      'code_challenge',
+      'code_challenge_method',
+      'redirect_uri',
+      'response_type',
+      'scope',
+      'state',
+    ],
+    'authorization_parameters',
+  )
+  assert.equal(url.searchParams.get('response_type'), 'code', 'authorization_binding')
+  assert.equal(url.searchParams.get('client_id'), 'ocb_cli', 'authorization_binding')
+  assert.equal(url.searchParams.get('audience'), 'cli', 'authorization_binding')
+  assert.equal(url.searchParams.get('code_challenge_method'), 'S256', 'authorization_binding')
+  assert.match(
+    url.searchParams.get('code_challenge'),
+    /^[A-Za-z0-9_-]{43}$/,
+    'authorization_binding',
+  )
+  assert.match(url.searchParams.get('state'), /^[A-Za-z0-9_-]{16,128}$/, 'authorization_binding')
+  assert.deepEqual(
+    (url.searchParams.get('scope') ?? '').split(' ').sort(),
+    [...scopes].sort(),
+    'authorization_scopes',
+  )
+  let callback
+  try {
+    callback = new URL(url.searchParams.get('redirect_uri'))
+  } catch {
+    throw new CheckFailure('authorization_callback')
+  }
+  assert.equal(callback.hostname, '127.0.0.1', 'authorization_callback')
+  assert.equal(callback.protocol, 'http:', 'authorization_callback')
+  assert.equal(callback.pathname, '/callback', 'authorization_callback')
   assert(
     callback.port && !callback.username && !callback.password && !callback.search && !callback.hash,
+    'authorization_callback',
   )
   return url
 }
 
 // Mailbox adapter contract: address(tag) and messages({ tag, since }).
 // Keep the HTTP query and response format separate from the browser journey.
-export function createMailboxAdapter({ apiUrl, key, namespace, domain }) {
-  const base = new URL(apiUrl)
+export function createMailboxAdapter({ apiUrl, key, namespace, domain, onTrace }) {
+  let base
+  try {
+    base = new URL(apiUrl)
+  } catch {
+    throw new CheckFailure('mailbox_api_url')
+  }
   assert(
     ['http:', 'https:'].includes(base.protocol) &&
       !base.username &&
@@ -404,9 +574,10 @@ export function createMailboxAdapter({ apiUrl, key, namespace, domain }) {
         livequery: 'false',
       }))
         url.searchParams.set(name, value)
-      const response = await request(url)
-      assert.equal(response.status, 200, 'mailbox_http_status')
+      const response = await request(url, {}, onTrace)
+      checkStatus(response, 'mailbox_http_status', 200)
       assert.equal(response.json?.result, 'success', 'mailbox_result')
+      assert(Array.isArray(response.json.emails ?? []), 'mailbox_messages', response.status)
       return (response.json.emails ?? [])
         .filter((email) => email.tag === tag && Number(email.timestamp) >= since)
         .map((email) => `${email.text ?? ''}\n${email.html ?? ''}`)
@@ -415,66 +586,125 @@ export function createMailboxAdapter({ apiUrl, key, namespace, domain }) {
 }
 
 // Same browser session for binding cookie, magic-link consume, CSRF and consent.
-export async function browserLogin(raw, { apiOrigin, webOrigin, mailbox }) {
+export function findMagicLink(messages, apiOrigin) {
+  for (const message of messages) {
+    const content = message.replace(/&amp;/g, '&').replace(/&#(?:0*38|x0*26);/gi, '&')
+    for (const match of content.matchAll(/https?:\/\/[^\s<>"']+/g)) {
+      let link
+      try {
+        link = new URL(match[0])
+      } catch {
+        continue
+      }
+      if (
+        link.origin !== apiOrigin ||
+        link.pathname !== '/v1/auth/browser/magic-links/consume' ||
+        link.username ||
+        link.password ||
+        link.hash
+      )
+        continue
+      if (
+        ['challenge', 'userId', 'secret'].every(
+          (name) => link.searchParams.getAll(name).length === 1 && link.searchParams.get(name),
+        )
+      )
+        return link
+    }
+  }
+}
+
+export async function browserLogin(
+  raw,
+  { apiOrigin, webOrigin, mailbox, onTrace, mailboxTimeoutMs = 150_000, pollIntervalMs = 2000 },
+) {
   const url = validateAuthorization(raw, apiOrigin)
   const cookies = new Map()
-  let csrf
-  const browser = async (path, method = 'POST', body) => {
-    const response = await request(`${apiOrigin}${path}`, {
-      method,
-      headers: {
-        origin: webOrigin,
-        accept: 'application/json',
-        'content-type': 'application/json',
-        ...(cookies.size
-          ? { cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') }
-          : {}),
-        ...(csrf ? { 'x-csrf-token': csrf } : {}),
+  let csrf, primaryFailure
+  const browser = async (target, method = 'POST', body, navigation = false) => {
+    const response = await request(
+      new URL(target, apiOrigin),
+      {
+        method,
+        headers: {
+          ...(navigation ? {} : { origin: webOrigin }),
+          accept: navigation ? 'text/html' : 'application/json',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...(cookies.size
+            ? { cookie: [...cookies].map(([name, cookie]) => `${name}=${cookie.value}`).join('; ') }
+            : {}),
+          ...(csrf && !navigation ? { 'x-csrf-token': csrf } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    })
-    for (const cookie of response.headers.getSetCookie()) {
-      const pair = cookie.split(';')[0]
+      onTrace,
+    )
+    for (const header of response.headers.getSetCookie()) {
+      const [pair, ...attributes] = header.split(';')
       const index = pair.indexOf('=')
-      cookies.set(pair.slice(0, index), pair.slice(index + 1))
+      if (index < 1) continue
+      const name = pair.slice(0, index).trim(),
+        value = pair.slice(index + 1)
+      if (!value || attributes.some((item) => /^\s*max-age=0\s*$/i.test(item))) cookies.delete(name)
+      else cookies.set(name, { value })
     }
-    assert(response.status >= 200 && response.status < 300, 'browser_http_status')
-    return response.json
+    // The echoed header identifies the CSRF cookie without assuming its name.
+    const echoed = response.headers.get('x-csrf-token')
+    if (
+      echoed &&
+      [...cookies].some(
+        ([name, cookie]) =>
+          !['ocb_session', 'ocb_login_bind'].includes(name) && cookie.value === echoed,
+      )
+    )
+      csrf = echoed
+    return response
   }
   try {
     const tag = `accept-${randomUUID()}`
     const since = Date.now() - 1000
-    assert.equal(
-      (
-        await browser('/v1/auth/magic-links', 'POST', {
-          email: mailbox.address(tag),
-        })
-      ).accepted,
-      true,
-    )
-    let token
-    const deadline = Date.now() + 150_000
-    while (Date.now() < deadline && !token) {
-      for (const message of await mailbox.messages({ tag, since })) {
-        const content = message.replace(/&amp;/g, '&')
-        for (const match of content.matchAll(/https?:\/\/[^\s<>"']+/g)) {
-          let link
-          try {
-            link = new URL(match[0])
-          } catch {
-            continue
-          }
-          if (![apiOrigin, webOrigin].includes(link.origin)) continue
-          const candidate = link.searchParams.get('token')
-          if (candidate && /^[A-Za-z0-9_-]{32,256}$/.test(candidate)) token = candidate
-        }
-      }
-      if (!token) await delay(2000)
+    const issued = await browser('/v1/auth/magic-links', 'POST', { email: mailbox.address(tag) })
+    checkStatus(issued, 'magic_link_request_status')
+    assert.equal(issued.json?.accepted, true, 'magic_link_accepted', issued.status)
+    assert(cookies.get('ocb_login_bind')?.value, 'binding_cookie_missing', issued.status)
+    let link,
+      sawMessage = false
+    const deadline = Date.now() + mailboxTimeoutMs
+    while (Date.now() < deadline && !link) {
+      const messages = await mailbox.messages({ tag, since })
+      sawMessage ||= messages.length > 0
+      link = findMagicLink(messages, apiOrigin)
+      if (!link) await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())))
     }
-    assert(token, 'mailbox_deadline')
-    const session = await browser('/v1/auth/magic-links/consume', 'POST', { token })
-    csrf = session.csrfToken
-    assert.match(csrf, /^[A-Za-z0-9_-]{32,256}$/)
+    assert(link, sawMessage ? 'magic_link_not_found' : 'mailbox_deadline')
+    const consumed = await browser(link, 'GET', undefined, true)
+    checkStatus(consumed, 'consume_status', 303)
+    let redirect
+    try {
+      redirect = new URL(consumed.headers.get('location'), apiOrigin)
+    } catch {
+      /* checked below */
+    }
+    assert(
+      consumed.headers.get('location') &&
+        redirect?.origin === apiOrigin &&
+        !redirect.username &&
+        !redirect.password &&
+        !redirect.hash,
+      'consume_redirect',
+      consumed.status,
+    )
+    assert(cookies.get('ocb_session')?.value, 'session_cookie_missing', consumed.status)
+    const session = await browser('/v1/auth/sessions/current', 'GET')
+    checkStatus(session, 'session_status')
+    assert(
+      typeof session.json?.userId === 'string' &&
+        session.json.userId.length > 0 &&
+        session.json.authMethod === 'magic_link',
+      'session_binding',
+      session.status,
+    )
+    assert(csrf, 'csrf_missing', session.status)
     const params = url.searchParams
     const binding = {
       clientId: params.get('client_id'),
@@ -485,28 +715,61 @@ export async function browserLogin(raw, { apiOrigin, webOrigin, mailbox }) {
       scope: params.get('scope'),
       state: params.get('state'),
     }
-    let consent = await browser('/v1/auth/cli/authorize', 'POST', binding)
-    if (consent.status === 'consent_required') {
-      assert.deepEqual([...consent.scopes].sort(), [...scopes].sort())
-      consent = await browser('/v1/auth/cli/authorize', 'POST', {
+    let response = await browser('/v1/auth/cli/authorize', 'POST', binding)
+    checkStatus(response, 'authorize_status')
+    let consent = response.json
+    if (consent?.status === 'consent_required') {
+      assert(Array.isArray(consent.scopes), 'consent_scopes')
+      assert.deepEqual([...consent.scopes].sort(), [...scopes].sort(), 'consent_scopes')
+      assert(typeof consent.consentId === 'string' && consent.consentId.length > 0, 'consent_id')
+      response = await browser('/v1/auth/cli/authorize', 'POST', {
         ...binding,
         consent: { consentId: consent.consentId, approve: true },
       })
+      checkStatus(response, 'authorize_status')
+      consent = response.json
     }
-    assert.equal(consent.status, 'authorized')
-    const callback = new URL(consent.redirectUri)
+    assert.equal(consent?.status, 'authorized', 'authorize_result')
+    let callback
+    try {
+      callback = new URL(consent.redirectUri)
+    } catch {
+      /* checked below */
+    }
     const expectedCallback = new URL(binding.redirectUri)
-    assert.equal(
-      callback.origin + callback.pathname,
-      expectedCallback.origin + expectedCallback.pathname,
+    assert(
+      callback &&
+        callback.origin === expectedCallback.origin &&
+        callback.pathname === expectedCallback.pathname &&
+        !callback.username &&
+        !callback.password &&
+        !callback.hash,
+      'callback_mismatch',
     )
-    assert.equal(callback.searchParams.get('state'), binding.state)
+    assert.deepEqual(
+      [...callback.searchParams.keys()].sort(),
+      ['code', 'state'],
+      'callback_mismatch',
+    )
+    assert.equal(callback.searchParams.get('state'), binding.state, 'callback_mismatch')
     assert(callback.searchParams.get('code'), 'callback_code')
-    assert.equal((await request(callback)).status, 200, 'loopback_callback')
+    checkStatus(await request(callback, {}, onTrace), 'loopback_callback', 200)
+  } catch (error) {
+    primaryFailure = error
   } finally {
-    if (csrf) await browser('/v1/auth/sessions/current', 'DELETE')
-    cookies.clear()
+    try {
+      if (cookies.get('ocb_session')?.value) {
+        if (!csrf) await browser('/v1/auth/sessions/current', 'GET')
+        const revoked = await browser('/v1/auth/sessions/current', 'DELETE')
+        checkStatus(revoked, 'web_logout_status')
+      }
+    } catch (error) {
+      primaryFailure ??= error
+    } finally {
+      cookies.clear()
+    }
   }
+  if (primaryFailure) throw primaryFailure
 }
 
 async function mappings(stateDirectory) {
@@ -524,6 +787,12 @@ async function mappings(stateDirectory) {
   }
   return found
 }
+export async function cleanupEligibility(stateDirectory) {
+  return {
+    destroy: (await mappings(stateDirectory)).some((record) => record.hostedSessionId),
+    logout: existsSync(join(stateDirectory, 'auth.json')),
+  }
+}
 const safeId = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(value) ? redact(value) : null
 function idsOf(view, records, projectId) {
@@ -537,7 +806,7 @@ function idsOf(view, records, projectId) {
   }
 }
 
-export async function main(argv) {
+export async function main(argv, { loginFault } = {}) {
   const options = parseArgs(argv)
   const npm = packageManager('npm')
   const pnpm = packageManager('pnpm')
@@ -547,6 +816,27 @@ export async function main(argv) {
   const state = join(root, 'cli-state')
   const prefix = join(root, 'prefix')
   const steps = []
+  let currentStep
+  const trace = (event, stepName = currentStep) => {
+    if (!options.verbose) return
+    if (
+      !/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(event.method) ||
+      typeof event.path !== 'string' ||
+      !Number.isFinite(event.durationMs) ||
+      !(event.status === null || Number.isInteger(event.status))
+    )
+      return
+    process.stderr.write(
+      `${JSON.stringify({
+        step: stepName,
+        substep: 'http',
+        method: event.method,
+        path: safeHttpPath(event.path),
+        status: event.status,
+        durationMs: event.durationMs,
+      })}\n`,
+    )
+  }
   let registry,
     mock,
     cli,
@@ -563,6 +853,7 @@ export async function main(argv) {
   process.on('SIGTERM', interrupt)
   const emit = (item) => process.stdout.write(`${JSON.stringify(redact(item))}\n`)
   const step = async (name, action) => {
+    currentStep = name
     process.stderr.write(`Installed acceptance: ${name}\n`)
     const started = Date.now()
     const evidence = { step: name, pass: false, durationMs: 0, exitCode: null, ids: {} }
@@ -571,9 +862,7 @@ export async function main(argv) {
       evidence.pass = true
     } catch (error) {
       // Assertion labels are ours. Never echo thrown messages, API bodies or argv.
-      evidence.failure = error?.code === 'ERR_ASSERTION' ? 'assertion_failed' : 'operation_failed'
-      if (typeof error?.message === 'string' && /^[a-z_]{1,64}$/.test(error.message))
-        evidence.check = error.message
+      Object.assign(evidence, failureEvidence(error))
       if (error?.package) evidence.dependency = error.package
       if (error?.npmCode) evidence.npmErrorCode = error.npmCode
       if (error?.exitCode !== undefined) evidence.dependencyPackExitCode = error.exitCode
@@ -583,12 +872,49 @@ export async function main(argv) {
     emit(evidence)
     return evidence.pass
   }
-  const invoke = (args, extra = {}) =>
-    launch(
+  const skip = (name, reason) => {
+    const evidence = {
+      step: name,
+      pass: false,
+      skipped: true,
+      reason,
+      durationMs: 0,
+      exitCode: null,
+      ids: {},
+    }
+    steps.push(evidence)
+    emit(evidence)
+  }
+  const commandTrace = (stepName, substep, result) => {
+    if (options.verbose)
+      process.stderr.write(
+        `${JSON.stringify({
+          step: stepName,
+          substep,
+          exitCode: result.code,
+          durationMs: result.durationMs,
+        })}\n`,
+      )
+  }
+  const command = async (substep, executable, args, extra) => {
+    const result = await run(executable, args, extra)
+    commandTrace(currentStep, substep, result)
+    return result
+  }
+  const invoke = (args, extra = {}) => {
+    const invokingStep = currentStep
+    return launch(
       process.platform === 'win32' ? process.execPath : cli,
       process.platform === 'win32' ? [cli, ...args] : args,
-      { cwd: project, env, ...extra },
+      {
+        cwd: project,
+        env,
+        onTrace: (event) => trace(event, invokingStep),
+        onComplete: (result) => commandTrace(invokingStep, 'cli', result),
+        ...extra,
+      },
     )
+  }
   const structured = async (args, name, evidence) => {
     const result = await invoke([...args, '--jsonl']).done
     evidence.exitCode = result.code
@@ -628,11 +954,23 @@ export async function main(argv) {
     await writeFile(env.NPM_CONFIG_USERCONFIG, '', { mode: 0o600 })
     await writeFile(env.NPM_CONFIG_GLOBALCONFIG, '', { mode: 0o600 })
     env.OCBOX_STATE_DIR = state
+    if (options.verbose) {
+      const preload = join(root, 'http-trace.mjs')
+      await writeFile(preload, `(${installFetchTrace.toString()})(${safeHttpPath.toString()})`, {
+        mode: 0o600,
+      })
+      env.NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`
+    }
     await required('pack-install', async (evidence) => {
-      const build = await run(pnpm, ['run', 'build'], { cwd: repo, env, timeout: limits.build })
+      const build = await command('build', pnpm, ['run', 'build'], {
+        cwd: repo,
+        env,
+        timeout: limits.build,
+      })
       evidence.buildExitCode = build.code
       checkProcess(build)
-      const packed = await run(
+      const packed = await command(
+        'pack',
         npm,
         ['pack', '--json', '--ignore-scripts', '--offline', '--pack-destination', root],
         { cwd: repo, env },
@@ -642,7 +980,8 @@ export async function main(argv) {
       const [info] = JSON.parse(packed.stdout)
       evidence.artifactSha256 = sha256(await readFile(join(root, info.filename)))
       registry = await dependencyRegistry(root, npm, env)
-      const installed = await run(
+      const installed = await command(
+        'install',
         npm,
         [
           'install',
@@ -673,7 +1012,7 @@ export async function main(argv) {
       checkProcess(version)
       assert(version.stdout.includes(info.version), 'installed_version')
     })
-    if (options.selfTest) mock = await mockHosted()
+    if (options.selfTest) mock = await mockHosted({ loginFault })
     const apiOrigin = mock?.origin ?? options.apiUrl
     env.OCBOX_API_URL = apiOrigin
     const automated =
@@ -694,7 +1033,9 @@ export async function main(argv) {
               await browserLogin(event.data.url, {
                 apiOrigin,
                 webOrigin,
+                onTrace: trace,
                 mailbox: createMailboxAdapter({
+                  onTrace: trace,
                   apiUrl: mock?.origin ?? process.env.OCB_TEST_MAILBOX_API_URL,
                   key: options.selfTest ? 'mock-key' : process.env.OCB_TEST_MAILBOX_API_KEY,
                   namespace: options.selfTest ? 'mock' : process.env.OCB_TEST_MAILBOX_NAMESPACE,
@@ -707,9 +1048,9 @@ export async function main(argv) {
               process.stderr.write(
                 `Open this URL to authorize the CLI (waiting up to 240 seconds):\n${event.data.url}\n`,
               )
-          })().catch(() => {
+          })().catch((error) => {
             login.child.kill('SIGKILL')
-            throw new Error('login_driver_failed')
+            throw error
           })
           // Observe immediately; the result is awaited after child exit.
           void driver.catch(() => {})
@@ -720,7 +1061,7 @@ export async function main(argv) {
       evidence.timedOut = result.timedOut
       await driver
       assert(authorizationSeen, 'authorization_event')
-      assert.equal(envelope(result, 'auth.logged_in').loggedIn, true)
+      assert.equal(envelope(result, 'auth.logged_in')?.loggedIn, true, 'login_result')
       evidence.automated = automated
     })
     await required('init', async (evidence) => {
@@ -730,23 +1071,28 @@ export async function main(argv) {
         ['c.txt', 'installed c\n'],
       ])
         await writeFile(join(project, name), content)
-      assert.equal(await structured(['init'], 'project.initialized', evidence), 'created')
+      assert.equal(
+        await structured(['init'], 'project.initialized', evidence),
+        'created',
+        'init_result',
+      )
       const config = await readFile(join(project, 'opencloudbox.toml'), 'utf8')
-      assert.match(config, /name\s*=\s*"ocbox"/)
-      assert.match(config, /projectId\s*=/)
+      assert.match(config, /name\s*=\s*"ocbox"/, 'project_config')
+      assert.match(config, /projectId\s*=/, 'project_config')
       hostedProjectId = /^projectId\s*=\s*"([^"]+)"/m.exec(config)?.[1]
       assert(hostedProjectId, 'project_id')
       evidence.ids = { projectId: safeId(hostedProjectId) }
     })
     await required('start', async (evidence) => {
       const view = await structured(['start'], 'session.started', evidence)
-      assert.equal(view.session.state, 'active')
+      assert.equal(view?.session?.state, 'active', 'session_active')
       identity = idsOf(view, await mappings(state), hostedProjectId)
       assert(identity.hostedSessionId && identity.hostedSandboxId, 'hosted_mapping')
       evidence.ids = identity
     })
     await required('sync-push', async (evidence) => {
       const result = await structured(['sync', 'push'], 'sync.pushed', evidence)
+      assert(Array.isArray(result?.uploadedFiles), 'uploaded_files')
       for (const file of ['a.txt', 'b.txt', 'c.txt'])
         assert(result.uploadedFiles.includes(file), 'uploaded_file')
       assert(result.uploadedBytes > 0, 'uploaded_bytes')
@@ -782,8 +1128,8 @@ export async function main(argv) {
     })
     await required('cancel', async (evidence) => {
       const result = await structured(['cancel'], 'execution.cancelled', evidence)
-      assert.equal(result.executionId, identity.executionId)
-      assert.equal(result.state, 'cancelled')
+      assert.equal(result?.executionId, identity.executionId, 'cancel_execution')
+      assert.equal(result?.state, 'cancelled', 'cancel_state')
       evidence.ids = { ...identity }
     })
     await required('exec-sleep-cancelled', async (evidence) => {
@@ -791,52 +1137,60 @@ export async function main(argv) {
       evidence.exitCode = result.code
       evidence.processDurationMs = result.durationMs
       checkProcess(result, 130)
-      assert.equal(JSON.parse(result.stdout).outcome, 'cancelled')
+      assert.equal(JSON.parse(result.stdout)?.outcome, 'cancelled', 'execution_outcome')
       evidence.ids = { ...identity }
     })
     await required('stop', async (evidence) => {
       const view = await structured(['stop'], 'session.stopped', evidence)
-      assert.equal(view.session.state, 'stopped')
-      assert.equal(view.sandbox.id, identity.sandboxId)
+      assert.equal(view?.session?.state, 'stopped', 'session_stopped')
+      assert.equal(view?.sandbox?.id, identity.sandboxId, 'sandbox_identity')
       evidence.ids = idsOf(view, await mappings(state), hostedProjectId)
     })
     await required('restart', async (evidence) => {
       const view = await structured(['start'], 'session.started', evidence)
-      assert.equal(view.session.state, 'active')
-      assert.equal(view.session.id, identity.sessionId)
-      assert.equal(view.sandbox.id, identity.sandboxId)
+      assert.equal(view?.session?.state, 'active', 'session_active')
+      assert.equal(view?.session?.id, identity.sessionId, 'session_identity')
+      assert.equal(view?.sandbox?.id, identity.sandboxId, 'sandbox_identity')
       const ids = idsOf(view, await mappings(state), hostedProjectId)
-      assert.equal(ids.hostedSessionId, identity.hostedSessionId)
-      assert.equal(ids.hostedSandboxId, identity.hostedSandboxId)
+      assert.equal(ids.hostedSessionId, identity.hostedSessionId, 'hosted_session_identity')
+      assert.equal(ids.hostedSandboxId, identity.hostedSandboxId, 'hosted_sandbox_identity')
       evidence.ids = ids
     })
     await required('exec-cat-after-restart', cat)
-  } catch {
+  } catch (error) {
     // Failed steps already have safe evidence; cleanup has its own budgets.
     if (steps.every((entry) => entry.pass))
       await step('setup', () => {
-        throw new Error('setup_failed')
+        throw error instanceof CheckFailure ? error : new CheckFailure('setup_failed')
       })
   } finally {
     // These are the journey's final two steps, also run after any earlier failure.
     if (cli) {
-      await step('destroy', async (evidence) => {
-        const view = await structured(['destroy', '--yes'], 'session.destroyed', evidence)
-        assert.equal(view.session.state, 'destroyed')
-        assert.equal(view.sandbox, null)
-        assert(view.session.sandboxDeletionVerifiedAt, 'deletion_verified')
-        evidence.ids = { ...identity }
-      })
+      const cleanup = await cleanupEligibility(state)
+      if (cleanup.destroy)
+        await step('destroy', async (evidence) => {
+          const view = await structured(['destroy', '--yes'], 'session.destroyed', evidence)
+          assert.equal(view?.session?.state, 'destroyed', 'session_destroyed')
+          assert.equal(view?.sandbox, null, 'sandbox_removed')
+          assert(view.session.sandboxDeletionVerifiedAt, 'deletion_verified')
+          evidence.ids = { ...identity }
+        })
+      else skip('destroy', 'no_session_created')
       if (running) {
         running.child.kill('SIGKILL')
         await running.done
       }
-      await step('logout', async (evidence) => {
-        const result = await structured(['auth', 'logout'], 'auth.logged_out', evidence)
-        assert.equal(result.loggedOut, true)
-        assert.equal(result.revoked, true)
-        assert(!existsSync(join(state, 'auth.json')), 'auth_metadata_removed')
-      })
+      if (cleanup.logout)
+        await step('logout', async (evidence) => {
+          const result = await structured(['auth', 'logout'], 'auth.logged_out', evidence)
+          assert.equal(result?.loggedOut, true, 'logout_result')
+          assert.equal(result?.revoked, true, 'logout_revoked')
+          assert(!existsSync(join(state, 'auth.json')), 'auth_metadata_removed')
+        })
+      else skip('logout', 'not_signed_in')
+    } else {
+      skip('destroy', 'cli_unavailable')
+      skip('logout', 'cli_unavailable')
     }
     await step('cleanup', async () => {
       for (const child of children) child.kill('SIGKILL')
@@ -881,6 +1235,7 @@ export async function main(argv) {
       exitCode: null,
       ids: {},
       failure: 'not_run',
+      reason: 'prior_step_failed',
     }
     steps.push(skipped)
     emit(skipped)
@@ -899,13 +1254,18 @@ export async function main(argv) {
 }
 
 /** Hosted patterns from test-cli-{auth,lifecycle}.mjs, combined for one journey. */
-async function mockHosted() {
+export async function mockHosted({ loginFault } = {}) {
   const now = new Date().toISOString()
   const requestId = '11111111-1111-4111-8111-111111111111'
   const access = 'mock_access'.padEnd(48, 'a'),
     refresh = 'mock_refresh'.padEnd(48, 'r')
-  const magicToken = 'mock_magic'.padEnd(48, 'm'),
-    csrf = 'mock_csrf'.padEnd(48, 'c')
+  const magicParameters = {
+    challenge: 'opaque challenge +/=',
+    userId: 'user',
+    secret: 'opaque secret +/=',
+    extra: 'opaque extra',
+  }
+  const csrf = 'mock_csrf'.padEnd(48, 'c')
   const consentId = 'mock_consent'.padEnd(32, 's')
   const codes = new Map(),
     operations = new Map(),
@@ -915,6 +1275,7 @@ async function mockHosted() {
   const counts = {
     mail: 0,
     consume: 0,
+    session: 0,
     authorize: 0,
     token: 0,
     revoke: 0,
@@ -965,7 +1326,11 @@ async function mockHosted() {
         const [address] = body.email.split('@')
         ;[namespace, tag] = address.split('.')
         return send({ accepted: true }, 200, {
-          'set-cookie': 'ocb_login_bind=mock_binding; HttpOnly; SameSite=Lax',
+          ...(loginFault === 'missing_binding'
+            ? {}
+            : {
+                'set-cookie': 'ocb_login_bind=mock_binding; HttpOnly; SameSite=Lax; Path=/',
+              }),
         })
       }
       if (path === '/api/json') {
@@ -978,37 +1343,49 @@ async function mockHosted() {
             {
               tag,
               timestamp: Date.now(),
-              text: `Sign in: ${mock.origin}/login?token=${magicToken}`,
+              text: `Sign in: ${mock.origin}/v1/auth/browser/magic-links/consume?${new URLSearchParams(
+                loginFault === 'missing_parameters'
+                  ? { challenge: magicParameters.challenge }
+                  : magicParameters,
+              )}`,
             },
           ],
         })
       }
-      if (path === '/v1/auth/magic-links/consume') {
-        assert.equal(req.headers.origin, mock.origin)
-        assert(req.headers.cookie.includes('ocb_login_bind=mock_binding'))
-        assert.equal(body.token, magicToken)
-        assert(!magicConsumed)
+      if (path === '/v1/auth/browser/magic-links/consume') {
+        assert.equal(req.method, 'GET', 'consume_method')
+        assert.equal(req.headers.accept, 'text/html', 'consume_accept')
+        assert.equal(req.headers['content-type'], undefined, 'consume_body')
+        assert.equal(body, undefined, 'consume_body')
+        assert(
+          req.headers.cookie.includes('ocb_login_bind=mock_binding'),
+          'binding_cookie_required',
+        )
+        assert.deepEqual(
+          Object.fromEntries(url.searchParams),
+          magicParameters,
+          'consume_parameters',
+        )
+        assert(!magicConsumed, 'single_use_link')
         magicConsumed = true
         counts.consume++
-        return send(
-          {
-            session: {
-              id: 'web_session',
-              userId: 'user',
-              createdAt: now,
-              expiresAt: now,
-              authMethod: 'magic_link',
-            },
-            csrfToken: csrf,
-          },
-          200,
-          {
+        return res
+          .writeHead(loginFault === 'consume_status' ? 200 : 303, {
+            location:
+              loginFault === 'consume_redirect'
+                ? 'https://foreign.example.test/'
+                : `${mock.origin}/signed-in`,
             'set-cookie': [
-              'ocb_login_bind=; Max-Age=0',
-              'ocb_session=mock_web; HttpOnly; SameSite=Lax',
+              'ocb_login_bind=; Max-Age=0; Path=/',
+              ...(loginFault === 'missing_session'
+                ? []
+                : ['ocb_session=mock_web; HttpOnly; SameSite=Lax; Path=/']),
+              ...(loginFault === 'missing_csrf'
+                ? []
+                : [`browser_csrf=${csrf}; SameSite=Lax; Path=/`]),
             ],
-          },
-        )
+          })
+          .end()
       }
       if (path === '/v1/auth/cli/authorize') {
         assert.equal(req.headers.origin, mock.origin)
@@ -1019,6 +1396,7 @@ async function mockHosted() {
         assert.equal(body.clientId, 'ocb_cli')
         assert.equal(body.scope, scopes.join(' '))
         counts.authorize++
+        if (loginFault === 'authorize_status') return send({}, 403)
         if (!body.consent) {
           consentBinding = body
           return send({
@@ -1026,7 +1404,7 @@ async function mockHosted() {
             consentId,
             clientId: body.clientId,
             audience: body.audience,
-            scopes,
+            scopes: loginFault === 'widened_consent' ? [...scopes, 'mcp:execute'] : scopes,
           })
         }
         const { consent, ...binding } = body
@@ -1036,12 +1414,36 @@ async function mockHosted() {
         codes.set(code, binding)
         const redirect = new URL(body.redirectUri)
         redirect.searchParams.set('code', code)
-        redirect.searchParams.set('state', body.state)
+        redirect.searchParams.set(
+          'state',
+          loginFault === 'callback_state' ? 'different' : body.state,
+        )
+        if (loginFault === 'callback_duplicate') redirect.searchParams.append('state', body.state)
+        if (loginFault === 'callback_path') redirect.pathname = '/other'
+        if (loginFault === 'callback_origin') redirect.port = '1'
         return send({ status: 'authorized', redirectUri: redirect.href, expiresAt: now })
       }
       if (path === '/v1/auth/sessions/current') {
+        assert(req.headers.cookie.includes('ocb_session=mock_web'), 'session_cookie_required')
+        if (loginFault !== 'missing_csrf')
+          assert(req.headers.cookie.includes(`browser_csrf=${csrf}`), 'csrf_cookie_required')
+        if (req.method === 'GET') {
+          counts.session++
+          return send(
+            {
+              id: 'web_session',
+              userId: 'user',
+              createdAt: now,
+              expiresAt: now,
+              authMethod: 'magic_link',
+            },
+            200,
+            { 'x-csrf-token': csrf },
+          )
+        }
         assert.equal(req.method, 'DELETE')
-        assert.equal(req.headers['x-csrf-token'], csrf)
+        if (req.headers['x-csrf-token'] !== csrf)
+          return send({ error: { code: 'CSRF_TOKEN_INVALID' } }, 403)
         assert(req.headers.cookie.includes('ocb_session=mock_web'))
         counts.webLogout++
         return send(undefined, 204)
@@ -1325,12 +1727,14 @@ async function mockHosted() {
   })
   return {
     ...mock,
+    counts,
     assertComplete(steps) {
       assert(!failure, 'mock_contract')
       if (steps.some((step) => !step.pass)) return
       for (const name of [
         'mail',
         'consume',
+        'session',
         'token',
         'webLogout',
         'create',
@@ -1356,7 +1760,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     })
     .catch(() => {
       process.stderr.write(
-        'Usage: node scripts/accept-installed.mjs --self-test | --api-url <origin>\n',
+        'Usage: node scripts/accept-installed.mjs --self-test | --api-url <origin> [--verbose]\n',
       )
       process.exitCode = 1
     })
