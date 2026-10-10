@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const cli = join(repositoryRoot, 'dist', 'index.js')
+const bootstrap = join(repositoryRoot, 'scripts', 'cli-auth-bootstrap.mjs')
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' }
+const requiredScopes = ['source:read', 'product:read', 'product:edit', 'product:run']
 
 const root = await mkdtemp(join(tmpdir(), 'ocbox-auth-e2e-'))
 const stateRoot = join(root, 'state')
@@ -26,7 +28,7 @@ function tokenPair(counter) {
     accessToken: `access_${counter}`.padEnd(48, 'a'),
     expiresIn: 900,
     refreshToken: `refresh_${counter}`.padEnd(48, 'r'),
-    scope: 'source:read',
+    scope: requiredScopes.join(' '),
     tokenType: 'Bearer',
   }
 }
@@ -34,10 +36,27 @@ function tokenPair(counter) {
 /** Cross-platform environment so credentials/metadata stay inside the temp root. */
 function isolatedEnvironment() {
   if (process.platform === 'win32') {
-    return { APPDATA: platformRoot, LOCALAPPDATA: platformRoot }
+    return { APPDATA: platformRoot, LOCALAPPDATA: platformRoot, USERPROFILE: platformRoot }
   }
   if (process.platform === 'darwin') return { HOME: platformRoot }
   return { HOME: platformRoot, XDG_CONFIG_HOME: platformRoot, XDG_STATE_HOME: platformRoot }
+}
+
+/** Preserve OS process-launch requirements without inheriting credentials/config. */
+function launchEnvironment() {
+  const names = new Set([
+    'path',
+    'pathext',
+    'systemroot',
+    'systemdrive',
+    'windir',
+    'comspec',
+    'temp',
+    'tmp',
+  ])
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => names.has(name.toLowerCase())),
+  )
 }
 
 function credentialDirectory() {
@@ -237,9 +256,19 @@ function extractJsonValues(buffer) {
  */
 function run(args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(process.execPath, [cli, ...args], {
+    const startedAt = Date.now()
+    // Report phases without URLs, OAuth state, codes, tokens, or stream contents.
+    const command = args.slice(0, 2).join(' ')
+    process.stderr.write(`Auth harness: starting ${command}\n`)
+    const child = spawn(process.execPath, [bootstrap, cli, ...args], {
       cwd: options.cwd ?? root,
-      env: { NO_COLOR: '1', ...isolatedEnvironment(), ...options.env },
+      env: {
+        ...launchEnvironment(),
+        NO_COLOR: '1',
+        OCBOX_AUTH_DIAGNOSTICS: '1',
+        ...isolatedEnvironment(),
+        ...options.env,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -257,8 +286,28 @@ function run(args, options = {}) {
       action()
     }
     const timer = setTimeout(() => {
+      // Emit only the opt-in boundary diagnostics; never dump CLI stream data.
+      const aclPhases = Buffer.concat(stderr)
+        .toString('utf8')
+        .split(/\r?\n/)
+        .filter((line) =>
+          /^(Auth CLI: bootstrap|Windows ACL: (starting (directory|file)|spawn failed \((directory|file)\)|finished (directory|file) in \d+ms \(exit (\d+|null), signal (null|SIGTERM|SIGKILL)\)))$/.test(
+            line,
+          ),
+        )
+        .join('\n')
+      if (aclPhases) process.stderr.write(`${aclPhases}\n`)
       child.kill('SIGKILL')
-      finish(() => rejectPromise(new Error(`CLI timed out: ${args.join(' ')}`)))
+      const phases = events.map((event) => event.name).join(', ')
+      finish(() =>
+        rejectPromise(
+          new Error(
+            `CLI timed out: ${command}; phases=[${phases}]; ` +
+              `mock exchanges=${mock?.calls.exchange ?? 0}; ` +
+              `stdout bytes=${Buffer.concat(stdout).length}; stderr bytes=${Buffer.concat(stderr).length}`,
+          ),
+        ),
+      )
     }, options.timeout ?? 30_000)
     child.stdout.on('data', (chunk) => {
       stdout.push(chunk)
@@ -270,18 +319,33 @@ function run(args, options = {}) {
         options.onEvent?.(envelope)
       }
     })
-    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    let bootstrapped = false
+    child.stderr.on('data', (chunk) => {
+      stderr.push(chunk)
+      if (
+        !bootstrapped &&
+        Buffer.concat(stderr).toString('utf8').includes('Auth CLI: bootstrap\n')
+      ) {
+        bootstrapped = true
+        process.stderr.write(
+          `Auth harness: bootstrapped ${command} in ${Date.now() - startedAt}ms\n`,
+        )
+      }
+    })
     child.on('error', (error) => finish(() => rejectPromise(error)))
     child.on('close', (code, signal) =>
-      finish(() =>
+      finish(() => {
+        process.stderr.write(
+          `Auth harness: finished ${command} in ${Date.now() - startedAt}ms (exit ${code})\n`,
+        )
         resolvePromise({
           code,
           events,
           signal,
           stderr: Buffer.concat(stderr),
           stdout: Buffer.concat(stdout),
-        }),
-      ),
+        })
+      }),
     )
   })
 }
@@ -363,6 +427,7 @@ try {
         assert.equal(authorizationUrl.origin + authorizationUrl.pathname, authorizeUrl)
         assert.equal(authorizationUrl.searchParams.get('response_type'), 'code')
         assert.equal(authorizationUrl.searchParams.get('audience'), 'cli')
+        assert.equal(authorizationUrl.searchParams.get('scope'), requiredScopes.join(' '))
         assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256')
         const redirectUri = authorizationUrl.searchParams.get('redirect_uri')
         const state = authorizationUrl.searchParams.get('state')
@@ -379,7 +444,7 @@ try {
   assert.equal(loginResult.data.browserOpened, false)
   assert.equal(loginResult.data.issuer, mock.url)
   assert.equal(loginResult.data.audience, 'cli')
-  assert.deepEqual(loginResult.data.scopes, ['source:read'])
+  assert.deepEqual(loginResult.data.scopes, requiredScopes)
   assert.equal(mock.calls.exchange, 2)
   const issued = mock.lastPair()
   assertPurity(login, [loginCode, issued.accessToken, issued.refreshToken])
@@ -394,7 +459,7 @@ try {
   assert.equal(status.code, 0)
   const statusResult = parseResultEnvelope(status, 'auth.status')
   assert.equal(statusResult.data.loggedIn, true)
-  assert.deepEqual(statusResult.data.scopes, ['source:read'])
+  assert.deepEqual(statusResult.data.scopes, requiredScopes)
   assertPurity(status, [issued.accessToken, issued.refreshToken])
 
   // 3. No out-of-band/pasted-code fallback exists.

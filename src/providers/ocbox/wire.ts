@@ -83,6 +83,7 @@ export const HostedSessionSchema = z
     effectiveSpec: z.record(z.string(), z.unknown()),
     normalizedState: z.enum([
       'created',
+      'provisioning',
       'starting',
       'running',
       'pausing',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { OcboxApiClient } from '../../api/client/client.js'
-import { envelopeOf, toRequestId } from '../../api/client/errors.js'
+import type { ApiResult } from '../../api/generated/client.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type {
   Operation as HostedOperation,
   Session as HostedSession,
@@ -16,9 +17,12 @@ import type {
 import {
   type ExecutionId,
   ExecutionIdSchema,
+  ProjectIdSchema,
   ProviderSandboxIdSchema,
   type RequestId,
+  RequestIdSchema,
   SandboxIdSchema,
+  SessionIdSchema,
 } from '../../domain/ids.js'
 import { ProviderLifecycleObservationSchema } from '../../domain/lifecycle.js'
 import {
@@ -29,12 +33,19 @@ import {
   type RequestContext,
 } from '../../domain/operation.js'
 import {
-  SandboxSpecSchema,
   type RequestedEffectiveSpec,
   type SandboxSpec,
+  SandboxSpecSchema,
 } from '../../domain/spec.js'
 import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { OcboxError } from '../../errors/index.js'
+import {
+  type CancellationResult,
+  executionError,
+  waitForCancellation,
+} from '../../lifecycle/cancellation.js'
+import type { HostedSandboxMapping } from '../../lifecycle/schema.js'
+import type { LifecycleStore } from '../../lifecycle/store.js'
 import type { ProviderCapabilities } from '../contract/capabilities.js'
 import type { ProviderFiles } from '../contract/files.js'
 import type {
@@ -56,13 +67,30 @@ import type {
 import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
+import { uploadPreparedSource, type PreparedSource } from './source.js'
 import {
   MemoryOperationCheckpointStore,
-  waitForHostedOperation,
   type OperationCheckpointDurability,
   type OperationCheckpointStore,
+  waitForHostedOperation,
+  type WaitOperationOptions,
 } from './operations.js'
-import type { HostedExecutionEvent } from './wire.js'
+import {
+  admissionError,
+  friendlyAdmissionFailure,
+  type HostedRequestedSpec,
+} from './requested-spec.js'
+import {
+  Deadline,
+  parseRetryAfterSeconds,
+  resolvePollDelayMilliseconds,
+  sleepWithSignal,
+} from './retry.js'
+import {
+  type HostedExecutionEvent,
+  HostedExecutionSchema,
+  isTerminalExecutionState,
+} from './wire.js'
 
 const HOSTED_CAPABILITIES: ProviderCapabilities = {
   runtimeClasses: ['container'],
@@ -119,18 +147,11 @@ export function executionWaitDeadlineMilliseconds(
   return base + EXECUTION_DEADLINE_GRACE_MILLISECONDS
 }
 
-interface SandboxRecord {
-  localId: string
-  localSessionId: string
-  localProjectId: string
-  hostedSessionId: string
-  hostedSandboxId: string
-  spec: SandboxSpec
-  createdAt: string
-  updatedAt: string
-}
+type SandboxRecord = HostedSandboxMapping
 
 export interface OcboxProviderOptions {
+  readonly requestedSpec?: HostedRequestedSpec | undefined
+  readonly mappingScope?: (() => Promise<string>) | undefined
   readonly api: OcboxApiClient
   readonly hostedProjectId: string
   readonly now?: (() => string) | undefined
@@ -143,6 +164,7 @@ export interface OcboxProviderOptions {
    */
   readonly checkpointStore?: OperationCheckpointStore | undefined
   readonly checkpointDurability?: OperationCheckpointDurability | undefined
+  readonly waitOptions?: WaitOperationOptions | undefined
 }
 
 function notFoundSandbox(requestId: RequestId): OcboxError {
@@ -262,12 +284,17 @@ class ExecEventQueue {
 /** Hosted `ocbox` provider over the pinned `/v1` contract. */
 export class OcboxSandboxProvider implements SandboxProvider {
   readonly name = 'ocbox'
+  readonly #waitOptions: WaitOperationOptions
+  readonly #requestedSpec: HostedRequestedSpec | undefined
   readonly #api: OcboxApiClient
   readonly #hostedProjectId: string
   readonly #now: () => string
   readonly #createId: () => string
   readonly #checkpointStore: OperationCheckpointStore
   readonly checkpointDurability: OperationCheckpointDurability
+  #pinnedMappingScope: string | undefined
+  #lifecycleStore: LifecycleStore | undefined
+  readonly #mappingScope: (() => Promise<string>) | undefined
   readonly #sandboxes = new Map<string, SandboxRecord>()
   readonly #executions = new Map<
     string,
@@ -288,12 +315,86 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
       throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
     }
+    this.#waitOptions = options.waitOptions ?? {}
+    this.#requestedSpec = options.requestedSpec
+    this.#mappingScope = options.mappingScope
     this.#api = options.api
     this.#hostedProjectId = options.hostedProjectId
     this.#now = options.now ?? (() => new Date().toISOString())
     this.#createId = options.createId ?? randomUUID
     this.#checkpointStore = options.checkpointStore ?? new MemoryOperationCheckpointStore()
     this.checkpointDurability = checkpointDurability
+  }
+
+  /** The lifecycle composition root supplies its existing project repository. */
+  bindLifecycleStore(store: LifecycleStore): void {
+    this.#lifecycleStore = store
+  }
+
+  async #scope(): Promise<string> {
+    if (this.#mappingScope === undefined) throw new TypeError('Hosted mapping scope is missing')
+    const scope = await this.#mappingScope()
+    if (this.#pinnedMappingScope !== undefined && scope !== this.#pinnedMappingScope) {
+      throw new OcboxError({
+        code: 'PROVIDER_AUTH',
+        message: 'The hosted login changed during this operation; rerun the command',
+        requestId: toRequestId(null),
+      })
+    }
+    this.#pinnedMappingScope = scope
+    return scope
+  }
+
+  async #records(): Promise<Map<string, SandboxRecord>> {
+    if (this.#mappingScope === undefined) return this.#sandboxes
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    const state = await this.#lifecycleStore.load()
+    return new Map(Object.entries(state.hostedMappings[scope] ?? {}))
+  }
+
+  async #saveRecord(record: SandboxRecord): Promise<void> {
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, record)
+      return
+    }
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    await this.#lifecycleStore.update((state) => ({
+      ...state,
+      hostedMappings: {
+        ...state.hostedMappings,
+        [scope]: { ...state.hostedMappings[scope], [record.localId]: record },
+      },
+    }))
+  }
+
+  #staleMapping(requestId: RequestId): OcboxError {
+    return new OcboxError({
+      code: 'SANDBOX_NOT_FOUND',
+      providerCode: 'HOSTED_MAPPING_STALE',
+      message:
+        'The hosted sandbox mapping is stale: its hosted session no longer exists. No replacement was created.',
+      requestId,
+    })
+  }
+
+  async #record(localId: string, requestId: RequestId): Promise<SandboxRecord | undefined> {
+    const record = (await this.#records()).get(localId)
+    if (record?.stale === true) throw this.#staleMapping(requestId)
+    return record
+  }
+
+  async #mappedSession(record: SandboxRecord): Promise<HostedSession> {
+    try {
+      return await this.#getOwnedSession(record.hostedSessionId)
+    } catch (error) {
+      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(error.requestId)
+    }
   }
 
   /** Test seam: seed a sandbox mapping without a network round-trip. */
@@ -307,15 +408,38 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }): void {
     const now = this.#now()
     this.#sandboxes.set(record.localId, {
+      deleted: false,
+      stale: false,
       createdAt: now,
       hostedSandboxId: record.hostedSandboxId,
       hostedSessionId: record.hostedSessionId,
-      localId: record.localId,
-      localProjectId: record.localProjectId,
-      localSessionId: record.localSessionId,
+      localId: SandboxIdSchema.parse(record.localId),
+      localProjectId: ProjectIdSchema.parse(record.localProjectId),
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
       spec: record.spec,
       updatedAt: now,
     })
+  }
+
+  /** Upload only through the owned, persisted sandbox-to-session mapping. */
+  async uploadSource(sandboxId: string, prepared: PreparedSource) {
+    const requestId = toRequestId(null)
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
+    const owned = await this.#mappedSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (
+      primary === null ||
+      primary.sandboxId !== record.hostedSandboxId ||
+      primary.state !== 'running'
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source upload requires the mapped hosted sandbox to be running; run ocbox start',
+        requestId,
+      })
+    }
+    return uploadPreparedSource(this.#api, record.hostedSessionId, prepared, { deduplicate: true })
   }
 
   readonly exec: ProviderExecution = {
@@ -357,28 +481,93 @@ export class OcboxSandboxProvider implements SandboxProvider {
     context: OperationContext,
     request: CreateSandboxRequest,
   ): Promise<SandboxMutationResult> {
+    await this.#records()
     await this.#assertProject(context.requestId)
     const created = await this.#api.generated.createSession({
       path: { projectId: this.#hostedProjectId },
-      body: {},
+      body:
+        this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
+          ? {}
+          : {
+              requestedSpec: {
+                ...(this.#requestedSpec.cpu === undefined
+                  ? {}
+                  : { cpu: String(this.#requestedSpec.cpu) }),
+                ...(this.#requestedSpec.memory === undefined
+                  ? {}
+                  : { memory: String(this.#requestedSpec.memory) }),
+                ...(this.#requestedSpec.image === undefined
+                  ? {}
+                  : { image: this.#requestedSpec.image }),
+                ...(this.#requestedSpec.region === undefined
+                  ? {}
+                  : { region: this.#requestedSpec.region }),
+                ...(this.#requestedSpec.runtime === undefined
+                  ? {}
+                  : { runtime: this.#requestedSpec.runtime }),
+              },
+            },
       idempotencyKey: context.idempotencyKey,
     })
-    const started = this.#api.assertSuccess('createSession', created, [200, 202])
-    const hostedOp = started.body as HostedOperation
+    if (created.status >= 400) {
+      const denial = admissionError(envelopeOf(created.body).code, toRequestId(created.requestId))
+      if (denial) throw denial
+    }
+    const started = this.#assertSuccess('createSession', created, [200, 201, 202])
+    const hostedOp = started.body as HostedOperation & { session?: HostedSession }
+    const deadline = this.#lifecycleDeadline()
+    let record: SandboxRecord | undefined
+    const remember = async (session: HostedSession): Promise<void> => {
+      assertOwnedSession(session, this.#hostedProjectId)
+      const primary = resolvePrimaryBinding(session)
+      const sandboxId = primary?.sandboxId ?? session.primarySandboxId
+      if (sandboxId === null) return
+      if (record !== undefined && record.hostedSandboxId !== sandboxId) {
+        throw new OcboxError({
+          code: 'INVALID_STATE',
+          message: 'The hosted primary binding changed during provisioning',
+          providerCode: 'PRIMARY_BINDING_CHANGED',
+          requestId: context.requestId,
+        })
+      }
+      const now = this.#now()
+      record = record ?? {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSandboxId: sandboxId,
+        hostedSessionId: session.id,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
+    if (hostedOp.session !== undefined) await remember(hostedOp.session)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+      ...this.#waitOptions,
+      deadlineMilliseconds: deadline.remainingMilliseconds(),
       store: this.#checkpointStore,
-    })
-    const hostedSessionId = waited.operation.sessionId ?? (hostedOp.sessionId as string | null)
-    if (hostedSessionId === null || hostedSessionId === undefined) {
+    }).catch(friendlyAdmissionFailure)
+    const hostedSessionId = waited.operation.sessionId ?? hostedOp.sessionId
+    if (!hostedSessionId || (record !== undefined && record.hostedSessionId !== hostedSessionId)) {
       throw new OcboxError({
         code: 'PROVIDER_UNAVAILABLE',
-        message: 'The hosted service did not return a session for the created operation',
+        message: 'The hosted service did not return the expected session for the created operation',
         requestId: toRequestId(waited.requestId),
       })
     }
-    const session = await this.#getOwnedSession(hostedSessionId)
-    const primary = resolvePrimaryBinding(session)
-    if (primary === null) {
+    const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
+      await remember(observed)
+      return (
+        observed.normalizedState === 'running' &&
+        resolvePrimaryBinding(observed)?.state === 'running'
+      )
+    }).catch(friendlyAdmissionFailure)
+    const primary = session === null ? null : resolvePrimaryBinding(session)
+    if (record === undefined || primary === null) {
       throw new OcboxError({
         code: 'INVALID_STATE',
         message: 'The hosted session has no active primary sandbox binding',
@@ -387,18 +576,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       })
     }
     const now = this.#now()
-    const localId = SandboxIdSchema.parse(this.#createId())
-    const record: SandboxRecord = {
-      createdAt: now,
-      hostedSandboxId: primary.sandboxId,
-      hostedSessionId: session.id,
-      localId,
-      localProjectId: request.projectId,
-      localSessionId: request.sessionId,
-      spec: request.specification,
-      updatedAt: now,
-    }
-    this.#sandboxes.set(localId, record)
+    const localId = record.localId
     const sandbox = this.#sandboxOf(record, primary.state, now, request.specification, session)
     const operation = this.#operationOf(context, {
       action: 'create',
@@ -411,9 +589,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async get(context: RequestContext, request: GetSandboxRequest): Promise<Sandbox | null> {
-    const record = this.#sandboxes.get(request.sandboxId)
-    if (record === undefined) return null
-    const session = await this.#getOwnedSession(record.hostedSessionId)
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined || record.deleted) return null
+    const session = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -435,12 +613,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const listed = this.#api.assertSuccess('listSessions', page, [200])
     const sessions = (listed.body as { data: readonly HostedSession[] }).data
     const out: Sandbox[] = []
+    const records = await this.#records()
     for (const session of sessions) {
       if (session.projectId !== this.#hostedProjectId) continue
       const primary = resolvePrimaryBinding(session)
       if (primary === null) continue
-      const existing = [...this.#sandboxes.values()].find(
-        (record) => record.hostedSandboxId === primary.sandboxId,
+      const existing = [...records.values()].find(
+        (record) =>
+          !record.stale &&
+          record.hostedSessionId === session.id &&
+          record.hostedSandboxId === primary.sandboxId,
       )
       if (request.sessionId !== null && request.sessionId !== undefined) {
         if (existing === undefined || existing.localSessionId !== request.sessionId) continue
@@ -518,18 +700,96 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(result.requestId ?? envelope.requestId),
       })
     }
-    const { body } = this.#api.assertSuccess('getSession', result, [200])
+    const { body } = this.#assertSuccess('getSession', result, [200])
     const session = body as HostedSession
     assertOwnedSession(session, this.#hostedProjectId)
     return session
   }
 
-  async #confirmDeleted(hostedSessionId: string): Promise<void> {
-    try {
-      await this.#getOwnedSession(hostedSessionId)
-    } catch (error) {
-      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+  #assertSuccess<T>(operation: string, result: ApiResult<T>, expected: readonly number[]) {
+    const retryAfterSeconds = parseRetryAfterSeconds(result.retryAfter)
+    if (!expected.includes(result.status) && retryAfterSeconds !== null) {
+      const envelope = envelopeOf(result.body)
+      const mapped = mapApiFailureToOcboxError({
+        operation,
+        requestId: result.requestId ?? envelope.requestId,
+        responseRequestId: envelope.requestId,
+        retryAfterSeconds,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        status: result.status,
+      })
+      if (result.status === 429) {
+        throw new OcboxError({
+          code: mapped.code,
+          requestId: mapped.requestId,
+          ...(mapped.providerCode === undefined ? {} : { providerCode: mapped.providerCode }),
+          ...(mapped.details === undefined ? {} : { details: mapped.details }),
+          message: `${mapped.message} Retry after ${retryAfterSeconds} seconds.`,
+        })
+      }
+      throw mapped
     }
+    return this.#api.assertSuccess(operation, result, expected)
+  }
+
+  #lifecycleDeadline(): Deadline {
+    return new Deadline(
+      this.#waitOptions.deadlineMilliseconds ?? this.#waitOptions.maxWaitMilliseconds ?? 5 * 60_000,
+      this.#waitOptions.now,
+    )
+  }
+
+  async #waitForSession(
+    hostedSessionId: string,
+    deadline: Deadline,
+    complete: (session: HostedSession) => Promise<boolean>,
+    allowDeleted = false,
+  ): Promise<HostedSession | null> {
+    let attempt = 0
+    for (;;) {
+      if (deadline.exceeded()) {
+        throw new OcboxError({
+          code: 'OPERATION_TIMEOUT',
+          message: 'The hosted sandbox did not reach the requested state in time',
+          requestId: toRequestId(null),
+        })
+      }
+      let retryAfterSeconds: number | null = null
+      try {
+        const session = await this.#getOwnedSession(hostedSessionId)
+        if (await complete(session)) return session
+      } catch (error) {
+        if (!(error instanceof OcboxError)) throw error
+        if (allowDeleted && error.code === 'SANDBOX_NOT_FOUND') return null
+        if (!error.retryable) throw error
+        // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+        const hint = error.details?.['retryAfterSeconds']
+        retryAfterSeconds = typeof hint === 'number' ? hint : null
+      }
+      attempt += 1
+      await (this.#waitOptions.sleep ?? sleepWithSignal)(
+        Math.min(
+          resolvePollDelayMilliseconds({
+            attempt,
+            retryAfterSeconds,
+            policy: this.#waitOptions.policy,
+            random: this.#waitOptions.random,
+          }),
+          deadline.remainingMilliseconds(),
+        ),
+      )
+    }
+  }
+
+  async #confirmDeleted(hostedSessionId: string, deadline: Deadline): Promise<void> {
+    await this.#waitForSession(
+      hostedSessionId,
+      deadline,
+      async (session) =>
+        session.normalizedState === 'destroyed' && resolvePrimaryBinding(session) === null,
+      true,
+    )
   }
 
   async #mutate(
@@ -538,7 +798,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     action: Extract<OperationAction, 'start' | 'pause' | 'resume' | 'stop' | 'destroy'>,
     expected: 'running' | 'paused' | 'stopped' | 'deleted',
   ): Promise<SandboxMutationResult> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     await this.#assertProject(context.requestId)
     const invoke = {
@@ -568,40 +828,68 @@ export class OcboxSandboxProvider implements SandboxProvider {
           idempotencyKey: context.idempotencyKey,
         }),
     }[action]
+    if (!(action === 'destroy' && record.deleted)) await this.#mappedSession(record)
+    const deadline = this.#lifecycleDeadline()
     const initiated = await invoke()
-    const started = this.#api.assertSuccess(`${action}Session`, initiated, [200, 202])
-    const hostedOp = started.body as HostedOperation
-    const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
-      store: this.#checkpointStore,
-    })
-    const now = this.#now()
-    record.updatedAt = now
+    if (initiated.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
+    let replay = initiated.replay
+    let waitedRequestId = initiated.requestId
+    try {
+      const started = this.#assertSuccess(`${action}Session`, initiated, [200, 202])
+      replay = started.meta.replay
+      const hostedOp = started.body as HostedOperation
+      const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+        ...this.#waitOptions,
+        deadlineMilliseconds: deadline.remainingMilliseconds(),
+        store: this.#checkpointStore,
+      }).catch(friendlyAdmissionFailure)
+      waitedRequestId = waited.requestId
+    } catch (error) {
+      if (
+        action !== 'destroy' ||
+        !(error instanceof OcboxError) ||
+        !error.retryable ||
+        initiated.status < 400
+      )
+        throw error
+      const session = await this.#getOwnedSession(record.hostedSessionId)
+      if (session.normalizedState !== 'destroying' && session.normalizedState !== 'destroyed')
+        throw error
+    }
     if (expected === 'deleted') {
-      await this.#confirmDeleted(record.hostedSessionId)
+      await this.#confirmDeleted(record.hostedSessionId, deadline)
+      const now = this.#now()
+      record.updatedAt = now
+      await this.#saveRecord({ ...record, deleted: true })
       const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, null, 'deleted')
       const operation = this.#operationOf(context, {
         action,
-        replay: started.meta.replay,
+        replay,
         sandboxId: record.localId,
         sessionId: record.localSessionId,
         verifiedAt: now,
       })
       return { operation, sandbox }
     }
-    const session = await this.#getOwnedSession(record.hostedSessionId)
+    const session = await this.#mappedSession(record)
+    const now = this.#now()
+    record.updatedAt = now
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
         code: 'INVALID_STATE',
         message: 'The hosted primary binding changed during the operation',
         providerCode: 'PRIMARY_BINDING_CHANGED',
-        requestId: toRequestId(waited.requestId),
+        requestId: toRequestId(waitedRequestId),
       })
     }
     const sandbox = this.#sandboxOf(record, primary.state, now, record.spec, session, expected)
     const operation = this.#operationOf(context, {
       action,
-      replay: started.meta.replay,
+      replay,
       sandboxId: record.localId,
       sessionId: record.localSessionId,
       verifiedAt: now,
@@ -666,7 +954,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         stopStartedAt: null,
         stoppedAt: null,
         deletionStartedAt: null,
-        deletedAt: null,
+        deletedAt: normalized === 'deleted' ? UtcTimestampSchema.parse(observedAt) : null,
         errorAt: null,
         lastTransitionAt: null,
       },
@@ -687,10 +975,101 @@ export class OcboxSandboxProvider implements SandboxProvider {
     })
   }
 
+  async #lastExecution(
+    record: SandboxRecord,
+    executionId: string,
+    clear = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const mutate = (current: SandboxRecord): SandboxRecord => {
+      if (!clear) return { ...current, lastExecutionId: executionId }
+      if (current.lastExecutionId !== executionId) return current
+      const { lastExecutionId: _last, ...rest } = current
+      return rest
+    }
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, mutate(this.#sandboxes.get(record.localId) ?? record))
+      return
+    }
+    const scope = await this.#scope()
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    await this.#lifecycleStore.update((state) => {
+      const mappings = state.hostedMappings[scope]
+      const current = mappings?.[record.localId]
+      if (mappings !== undefined && current !== undefined)
+        mappings[record.localId] = mutate(current)
+      return state
+    }, signal)
+  }
+
+  async cancelSandboxExecution(
+    sandboxId: Sandbox['id'],
+    executionId: string | undefined,
+    waitMilliseconds: number,
+    signal?: AbortSignal,
+    requestCancellation = true,
+  ): Promise<CancellationResult> {
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined) throw notFoundSandbox(requestId)
+    const id = executionId ?? record.lastExecutionId
+    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    return waitForCancellation(
+      requestId,
+      waitMilliseconds,
+      signal,
+      async (boundedSignal, pause) => {
+        let requested = !requestCancellation
+        for (;;) {
+          boundedSignal.throwIfAborted()
+          const response = await this.#api.generated.getExecution({
+            path: { executionId: id },
+            signal: boundedSignal,
+          })
+          if (response.status === 404)
+            throw executionError(requestId, `Unknown execution ID: ${id}`, 'SANDBOX_NOT_FOUND')
+          const execution = HostedExecutionSchema.parse(
+            this.#api.assertSuccess('getExecution', response, [200]).body,
+          )
+          if (
+            execution.sessionId !== record.hostedSessionId ||
+            (execution.sandboxId !== null && execution.sandboxId !== record.hostedSandboxId)
+          ) {
+            throw executionError(
+              requestId,
+              'Execution does not belong to the selected Sandbox in the current scope',
+            )
+          }
+          if (isTerminalExecutionState(execution.state)) {
+            await this.#lastExecution(record, id, true, boundedSignal)
+            return {
+              executionId: id,
+              sandboxId,
+              state: execution.state as CancellationResult['state'],
+            }
+          }
+          if (!requested) {
+            const cancelled = await this.#api.generated.cancelExecution({
+              path: { executionId: id },
+              idempotencyKey: this.#createId(),
+              signal: boundedSignal,
+            })
+            // Completion may race cancellation; re-read the execution on conflict.
+            if (cancelled.status !== 409)
+              this.#api.assertSuccess('cancelExecution', cancelled, [200, 202])
+            requested = true
+          }
+          await pause()
+        }
+      },
+    )
+  }
+
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
-    const owned = await this.#getOwnedSession(record.hostedSessionId)
+    const owned = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(owned)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -711,6 +1090,10 @@ export class OcboxSandboxProvider implements SandboxProvider {
       },
       idempotencyKey: context.idempotencyKey,
     })
+    if (started.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
     const created = this.#api.assertSuccess('createExecution', started, [200, 202])
     const hosted = created.body as {
       id: string
@@ -730,13 +1113,14 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
+    await this.#lastExecution(record, hosted.id)
     const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
     const controller = new AbortController()
     this.#executions.set(localExecutionId, {
       controller,
       hostedId: hosted.id,
       localSandboxId: request.sandboxId,
-      localSessionId: record.localSessionId,
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
     })
     const startedAt = UtcTimestampSchema.parse(hosted.createdAt)
     const renumberer = new ExecEventRenumberer(localExecutionId, startedAt)
@@ -764,6 +1148,8 @@ export class OcboxSandboxProvider implements SandboxProvider {
     }).then(
       async (collected) => {
         try {
+          await this.#lastExecution(record, hosted.id, true)
+          this.#executions.delete(localExecutionId)
           const latest = collected.events[collected.events.length - 1]
           const completedAt = latest?.at ?? this.#now()
           const result = toExecResult(collected.result, {
@@ -829,6 +1215,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
       idempotencyKey: context.idempotencyKey,
     })
     this.#api.assertSuccess('cancelExecution', result, [200, 202])
+    if (this.#mappingScope !== undefined) {
+      await this.cancelSandboxExecution(
+        SandboxIdSchema.parse(tracked.localSandboxId),
+        tracked.hostedId,
+        30_000,
+        undefined,
+        false,
+      )
+    }
+    this.#executions.delete(request.executionId)
     return OperationSchema.parse({
       action: 'exec_cancel',
       completedAt: null,
@@ -850,7 +1246,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     request: ApplySourceRequest,
   ): Promise<ApplySourceResult> {
     if (request.source.kind === 'none') {
-      const record = this.#sandboxes.get(request.sandboxId)
+      const record = await this.#record(request.sandboxId, context.requestId)
       if (record === undefined) throw notFoundSandbox(context.requestId)
       const now = this.#now()
       const operation = OperationSchema.parse({
@@ -877,7 +1273,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async #createPreview(context: OperationContext, request: CreatePreviewRequest): Promise<Preview> {
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const ttlSeconds = Math.max(
       60,
@@ -947,7 +1343,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
-    const record = this.#sandboxes.get(request.sandboxId)
+    const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const result = await this.#api.generated.deletePreview({
       path: { previewId },
