@@ -4,7 +4,7 @@ import type { SourceManifest } from '../../api/generated/client.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { toRequestId } from '../../api/client/errors.js'
 import { OcboxError, OcboxErrorDataSchema } from '../../errors/index.js'
-import { waitForHostedOperation } from './operations.js'
+import { DEFAULT_SOURCE_APPLY_POLL_MILLISECONDS, waitForHostedOperation } from './operations.js'
 import { newRequestId } from '../../auth/errors.js'
 import {
   DEFAULT_RETRY_POLICY,
@@ -300,6 +300,7 @@ export async function uploadPreparedSource(
     if (verified.status === 200) break
     const { operation } = await waitForHostedOperation(api, (done.body as { id: string }).id, {
       deadlineMilliseconds: deadline.remainingMilliseconds(),
+      healthyPollMilliseconds: DEFAULT_SOURCE_APPLY_POLL_MILLISECONDS,
       signal: options.signal,
       sleep,
       now: options.now,
