@@ -1618,7 +1618,7 @@ export async function mockHosted({
       }
       if (path.startsWith('/v1/operations/')) {
         const id = path.split('/').at(-1), apply = applies.get(id)
-        if (apply && ++apply.polls >= 3) {
+        if (apply && ++apply.polls >= 12) {
           await apply.finish()
           apply.op.state = 'succeeded'
           apply.op.progress = 100

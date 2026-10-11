@@ -22,12 +22,16 @@ import {
   type HostedOperationState,
 } from './wire.js'
 
+export const DEFAULT_SOURCE_APPLY_POLL_MILLISECONDS = 1_000
+
 export interface WaitOperationOptions {
   /** Let the caller map terminal failures for its command. */
   readonly returnTerminalFailure?: boolean | undefined
   readonly deadlineMilliseconds?: number | undefined
   readonly maxWaitMilliseconds?: number | undefined
   readonly pollMilliseconds?: number | undefined
+  /** Opt in to a steady cadence after healthy polls; failures still back off. */
+  readonly healthyPollMilliseconds?: number | undefined
   readonly signal?: AbortSignal | undefined
   readonly sleep?: ((milliseconds: number) => Promise<void>) | undefined
   readonly now?: (() => number) | undefined
@@ -275,7 +279,23 @@ export async function waitForHostedOperation(
       })
     } catch (error) {
       if (options.signal?.aborted === true) throw cancelledError(createId)
-      throw error
+      if (
+        options.healthyPollMilliseconds === undefined ||
+        !(error instanceof OcboxError) ||
+        !error.retryable
+      )
+        throw error
+      await save()
+      await abortableSleep(
+        sleep,
+        Math.min(
+          resolvePollDelayMilliseconds({ attempt, policy, random, retryAfterSeconds: null }),
+          deadline.remainingMilliseconds(),
+        ),
+        options.signal,
+        createId,
+      )
+      continue
     }
     if (result.status < 200 || result.status >= 300) {
       const envelope = envelopeOf(result.body)
@@ -354,12 +374,16 @@ export async function waitForHostedOperation(
       })
     }
     const delay = Math.min(
-      resolvePollDelayMilliseconds({
-        attempt,
-        policy,
-        random,
-        retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
-      }),
+      result.status === 200 &&
+        operation.error === null &&
+        options.healthyPollMilliseconds !== undefined
+        ? options.healthyPollMilliseconds
+        : resolvePollDelayMilliseconds({
+            attempt,
+            policy,
+            random,
+            retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
+          }),
       remaining,
     )
     await abortableSleep(sleep, delay, options.signal, createId)
