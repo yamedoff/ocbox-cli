@@ -76,13 +76,17 @@ export function createOcboxProvider(options: {
   const api = createOcboxApiClient({
     protocol,
     tokens,
-    // Keep login/logout from changing the account between the mapping check
-    // and dispatch. Credential refresh happens before this transport gate.
-    fetch: (input, init) =>
-      authGate(async () => {
+    // Protect the scope check and synchronous dispatch from login/logout;
+    // response waits are outside the gate. Credential refresh precedes it.
+    fetch: async (input, init) => {
+      const { pending } = await authGate(async () => {
         await readScope()
-        return fetch(input, init)
-      }, init?.signal ?? undefined),
+        const pending = fetch(input, init)
+        void pending.catch(() => undefined) // Observe rejection during gate release.
+        return { pending }
+      }, init?.signal ?? undefined)
+      return pending
+    },
   })
   // The CLI lifecycle path is restartable: persist a checkpoint per hosted
   // Operation under the resolved state directory and explicitly claim
