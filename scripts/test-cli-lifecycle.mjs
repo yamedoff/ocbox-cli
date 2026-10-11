@@ -187,6 +187,8 @@ async function hostedLifecycle() {
   let executionSandboxId
   const manifests = new Map()
   const sourceKeys = new Map()
+  const sourceApplies = new Map()
+  let applyMode = 'async', onSourcePoll, activeChild
   const workspace = join(root, 'workspace', 'hosted_project')
   let sourceCreates = 0
   let chunkUploads = 0
@@ -250,7 +252,20 @@ async function hostedLifecycle() {
       })
       return operation('create', sessionId)
     }
-    if (path.startsWith('/v1/operations/')) return send(operations.get(path.split('/').at(-1)))
+    if (path.startsWith('/v1/operations/')) {
+      const id = path.split('/').at(-1), apply = sourceApplies.get(id)
+      if (apply) {
+        onSourcePoll?.()
+        if (++apply.polls >= 3) {
+          apply.op.state = ['failed', 'cancelled'].includes(applyMode) ? applyMode : 'succeeded'
+          apply.op.progress = 100
+          if (apply.op.state === 'succeeded') await apply.finish()
+          if (apply.op.state !== 'succeeded')
+            apply.op.error = { code: 'SOURCE_APPLY_REVOKED', message: 'Source apply revoked', reason: 'source_apply_revoked' }
+        }
+      }
+      return send(operations.get(id))
+    }
     const sourceSession = /^\/v1\/sessions\/([^/]+)\/source\/manifests$/.exec(path)
     if (sourceSession) {
       const id = sourceSession[1]
@@ -312,6 +327,28 @@ async function hostedLifecycle() {
         })
       }
       assert.equal(request.method, 'POST')
+      const replay = sourceApplies.get(`apply_${id}`)
+      if (applyMode === 'replay' && replay?.op.state === 'succeeded' && replay.replays++ === 0)
+        return send(replay.op, 202)
+      if (!manifest.verified && applyMode !== 'immediate') {
+        const operationId = `apply_${id}`
+        let apply = sourceApplies.get(operationId)
+        if (!apply) {
+          const op = { ...operations.values().next().value, id: operationId,
+            kind: 'source.apply', state: 'pending', progress: 0 }
+          apply = { op, finish, polls: 0, key: request.headers['idempotency-key'], replays: 0 }
+          sourceApplies.set(operationId, apply)
+          operations.set(operationId, op)
+        }
+        assert.equal(request.headers['idempotency-key'], apply.key)
+        if (apply.op.state !== 'succeeded')
+          return send(apply.op, 202)
+      }
+      await finish()
+      return send({
+        manifestId: id, checksum: manifest.checksum, chunkCount: manifest.chunkCount, verified: true,
+      })
+    async function finish() {
       assert.equal(manifest.chunks.size, manifest.chunkCount)
       const archive = Buffer.concat(
         Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
@@ -364,12 +401,7 @@ async function hostedLifecycle() {
         manifest.verified = true
         manifest.updatedAt = new Date(++sourceClock).toISOString()
       }
-      return send({
-        manifestId: id,
-        checksum: manifest.checksum,
-        chunkCount: manifest.chunkCount,
-        verified: true,
-      })
+    }
     }
     const matched = /^\/v1\/sessions\/([^/]+)(?:\/(.*))?$/.exec(path)
     if (matched) {
@@ -505,11 +537,15 @@ async function hostedLifecycle() {
     identity: key,
     updatedAt: now,
   }
+  const track = (pending) => {
+    activeChild = pending.child
+    return pending
+  }
   const run = async (args, overrides = {}) => {
     try {
       return {
         code: 0,
-        ...(await execFileAsync(
+        ...(await track(execFileAsync(
           process.execPath,
           [
             cli,
@@ -523,7 +559,7 @@ async function hostedLifecycle() {
             encoding: 'utf8',
             timeout: 30_000,
           },
-        )),
+        ))),
       }
     } catch (error) {
       return error
@@ -585,11 +621,36 @@ async function hostedLifecycle() {
     const afterRevert = chunkUploads
     assert.equal((await success(pushArgs)).data.uploadedBytes, 0)
     assert.equal(chunkUploads, afterRevert)
+    for (const mode of ['immediate', 'replay', 'failed', 'cancelled', 'interrupt']) {
+      applyMode = mode
+      await writeFile(join(source, 'a.txt'), `${mode} content\n`)
+      const before = sourceApplies.size
+      onSourcePoll = mode === 'interrupt' ? () => activeChild.kill('SIGINT') : undefined
+      const result = await run(pushArgs)
+      onSourcePoll = undefined
+      if (['failed', 'cancelled', 'interrupt'].includes(mode)) {
+        const error = parseEnvelope(result.stderr).data
+        assert.notEqual(result.code, 0)
+        assert.equal(error.code, mode === 'interrupt' ? 'OPERATION_CANCELLED' : 'SYNC_FAILED')
+        if (mode !== 'interrupt') {
+          assert.equal(error.providerCode, 'SOURCE_APPLY_REVOKED')
+          assert.equal(error.message, 'Source apply revoked')
+          assert.equal(error.requestId, requestId)
+        }
+      } else {
+        assert.equal(result.code, 0, result.stderr)
+        assert.equal(await readFile(join(workspace, 'a.txt'), 'utf8'), `${mode} content\n`)
+        assert.equal(sourceApplies.size - before, mode === 'immediate' ? 0 : 1)
+        if (mode === 'replay') assert.equal([...sourceApplies.values()].at(-1).polls, 4)
+      }
+    }
+    applyMode = 'async'
+    const afterModes = chunkUploads
     await writeFile(join(source, 'large.txt'), Buffer.alloc(65537))
     const tooLarge = await failure(pushArgs)
     assert.equal(tooLarge.data.code, 'SYNC_TOO_LARGE')
     assert.match(tooLarge.data.message, /large\.txt.*65537.*--exclude/)
-    assert.equal(chunkUploads, afterRevert)
+    assert.equal(chunkUploads, afterModes)
     await success([...pushArgs, '--exclude', 'large.txt'])
     for (const command of ['pull', 'diff']) {
       const unsupported = await failure(['sync', command, '--local-dir', source, '--json'])

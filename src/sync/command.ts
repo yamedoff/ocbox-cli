@@ -28,7 +28,10 @@ export interface SyncCommandFlags extends RuntimeFlags {
  * the bound provider's persisted mapping; the offline fake workspace defaults
  * under the state directory.
  */
-export async function resolveSyncContext(flags: SyncCommandFlags): Promise<SyncContext> {
+export async function resolveSyncContext(
+  flags: SyncCommandFlags,
+  signal?: AbortSignal,
+): Promise<SyncContext> {
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
   const view = await (await createLifecycleService(flags)).status(flags.session)
@@ -62,7 +65,7 @@ export async function resolveSyncContext(flags: SyncCommandFlags): Promise<SyncC
     })
     provider.bindLifecycleStore(new LifecycleStore(stateDirectory, projectId))
     const sandboxId = view.sandbox.id
-    hostedUpload = (prepared) => provider.uploadSource(sandboxId, prepared)
+    hostedUpload = (prepared) => provider.uploadSource(sandboxId, prepared, signal)
   }
   return {
     ...(hostedUpload === undefined ? {} : { hostedUpload }),

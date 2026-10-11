@@ -23,6 +23,8 @@ import {
 } from './wire.js'
 
 export interface WaitOperationOptions {
+  /** Let the caller map terminal failures for its command. */
+  readonly returnTerminalFailure?: boolean | undefined
   readonly deadlineMilliseconds?: number | undefined
   readonly maxWaitMilliseconds?: number | undefined
   readonly pollMilliseconds?: number | undefined
@@ -225,7 +227,7 @@ export async function waitForHostedOperation(
     checkpoint.state !== null &&
     isTerminalOperationState(checkpoint.state)
   ) {
-    const failure = terminalFailureOf(checkpoint.operation)
+    const failure = options.returnTerminalFailure ? null : terminalFailureOf(checkpoint.operation)
     if (failure !== null) throw failure
     return {
       fromCheckpoint: true,
@@ -329,7 +331,10 @@ export async function waitForHostedOperation(
     latestRequestId = result.requestId
     latestOperation = operation
     await save()
-    if (operation.state === 'succeeded') {
+    if (
+      operation.state === 'succeeded' ||
+      (options.returnTerminalFailure && isTerminalOperationState(operation.state))
+    ) {
       return {
         fromCheckpoint: false,
         operation,

@@ -11,7 +11,8 @@ import { z } from 'zod'
 export const HostedSafeErrorSchema = z
   .strictObject({
     code: z.string().min(1).max(64),
-    message: z.string().min(1).max(512),
+    message: z.string().min(1).max(1024),
+    reason: z.string().optional(),
     retryAfterSeconds: z.number().int().min(0).optional(),
   })
   .readonly()

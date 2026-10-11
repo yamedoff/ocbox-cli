@@ -31,8 +31,9 @@ export default class SyncPush extends OcboxCommand {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(SyncPush)
+    const interrupt = this.abortOnInterrupt()
     await this.emitResult(flags, 'sync.pushed', renderSyncApplied, async () => {
-      const context = await resolveSyncContext(flags)
+      const context = await resolveSyncContext(flags, interrupt.signal)
       return runSyncApply(context, 'push', {
         cliRules: syncCliRules(flags),
         delete: flags.delete === true,
@@ -40,6 +41,6 @@ export default class SyncPush extends OcboxCommand {
         interactive: isInteractiveForFlags(flags),
         confirm: confirmSyncDeletion,
       })
-    })
+    }).finally(interrupt.dispose)
   }
 }

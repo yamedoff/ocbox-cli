@@ -1344,6 +1344,7 @@ export async function mockHosted({
     operations = new Map(),
     manifests = new Map(),
     executions = new Map()
+  const applies = new Map()
   const workspace = new Map()
   const counts = {
     mail: 0,
@@ -1615,7 +1616,15 @@ export async function mockHosted({
         }
         return operation('create')
       }
-      if (path.startsWith('/v1/operations/')) return send(operations.get(path.split('/').at(-1)))
+      if (path.startsWith('/v1/operations/')) {
+        const id = path.split('/').at(-1), apply = applies.get(id)
+        if (apply && ++apply.polls >= 3) {
+          await apply.finish()
+          apply.op.state = 'succeeded'
+          apply.op.progress = 100
+        }
+        return send(operations.get(id))
+      }
       if (path === '/v1/sessions/hosted_session/source/manifests') {
         assert(session && session.normalizedState === 'running')
         if (req.method === 'GET')
@@ -1656,6 +1665,27 @@ export async function mockHosted({
           })
         }
         assert.equal(req.method, 'POST')
+        const operationId = `apply_${id}`
+        let apply = applies.get(operationId)
+        if (apply) assert.equal(req.headers['idempotency-key'], apply.key)
+        if (!manifest.verified) {
+          if (!apply) {
+            const op = { ...operations.values().next().value, id: operationId,
+              kind: 'source.apply', state: 'pending', progress: 0 }
+            apply = { op, polls: 0, key: req.headers['idempotency-key'], finish }
+            applies.set(operationId, apply)
+            operations.set(operationId, op)
+          }
+          return send(apply.op, 202)
+        }
+        return send({
+          manifestId: id,
+          checksum: manifest.checksum,
+          chunkCount: manifest.chunkCount,
+          verified: true,
+        })
+      async function finish() {
+        if (manifest.verified) return
         assert.equal(manifest.chunks.size, manifest.chunkCount)
         const archive = Buffer.concat(
           Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
@@ -1693,12 +1723,8 @@ export async function mockHosted({
         assert.equal(workspace.get('a.txt'), expected)
         manifest.verified = true
         counts.deliver++
-        return send({
-          manifestId: id,
-          checksum: manifest.checksum,
-          chunkCount: manifest.chunkCount,
-          verified: true,
-        })
+      }
+
       }
       const matched = /^\/v1\/sessions\/hosted_session(?:\/(.*))?$/.exec(path)
       if (matched) {
