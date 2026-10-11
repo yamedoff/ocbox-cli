@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -8,9 +8,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { protocolEndpointsFromIssuer } from '../../src/auth/config.js'
 import { AuthMetadataSchema, AuthMetadataStore } from '../../src/auth/metadata.js'
 import { createCredentialStore, defaultCredentialKey } from '../../src/auth/runtime.js'
-import { AUTH_STATE_LOCK_FILENAME } from '../../src/auth/session-gate.js'
 import { credentialFromTokenPair } from '../../src/auth/token-manager.js'
 import { ProjectIdSchema, SandboxIdSchema } from '../../src/contracts.js'
+import { OcboxError } from '../../src/errors/index.js'
 import { LifecycleStore } from '../../src/lifecycle/store.js'
 import { createOcboxProvider } from '../../src/providers/ocbox/factory.js'
 import { deferred, tokenPair } from '../auth/doubles.js'
@@ -30,12 +30,12 @@ import {
 // Configurable response latency stays below the real 5s lock acquisition limit.
 const requestDelayMilliseconds = Number(process.env['C14_REQUEST_DELAY_MS'] ?? 3000)
 
-describe('issue #11: streaming transport holds the authentication gate across network waits', () => {
+describe('streaming requests release the authentication gate before response waits', () => {
   let directory: string
   let cancellation: PromiseSettledResult<unknown>
   let cancelRequests = 0
-  let elapsed = 0
-  let lockOwner: { pid: number }
+  let pollsDuringCancel = 0
+  let requesting: ReturnType<typeof createOcboxProvider>
   const calls: string[] = []
   const command = new AsyncLocalStorage<string>()
 
@@ -95,12 +95,22 @@ describe('issue #11: streaming transport holds the authentication gate across ne
     })
     const polling = deferred<void>()
     let collecting = true
+    let cancellingNow = false
+    let cancelled = false
     vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(input)).pathname
       calls.push(path)
-      if (path.endsWith('/events')) polling.resolve()
+      if (path.endsWith('/events')) {
+        polling.resolve()
+        if (cancellingNow) pollsDuringCancel += 1
+      }
       if (command.getStore() === 'cancel') cancelRequests += 1
       await delay(requestDelayMilliseconds)
+      if (path.endsWith('/cancel')) {
+        cancelled = true
+        return jsonResponse({}, 202)
+      }
+      if (path.endsWith('/result')) return jsonResponse({ kind: 'cancelled' })
       if (path.endsWith(`/sessions/${HOSTED_SESSION}`)) return jsonResponse(hostedSessionFixture())
       if (init?.method === 'POST')
         return jsonResponse(
@@ -120,7 +130,7 @@ describe('issue #11: streaming transport holds the authentication gate across ne
         updatedAt: metadata.updatedAt,
         sessionId: HOSTED_SESSION,
         sandboxId: HOSTED_SANDBOX,
-        state: 'running',
+        state: cancelled ? 'cancelled' : 'running',
         command: 'sleep 600',
         exitCode: null,
         failureKind: null,
@@ -138,6 +148,8 @@ describe('issue #11: streaming transport holds the authentication gate across ne
     }
     const streaming = createOcboxProvider(options)
     const cancelling = createOcboxProvider(options)
+    requesting = createOcboxProvider(options)
+    requesting.bindLifecycleStore(store)
     streaming.bindLifecycleStore(store)
     cancelling.bindLifecycleStore(store)
     const handle = await command.run('exec', () =>
@@ -150,12 +162,11 @@ describe('issue #11: streaming transport holds the authentication gate across ne
       }),
     )
     await polling.promise
-    lockOwner = JSON.parse(await readFile(join(directory, AUTH_STATE_LOCK_FILENAME), 'utf8'))
-    const started = Date.now()
+    cancellingNow = true
     ;[cancellation] = await Promise.allSettled([
       command.run('cancel', () => cancelling.cancelSandboxExecution(sandboxId, undefined, 30_000)),
     ])
-    elapsed = Date.now() - started
+    cancellingNow = false
     collecting = false
     // Abort the real collector through its public cancellation entrypoint.
     await streaming.exec
@@ -171,22 +182,55 @@ describe('issue #11: streaming transport holds the authentication gate across ne
     if (directory) await rm(directory, { recursive: true, force: true })
   })
 
-  it('proves the local auth conflict before any cancel HTTP request', () => {
-    expect(lockOwner.pid).toBe(process.pid)
+  it('sends cancellation HTTP requests while the streamer keeps polling with slow responses', () => {
     expect(cancellation).toMatchObject({
-      status: 'rejected',
-      reason: {
-        code: 'OPERATION_CONFLICT',
-        message: 'Another CLI process is updating authentication state; try again shortly',
-      },
+      status: 'fulfilled',
+      value: { state: 'cancelled' },
     })
-    expect(cancelRequests).toBe(0)
-    expect(elapsed).toBeGreaterThanOrEqual(5000)
+    expect(cancelRequests).toBeGreaterThan(0)
+    expect(calls.some((path) => path.endsWith('/cancel'))).toBe(true)
+    expect(pollsDuringCancel).toBeGreaterThan(0)
     expect(calls.some((path) => path.endsWith('/events'))).toBe(true)
     expect(calls.some((path) => path.endsWith('/executions/execution'))).toBe(true)
   })
 
-  it.fails('cancel should remain available while streaming requests repeatedly reacquire the auth gate', () => {
+  it('cancel should remain available while streaming requests repeatedly reacquire the auth gate', () => {
     expect(cancellation.status).toBe('fulfilled')
+  })
+
+  it('preserves the typed network error without an unhandled rejection during gate release', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Network failure')))
+    try {
+      const error = await requesting
+        .list(operationContext() as never, { projectId: null, sessionId: null })
+        .catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(OcboxError)
+      expect(error).toMatchObject({
+        code: 'PROVIDER_UNAVAILABLE',
+        message: 'The hosted service could not be reached',
+      })
+      await delay(0)
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+
+  it('detects a hosted login change between two requests before the second dispatch', async () => {
+    const fetch = vi.fn(() => Promise.resolve(jsonResponse({ data: [], nextCursor: null })))
+    vi.stubGlobal('fetch', fetch)
+    await requesting.list(operationContext() as never, { projectId: null, sessionId: null })
+    const store = new AuthMetadataStore(join(directory, 'auth.json'))
+    const metadata = await store.load()
+    await store.save(AuthMetadataSchema.parse({ ...metadata, updatedAt: new Date().toISOString() }))
+    await expect(
+      requesting.list(operationContext() as never, { projectId: null, sessionId: null }),
+    ).rejects.toMatchObject({
+      code: 'AUTH_FORBIDDEN',
+      message: 'The hosted login changed during this operation; rerun the command',
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 })
