@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "repo": "ocbox-cli",
+  "visibility": "public",
+  "openapi": "openapi/openapi.yaml",
+  "buildings": [
+    {
+      "id": "cli",
+      "name": "ocbox CLI",
+      "kind": "app",
+      "zone": "public",
+      "path": "src",
+      "summary": "The ocbox command on a developer's machine. Signs in, starts and destroys boxes, pushes source and runs commands through the hosted API."
+    },
+    {
+      "id": "local-state",
+      "name": "Local state",
+      "kind": "storage",
+      "zone": "public",
+      "path": "src/lifecycle",
+      "summary": "Files on the developer's machine: protected credentials and the map from local sandbox ids to hosted sessions."
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-create-session",
+      "from": "cli",
+      "to": "openapi:createSession",
+      "kind": "request",
+      "label": "creates a hosted session"
+    },
+    {
+      "id": "cli-create-execution",
+      "from": "cli",
+      "to": "openapi:createExecution",
+      "kind": "request",
+      "label": "starts a command in the box"
+    },
+    {
+      "id": "cli-execution-events",
+      "from": "cli",
+      "to": "openapi:listExecutionEvents",
+      "kind": "request",
+      "label": "polls command output with a cursor"
+    },
+    {
+      "id": "cli-source-manifest",
+      "from": "cli",
+      "to": "openapi:createSourceManifest",
+      "kind": "request",
+      "label": "announces a source upload"
+    },
+    {
+      "id": "cli-source-chunks",
+      "from": "cli",
+      "to": "openapi:uploadSourceChunk",
+      "kind": "request",
+      "label": "uploads source chunks"
+    },
+    {
+      "id": "cli-destroy-session",
+      "from": "cli",
+      "to": "openapi:destroySession",
+      "kind": "request",
+      "label": "destroys the hosted session"
+    },
+    {
+      "id": "cli-state",
+      "from": "cli",
+      "to": "local-state",
+      "kind": "database",
+      "label": "saves tokens and sandbox mappings"
+    }
+  ],
+  "code": [
+    {
+      "id": "start-command",
+      "building": "cli",
+      "name": "ocbox start",
+      "kind": "route",
+      "path": "src/commands/start.ts",
+      "symbol": "Start",
+      "summary": "The start command. Asks the hosted provider to create a box for the current project.",
+      "lines": "6-39"
+    },
+    {
+      "id": "exec-command",
+      "building": "cli",
+      "name": "ocbox exec",
+      "kind": "route",
+      "path": "src/commands/exec.ts",
+      "symbol": "Exec",
+      "summary": "The exec command. Runs a command in the box and exits with the command's exit code.",
+      "lines": "46-72"
+    },
+    {
+      "id": "sync-push-command",
+      "building": "cli",
+      "name": "ocbox sync push",
+      "kind": "route",
+      "path": "src/commands/sync/push.ts",
+      "symbol": "SyncPush",
+      "summary": "Packs local files, skipping ignored ones, and uploads them to the box.",
+      "calls": ["upload-source"],
+      "lines": "12-46"
+    },
+    {
+      "id": "provider-create",
+      "building": "cli",
+      "name": "OcboxSandboxProvider.create",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "createSession",
+      "summary": "Calls createSession for the bound project and saves the hosted session id locally.",
+      "lines": "483-592"
+    },
+    {
+      "id": "provider-execute",
+      "building": "cli",
+      "name": "OcboxSandboxProvider.#execute",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "createExecution",
+      "summary": "Calls createExecution, then polls events until the command finishes or the deadline passes.",
+      "lines": "1072-1199"
+    },
+    {
+      "id": "upload-source",
+      "building": "cli",
+      "name": "uploadPreparedSource",
+      "kind": "function",
+      "path": "src/providers/ocbox/source.ts",
+      "symbol": "uploadPreparedSource",
+      "summary": "Creates a source manifest, uploads each chunk and verifies the checksum.",
+      "lines": "131-135"
+    },
+    {
+      "id": "default-api-url",
+      "building": "cli",
+      "name": "DEFAULT_API_URL",
+      "kind": "config",
+      "path": "src/providers/ocbox/defaults.ts",
+      "symbol": "DEFAULT_API_URL",
+      "summary": "The hosted API the CLI talks to by default: staging until launch.",
+      "lines": "2-3"
+    }
+  ],
+  "journeys": [
+    {
+      "id": "cli-start-box",
+      "name": "Start a box from the CLI",
+      "summary": "A developer runs ocbox start and gets a hosted box.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "start-command",
+          "story": "The developer runs ocbox start in a project folder."
+        },
+        {
+          "connection": "cli-create-session",
+          "code": "provider-create",
+          "story": "The CLI asks the hosted API to create a session for the bound project."
+        },
+        {
+          "connection": "cli-state",
+          "story": "The CLI saves the hosted session id so later commands find the same box."
+        }
+      ]
+    },
+    {
+      "id": "cli-exec",
+      "name": "Run a command from the CLI",
+      "summary": "A developer runs ocbox exec and sees the output.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "exec-command",
+          "story": "The developer runs ocbox exec with a command."
+        },
+        {
+          "connection": "cli-create-execution",
+          "code": "provider-execute",
+          "story": "The CLI starts the command in the box through the hosted API."
+        },
+        {
+          "connection": "cli-execution-events",
+          "code": "provider-execute",
+          "story": "It polls the output with a cursor and prints it, then exits with the command's code."
+        }
+      ]
+    }
+  ]
+}

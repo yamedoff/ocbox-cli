@@ -1,0 +1,16 @@
+name: map check
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tools/map/cli.mjs check
+      - if: github.event_name == 'pull_request'
+        run: node tools/map/cli.mjs diff --base origin/${{ github.base_ref }} >> "$GITHUB_STEP_SUMMARY"
