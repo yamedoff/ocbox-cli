@@ -132,7 +132,7 @@
       "path": "src/providers/ocbox/source.ts",
       "symbol": "uploadPreparedSource",
       "summary": "Creates a source manifest, uploads each chunk and verifies the checksum.",
-      "lines": "131-135"
+      "lines": "131-348"
     },
     {
       "id": "default-api-url",
