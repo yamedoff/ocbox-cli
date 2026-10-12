@@ -412,7 +412,7 @@
         {
           "connection": "cli-state",
           "code": "credential-store",
-          "story": "It saves the pair in an owner-only credentials file. Later commands refresh the access token on their own."
+          "story": "It saves the pair in the OS credential store, or in an owner-only file when none is available. Later commands refresh the access token on their own."
         }
       ]
     },
