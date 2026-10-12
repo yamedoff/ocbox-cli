@@ -10,24 +10,52 @@
       "kind": "app",
       "zone": "public",
       "path": "src",
-      "summary": "The ocbox command on a developer's machine. Signs in, starts and destroys boxes, pushes source and runs commands through the hosted API."
+      "summary": "The ocbox command on a developer's machine. Signs in with OAuth, starts and destroys boxes, syncs local files and runs commands through the hosted API, and can route a coding agent's shell commands into the box."
     },
     {
       "id": "local-state",
       "name": "Local state",
       "kind": "storage",
       "zone": "public",
-      "path": "src/lifecycle",
-      "summary": "Files on the developer's machine: protected credentials and the map from local sandbox ids to hosted sessions."
+      "path": "src/state",
+      "summary": "Files in the user's state folder: OAuth credentials in a protected file, the selected session and local-to-hosted id mappings, and sync baselines. Guarded by a cross-process file lock."
+    },
+    {
+      "id": "coding-agents",
+      "name": "Coding agents",
+      "kind": "outside",
+      "zone": "outside",
+      "summary": "Claude Code and Codex on the developer's machine. After ocbox agent setup, their Bash tool calls go through an ocbox hook and run in the box instead of locally."
     }
   ],
   "connections": [
+    {
+      "id": "cli-authorize",
+      "from": "cli",
+      "to": "openapi:startCliAuthorization",
+      "kind": "request",
+      "label": "opens the browser on the authorize page with a PKCE challenge"
+    },
+    {
+      "id": "cli-token",
+      "from": "cli",
+      "to": "openapi:exchangeCliToken",
+      "kind": "request",
+      "label": "exchanges the code for tokens, later refreshes them"
+    },
     {
       "id": "cli-create-session",
       "from": "cli",
       "to": "openapi:createSession",
       "kind": "request",
       "label": "creates a hosted session"
+    },
+    {
+      "id": "cli-get-operation",
+      "from": "cli",
+      "to": "openapi:getOperation",
+      "kind": "request",
+      "label": "polls the create, destroy and upload operations"
     },
     {
       "id": "cli-create-execution",
@@ -44,6 +72,13 @@
       "label": "polls command output with a cursor"
     },
     {
+      "id": "cli-cancel-execution",
+      "from": "cli",
+      "to": "openapi:cancelExecution",
+      "kind": "request",
+      "label": "cancels a running command on Ctrl-C"
+    },
+    {
       "id": "cli-source-manifest",
       "from": "cli",
       "to": "openapi:createSourceManifest",
@@ -58,6 +93,13 @@
       "label": "uploads source chunks"
     },
     {
+      "id": "cli-verify-checksum",
+      "from": "cli",
+      "to": "openapi:verifySourceChecksum",
+      "kind": "request",
+      "label": "verifies the upload and starts applying it"
+    },
+    {
       "id": "cli-destroy-session",
       "from": "cli",
       "to": "openapi:destroySession",
@@ -69,7 +111,14 @@
       "from": "cli",
       "to": "local-state",
       "kind": "database",
-      "label": "saves tokens and sandbox mappings"
+      "label": "saves tokens, the selected session and id mappings"
+    },
+    {
+      "id": "agent-hook",
+      "from": "coding-agents",
+      "to": "cli",
+      "kind": "event",
+      "label": "runs the PreToolUse hook for each Bash call"
     }
   ],
   "code": [
@@ -80,7 +129,8 @@
       "kind": "route",
       "path": "src/commands/start.ts",
       "symbol": "Start",
-      "summary": "The start command. Asks the hosted provider to create a box for the current project.",
+      "summary": "Creates, resumes or reconciles the selected session for this project and waits until the hosted sandbox is ready.",
+      "calls": ["lifecycle-service"],
       "lines": "6-39"
     },
     {
@@ -90,7 +140,8 @@
       "kind": "route",
       "path": "src/commands/exec.ts",
       "symbol": "Exec",
-      "summary": "The exec command. Runs a command in the box and exits with the command's exit code.",
+      "summary": "Runs a program in the selected session. Tokens after -- are sent as an argv array, never through a shell; --shell is the explicit opt-in. Exits with the remote exit code.",
+      "calls": ["exec-runner"],
       "lines": "46-72"
     },
     {
@@ -100,9 +151,104 @@
       "kind": "route",
       "path": "src/commands/sync/push.ts",
       "symbol": "SyncPush",
-      "summary": "Packs local files, skipping ignored ones, and uploads them to the box.",
-      "calls": ["upload-source"],
+      "summary": "Applies local-only changes to the session workspace. Deletions need --delete and confirmation.",
+      "calls": ["sync-apply"],
       "lines": "12-46"
+    },
+    {
+      "id": "destroy-command",
+      "building": "cli",
+      "name": "ocbox destroy",
+      "kind": "route",
+      "path": "src/commands/destroy.ts",
+      "symbol": "Destroy",
+      "summary": "Destroys a session after explicit confirmation and waits for the hosted operation to finish.",
+      "calls": ["lifecycle-service"],
+      "lines": "24-64"
+    },
+    {
+      "id": "login-command",
+      "building": "cli",
+      "name": "ocbox auth login",
+      "kind": "route",
+      "path": "src/commands/auth/login.ts",
+      "symbol": "AuthLogin",
+      "summary": "Signs the CLI in to the hosted API through the browser.",
+      "calls": ["auth-login"],
+      "lines": "6-59"
+    },
+    {
+      "id": "auth-login",
+      "building": "cli",
+      "name": "AuthSessionService.login",
+      "kind": "function",
+      "path": "src/auth/service.ts",
+      "symbol": "login",
+      "lines": "127-179",
+      "summary": "Binds a loopback listener, opens the authorize URL with a PKCE challenge, waits for the callback, exchanges the code and commits the token pair under the auth gate. Always closes the listener.",
+      "calls": ["loopback-listener", "pkce", "credential-store"]
+    },
+    {
+      "id": "loopback-listener",
+      "building": "cli",
+      "name": "LoopbackCallbackListener",
+      "kind": "class",
+      "path": "src/auth/loopback.ts",
+      "symbol": "LoopbackCallbackListener",
+      "summary": "One-shot HTTP listener on 127.0.0.1 at /callback that receives the authorization code and checks state.",
+      "lines": "63-270"
+    },
+    {
+      "id": "pkce",
+      "building": "cli",
+      "name": "codeChallengeS256",
+      "kind": "function",
+      "path": "src/auth/pkce.ts",
+      "symbol": "codeChallengeS256",
+      "summary": "PKCE S256 challenge from a random verifier, so a stolen code is useless without the verifier kept in memory.",
+      "lines": "27-30"
+    },
+    {
+      "id": "token-manager",
+      "building": "cli",
+      "name": "HostedTokenManager",
+      "kind": "class",
+      "path": "src/auth/token-manager.ts",
+      "symbol": "HostedTokenManager",
+      "summary": "Hands out a valid access token, refreshing when it is about to expire. Rotation happens at most once per generation across processes, so parallel commands don't burn the refresh token.",
+      "calls": ["credential-store"],
+      "lines": "122-399"
+    },
+    {
+      "id": "credential-store",
+      "building": "local-state",
+      "name": "HostedOAuthCredentialStore",
+      "kind": "class",
+      "path": "src/credentials/store.ts",
+      "symbol": "HostedOAuthCredentialStore",
+      "summary": "Stores the token pair in the Credentials folder as an owner-only file (ACL-locked on Windows).",
+      "lines": "41-68"
+    },
+    {
+      "id": "lifecycle-store",
+      "building": "local-state",
+      "name": "LifecycleStore",
+      "kind": "class",
+      "path": "src/lifecycle/store.ts",
+      "symbol": "LifecycleStore",
+      "summary": "Atomic JSON store for the selected session and the mapping from local sandbox ids to hosted session ids.",
+      "lines": "11-33"
+    },
+    {
+      "id": "lifecycle-service",
+      "building": "cli",
+      "name": "LifecycleService",
+      "kind": "class",
+      "path": "src/lifecycle/service.ts",
+      "symbol": "LifecycleService",
+      "summary": "Session lifecycle on the client: start, stop, destroy and selection, against the configured provider (hosted or fake), with the local store as its memory.",
+      "calls": ["provider-create", "lifecycle-store"],
+      "lines": "61-770"
     },
     {
       "id": "provider-create",
@@ -111,8 +257,9 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "createSession",
-      "summary": "Calls createSession for the bound project and saves the hosted session id locally.",
-      "lines": "483-592"
+      "lines": "483-592",
+      "summary": "Calls createSession for the bound project, polls the returned operation until the sandbox is ready, and saves the hosted session id locally.",
+      "calls": ["api-client"]
     },
     {
       "id": "provider-execute",
@@ -121,8 +268,61 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "createExecution",
-      "summary": "Calls createExecution, then polls events until the command finishes or the deadline passes.",
-      "lines": "1072-1199"
+      "lines": "1072-1199",
+      "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
+      "calls": ["api-client"]
+    },
+    {
+      "id": "exec-runner",
+      "building": "cli",
+      "name": "runExecutionCommand",
+      "kind": "function",
+      "path": "src/execution/command-runner.ts",
+      "symbol": "runExecutionCommand",
+      "summary": "Parses exec arguments, starts the remote command, streams polled output to stdout and stderr, cancels on interrupt and maps the result to an exit code.",
+      "calls": ["provider-execute"],
+      "lines": "229-238"
+    },
+    {
+      "id": "sync-apply",
+      "building": "cli",
+      "name": "runSyncApply",
+      "kind": "function",
+      "path": "src/sync/service.ts",
+      "symbol": "runSyncApply",
+      "summary": "Plans the sync against the last verified baseline, checks deletions, uploads the archive and records a new baseline only after the hosted apply succeeds.",
+      "calls": ["scan-manifest", "sync-plan", "sync-archive", "upload-source"],
+      "lines": "775-877"
+    },
+    {
+      "id": "scan-manifest",
+      "building": "cli",
+      "name": "scanSourceManifest",
+      "kind": "function",
+      "path": "src/sync/manifest.ts",
+      "symbol": "scanSourceManifest",
+      "summary": "Walks the project folder with ignore rules and path policy, recording each file's size, mode and SHA-256. Blocks symlinks and paths that escape the root.",
+      "lines": "309-470"
+    },
+    {
+      "id": "sync-plan",
+      "building": "cli",
+      "name": "planSync",
+      "kind": "function",
+      "path": "src/sync/planner.ts",
+      "symbol": "planSync",
+      "summary": "Compares local files with the baseline to decide adds, changes and deletes, so only real changes travel.",
+      "lines": "251-383"
+    },
+    {
+      "id": "sync-archive",
+      "building": "cli",
+      "name": "encodeSyncArchive",
+      "kind": "function",
+      "path": "src/sync/archive.ts",
+      "symbol": "encodeSyncArchive",
+      "summary": "Streams the files into the OCBOXA1 archive format that the hosted API verifies and unpacks.",
+      "lines": "144-196"
     },
     {
       "id": "upload-source",
@@ -131,8 +331,20 @@
       "kind": "function",
       "path": "src/providers/ocbox/source.ts",
       "symbol": "uploadPreparedSource",
-      "summary": "Creates a source manifest, uploads each chunk and verifies the checksum.",
+      "summary": "Reuses a matching verified manifest if one exists, otherwise creates a manifest, uploads each chunk, verifies the checksum and polls the apply operation.",
+      "calls": ["api-client"],
       "lines": "131-348"
+    },
+    {
+      "id": "api-client",
+      "building": "cli",
+      "name": "createHostedApiClient",
+      "kind": "function",
+      "path": "src/auth/hosted-client.ts",
+      "symbol": "createHostedApiClient",
+      "summary": "Generated OpenAPI client with an authenticated transport: adds the bearer token and, for replayable requests only, refreshes once on 401 and retries. Errors stay redacted.",
+      "calls": ["token-manager"],
+      "lines": "303-324"
     },
     {
       "id": "default-api-url",
@@ -142,10 +354,68 @@
       "path": "src/providers/ocbox/defaults.ts",
       "symbol": "DEFAULT_API_URL",
       "summary": "The hosted API the CLI talks to by default: staging until launch.",
-      "lines": "2-3"
+      "lines": "2-2"
+    },
+    {
+      "id": "claude-hook",
+      "building": "cli",
+      "name": "runClaudeRoutingHook",
+      "kind": "function",
+      "path": "src/agents/claude-code/hook.ts",
+      "symbol": "runClaudeRoutingHook",
+      "summary": "Reads the agent's PreToolUse JSON. For a covered Bash call it runs the command with ocbox exec in the box, then always answers deny with the remote result as the reason, so the local copy never runs.",
+      "calls": ["exec-runner"],
+      "lines": "115-151"
+    },
+    {
+      "id": "agent-setup",
+      "building": "cli",
+      "name": "planSetup",
+      "kind": "function",
+      "path": "src/agents/claude-code/planner.ts",
+      "symbol": "planSetup",
+      "summary": "ocbox agent setup claude-code: writes an owned hook entry into the agent's settings, idempotently, and can be undone with ocbox agent remove.",
+      "lines": "361-502"
     }
   ],
   "journeys": [
+    {
+      "id": "cli-login",
+      "name": "Sign in from the CLI",
+      "summary": "ocbox auth login, from the terminal to stored tokens.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "login-command",
+          "story": "The developer runs ocbox auth login."
+        },
+        {
+          "building": "cli",
+          "code": "pkce",
+          "story": "The CLI makes a PKCE verifier and challenge and starts a one-shot listener on 127.0.0.1."
+        },
+        {
+          "connection": "cli-authorize",
+          "code": "auth-login",
+          "story": "It opens the browser on the hosted authorize page. The developer signs in there and approves."
+        },
+        {
+          "building": "cli",
+          "code": "loopback-listener",
+          "story": "The browser comes back to the loopback /callback with a code. The listener checks state and closes."
+        },
+        {
+          "connection": "cli-token",
+          "code": "auth-login",
+          "story": "The CLI exchanges the code and verifier for an access token and a refresh token."
+        },
+        {
+          "connection": "cli-state",
+          "code": "credential-store",
+          "story": "It saves the pair in an owner-only credentials file. Later commands refresh the access token on their own."
+        }
+      ]
+    },
     {
       "id": "cli-start-box",
       "name": "Start a box from the CLI",
@@ -154,16 +424,74 @@
         {
           "building": "cli",
           "code": "start-command",
-          "story": "The developer runs ocbox start in a project folder."
+          "story": "The developer runs ocbox start in a project folder that has an opencloudbox.toml."
+        },
+        {
+          "building": "cli",
+          "code": "lifecycle-service",
+          "story": "The CLI looks up the selected session; with none, or with --new, it creates one."
         },
         {
           "connection": "cli-create-session",
           "code": "provider-create",
-          "story": "The CLI asks the hosted API to create a session for the bound project."
+          "story": "It asks the hosted API to create a session for the bound project, with an idempotency key."
+        },
+        {
+          "connection": "cli-get-operation",
+          "code": "provider-create",
+          "story": "It polls the returned operation, showing \"Waiting for hosted sandbox to be ready\", until the box is running."
         },
         {
           "connection": "cli-state",
-          "story": "The CLI saves the hosted session id so later commands find the same box."
+          "code": "lifecycle-store",
+          "story": "It saves the hosted session id and selects it, so later commands use the same box."
+        }
+      ]
+    },
+    {
+      "id": "cli-sync-push",
+      "name": "Push local files to the box",
+      "summary": "ocbox sync push sends only what changed.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "sync-push-command",
+          "story": "The developer runs ocbox sync push."
+        },
+        {
+          "building": "cli",
+          "code": "scan-manifest",
+          "story": "The CLI scans the project, skipping ignored paths and refusing links that escape the folder."
+        },
+        {
+          "building": "cli",
+          "code": "sync-plan",
+          "story": "It compares against the last verified baseline. Deletions stop and ask unless --delete and --yes are given."
+        },
+        {
+          "building": "cli",
+          "code": "sync-archive",
+          "story": "It packs the files into an OCBOXA1 archive."
+        },
+        {
+          "connection": "cli-source-manifest",
+          "code": "upload-source",
+          "story": "It creates a manifest with the archive's size and checksum, or reuses one already verified."
+        },
+        {
+          "connection": "cli-source-chunks",
+          "code": "upload-source",
+          "story": "It uploads the chunks."
+        },
+        {
+          "connection": "cli-verify-checksum",
+          "code": "upload-source",
+          "story": "It asks the API to verify the checksum, then polls the apply operation until the files are in the box."
+        },
+        {
+          "connection": "cli-state",
+          "code": "sync-apply",
+          "story": "Only then does it save the new baseline, so a failed push is retried in full next time."
         }
       ]
     },
@@ -175,17 +503,81 @@
         {
           "building": "cli",
           "code": "exec-command",
-          "story": "The developer runs ocbox exec with a command."
+          "story": "The developer runs ocbox exec -- npm test. The words after -- become an argv array; no shell is involved unless --shell is used."
         },
         {
           "connection": "cli-create-execution",
           "code": "provider-execute",
-          "story": "The CLI starts the command in the box through the hosted API."
+          "story": "The CLI starts the command in the selected box through the hosted API."
         },
         {
           "connection": "cli-execution-events",
-          "code": "provider-execute",
-          "story": "It polls the output with a cursor and prints it, then exits with the command's code."
+          "code": "exec-runner",
+          "story": "It polls the output with a cursor and prints stdout and stderr as they arrive."
+        },
+        {
+          "connection": "cli-cancel-execution",
+          "code": "exec-runner",
+          "story": "Ctrl-C cancels the remote command and waits for its final state."
+        },
+        {
+          "building": "cli",
+          "code": "exec-runner",
+          "story": "The CLI exits with the remote command's exit code."
+        }
+      ]
+    },
+    {
+      "id": "agent-routed-command",
+      "name": "A coding agent's command runs in the box",
+      "summary": "Claude Code or Codex runs a shell command, and it executes in the hosted box instead of the laptop.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "agent-setup",
+          "story": "Once, the developer runs ocbox agent setup claude-code (or codex). The CLI adds an owned PreToolUse hook to the agent's settings."
+        },
+        {
+          "connection": "agent-hook",
+          "code": "claude-hook",
+          "story": "The agent wants to run a Bash command. Before running it, the agent calls the ocbox hook with the tool call as JSON."
+        },
+        {
+          "connection": "cli-create-execution",
+          "code": "exec-runner",
+          "story": "The hook runs the command in the selected box with ocbox exec and collects the output."
+        },
+        {
+          "connection": "agent-hook",
+          "code": "claude-hook",
+          "story": "It answers deny with the remote result as the reason, so the agent sees the output and the local copy never runs."
+        }
+      ]
+    },
+    {
+      "id": "cli-destroy",
+      "name": "Destroy a box from the CLI",
+      "summary": "ocbox destroy removes the hosted session after confirmation.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "destroy-command",
+          "story": "The developer runs ocbox destroy and confirms."
+        },
+        {
+          "connection": "cli-destroy-session",
+          "code": "lifecycle-service",
+          "story": "The CLI asks the hosted API to destroy the session."
+        },
+        {
+          "connection": "cli-get-operation",
+          "code": "lifecycle-service",
+          "story": "It polls the operation until the API reports the sandbox is gone."
+        },
+        {
+          "connection": "cli-state",
+          "code": "lifecycle-store",
+          "story": "It removes the local mapping and selection."
         }
       ]
     }
