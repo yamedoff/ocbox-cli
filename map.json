@@ -18,7 +18,7 @@
       "kind": "storage",
       "zone": "public",
       "path": "src/state",
-      "summary": "Files in the user's state folder: OAuth credentials in a protected file, the selected session and local-to-hosted id mappings, and sync baselines. Guarded by a cross-process file lock."
+      "summary": "Files in the user's state folder: OAuth credentials in the OS credential store or a protected file, the selected session and local-to-hosted id mappings, and sync baselines. Guarded by a cross-process file lock."
     },
     {
       "id": "coding-agents",
@@ -226,7 +226,7 @@
       "kind": "class",
       "path": "src/credentials/store.ts",
       "symbol": "HostedOAuthCredentialStore",
-      "summary": "Stores the token pair in the Credentials folder as an owner-only file (ACL-locked on Windows).",
+      "summary": "Keeps the token pair in the operating system's credential store when one is available, otherwise in an owner-only file (0600, ACL-locked on Windows) in the Credentials folder.",
       "lines": "41-68"
     },
     {
