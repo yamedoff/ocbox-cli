@@ -32,7 +32,7 @@ The map is the front door for newcomers. Keep it short, true, and written from t
 ### connections
 
 ```json
-{ "id": "api-daytona", "from": "product-api", "to": "daytona", "kind": "request", "label": "create sandbox" }
+{ "id": "api-sandbox", "from": "product-api", "to": "sandbox-host", "kind": "request", "label": "create sandbox" }
 ```
 
 - `kind` — `request` (road) · `queue` (rail) · `database` (pipe) · `event` (signal wire) · `email` (road over the bridge).
@@ -61,7 +61,7 @@ The map is the front door for newcomers. Keep it short, true, and written from t
   "trigger": "openapi:createBox",
   "steps": [
     { "connection": "edge-api", "code": "create-box", "story": "The request reaches the Product API. It checks the API key first." },
-    { "connection": "api-daytona", "code": "provider-create", "story": "It asks Daytona for a sandbox and waits up to 15 s." }
+    { "connection": "api-sandbox", "code": "provider-create", "story": "It asks the sandbox host for a sandbox and waits up to 15 s." }
   ] }
 ```
 
