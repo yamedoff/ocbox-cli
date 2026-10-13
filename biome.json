@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!src/api/generated"]
+    "includes": ["**", "!src/api/generated", "!tools/map"]
   },
   "formatter": {
     "enabled": true,
