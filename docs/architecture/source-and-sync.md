@@ -22,4 +22,4 @@ Hosted source: 100 files, 64 KiB per file, 512 KiB total content, 1 MiB archive.
 ## When it fails
 Hosted pull, diff and recover are refused when their hosted capability is absent; hosted push with --delete is unsupported. Local deletion requires --delete and explicit confirmation/--yes. Unsafe paths, sensitive material, checksum mismatch, conflicts and incomplete recovery fail without a force/replace bypass.
 
-Verified against ocbox-cli @ 4a917c828da6
+Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2

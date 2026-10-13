@@ -20,4 +20,4 @@ Operation wait defaults to 5 minutes. Event collection defaults to a 5-minute wa
 ## When it fails
 Unsupported capabilities fail before pretending to perform an action. The client has a pause method, but the managed staging serving-capability list does not expose pauseSession. Preview methods exist in the provider but are subject to capability checks; a method's presence is not live deployment evidence. Lost replies preserve recovery evidence. Cancellation requires a terminal observation or reports incomplete convergence.
 
-Verified against ocbox-cli @ 4a917c828da6
+Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2

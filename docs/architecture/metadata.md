@@ -20,4 +20,4 @@ Metadata names are 1–200 characters; list limits are 1–100. The selected API
 ## When it fails
 Invalid identifiers, bad response shape, authentication/ownership failure, capability refusal and transport cancellation remain typed errors. Snapshot and preview support must be checked at the provider/capability boundary; this guide does not equate an interface definition with a deployed feature.
 
-Verified against ocbox-cli @ 4a917c828da6
+Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2

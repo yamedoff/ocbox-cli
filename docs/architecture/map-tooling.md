@@ -18,4 +18,4 @@ The public repo declares only its three local libraries and public operation IDs
 ## When it fails
 Wrong line anchors, broken references and undeclared renames fail validation. New packages do not silently evade an old vendor catalogue: unclassified imports warn. This architecture checker does not replace secret scanning. A post-push content guard only detects already-published content, so the complete public diff must be reviewed before publication.
 
-Verified against ocbox-cli @ 4a917c828da6
+Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2

@@ -20,4 +20,4 @@ Both adapter source timeout contracts configure a 600-second hook deadline, a 30
 ## When it fails
 Unsupported versions, untrusted project configuration, managed hook locks, overlapping rules, file drift and missing ownership evidence stop the relevant write or route. applyCodexChangePlan revalidates preconditions and rolls back written files after a later failure. Hook timeout/cancellation is distinct from the remote command's exit code.
 
-Verified against ocbox-cli @ 4a917c828da6
+Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
