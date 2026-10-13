@@ -1,0 +1,2401 @@
+{
+  "version": 1,
+  "repo": "ocbox-cli",
+  "visibility": "public",
+  "openapi": "openapi/openapi.yaml",
+  "buildings": [
+    {
+      "id": "cli",
+      "name": "ocbox CLI",
+      "kind": "app",
+      "zone": "public",
+      "path": "src",
+      "summary": "The ocbox command on a developer's machine. Signs in with OAuth, starts and destroys boxes, syncs local files and runs commands through the hosted API, and can route a coding agent's shell commands into the box.",
+      "areas": [
+        {
+          "id": "commands",
+          "name": "Commands and configuration",
+          "summary": "Command entry points, project selection, output and runtime composition.",
+          "path": "src/commands"
+        },
+        {
+          "id": "auth",
+          "name": "Authentication",
+          "summary": "Browser PKCE login, credential-bound HTTP and serialized token rotation.",
+          "path": "src/auth"
+        },
+        {
+          "id": "lifecycle",
+          "name": "Session lifecycle",
+          "summary": "Local Session state and reconciliation with the hosted Session.",
+          "path": "src/lifecycle"
+        },
+        {
+          "id": "execution",
+          "name": "Command execution",
+          "summary": "Helper protocol, cancellation, output and command exit codes.",
+          "path": "src/execution"
+        },
+        {
+          "id": "sync",
+          "name": "Source synchronization",
+          "summary": "Manifest scanning, planning, archives, hosted push and local recovery.",
+          "path": "src/sync"
+        },
+        {
+          "id": "agents",
+          "name": "Coding-agent adapters",
+          "summary": "Owned settings, version gates, setup/remove plans and command hooks.",
+          "path": "src/agents"
+        },
+        {
+          "id": "state",
+          "name": "Local state and credentials",
+          "summary": "Non-secret project metadata and protected credential storage, each locked.",
+          "path": "src/state"
+        },
+        {
+          "id": "hosted-api",
+          "name": "Public API client",
+          "summary": "Generated OpenAPI calls, hosted provider, polling and metadata.",
+          "path": "src/providers/ocbox"
+        },
+        {
+          "id": "provider-contract",
+          "name": "Provider contract and fixtures",
+          "summary": "Capability interface plus contract/fake providers for local validation.",
+          "path": "src/providers"
+        },
+        {
+          "id": "domain",
+          "name": "Domain and validation",
+          "summary": "Local specification, Session state, Operation transitions and identifiers.",
+          "path": "src/domain"
+        }
+      ]
+    },
+    {
+      "id": "local-state",
+      "name": "Local state",
+      "kind": "storage",
+      "zone": "public",
+      "summary": "Historical map grouping retained to preserve human notes. Current state and credential code belongs to the ocbox CLI state area; it is not a separately deployed service.",
+      "status": "deprecated"
+    },
+    {
+      "id": "coding-agents",
+      "name": "Coding agents",
+      "kind": "outside",
+      "zone": "outside",
+      "summary": "Claude Code and Codex on the developer's machine. After ocbox agent setup, their Bash tool calls go through an ocbox hook and run in the box instead of locally."
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-authorize",
+      "from": "cli",
+      "to": "openapi:startCliAuthorization",
+      "kind": "request",
+      "label": "opens the browser on the authorize page with a PKCE challenge"
+    },
+    {
+      "id": "cli-token",
+      "from": "cli",
+      "to": "openapi:exchangeCliToken",
+      "kind": "request",
+      "label": "exchanges the code for tokens, later refreshes them"
+    },
+    {
+      "id": "cli-create-session",
+      "from": "cli",
+      "to": "openapi:createSession",
+      "kind": "request",
+      "label": "creates a hosted session"
+    },
+    {
+      "id": "cli-get-operation",
+      "from": "cli",
+      "to": "openapi:getOperation",
+      "kind": "request",
+      "label": "polls the create, destroy and upload operations"
+    },
+    {
+      "id": "cli-create-execution",
+      "from": "cli",
+      "to": "openapi:createExecution",
+      "kind": "request",
+      "label": "starts a command in the box"
+    },
+    {
+      "id": "cli-execution-events",
+      "from": "cli",
+      "to": "openapi:listExecutionEvents",
+      "kind": "request",
+      "label": "polls command output with a cursor"
+    },
+    {
+      "id": "cli-cancel-execution",
+      "from": "cli",
+      "to": "openapi:cancelExecution",
+      "kind": "request",
+      "label": "cancels a running command on Ctrl-C"
+    },
+    {
+      "id": "cli-source-manifest",
+      "from": "cli",
+      "to": "openapi:createSourceManifest",
+      "kind": "request",
+      "label": "announces a source upload"
+    },
+    {
+      "id": "cli-source-chunks",
+      "from": "cli",
+      "to": "openapi:uploadSourceChunk",
+      "kind": "request",
+      "label": "uploads source chunks"
+    },
+    {
+      "id": "cli-verify-checksum",
+      "from": "cli",
+      "to": "openapi:verifySourceChecksum",
+      "kind": "request",
+      "label": "verifies the upload and starts applying it"
+    },
+    {
+      "id": "cli-destroy-session",
+      "from": "cli",
+      "to": "openapi:destroySession",
+      "kind": "request",
+      "label": "destroys the hosted session"
+    },
+    {
+      "id": "cli-state",
+      "from": "cli",
+      "to": "local-state",
+      "kind": "database",
+      "label": "historical grouping; state now lives inside the CLI state area",
+      "status": "deprecated"
+    },
+    {
+      "id": "agent-hook",
+      "from": "coding-agents",
+      "to": "cli",
+      "kind": "event",
+      "label": "runs the PreToolUse hook for each Bash call"
+    },
+    {
+      "id": "cli-revoke-token",
+      "from": "cli",
+      "to": "openapi:revokeCliToken",
+      "kind": "request",
+      "label": "revokes CLI token family"
+    },
+    {
+      "id": "cli-get-session",
+      "from": "cli",
+      "to": "openapi:getSession",
+      "kind": "request",
+      "label": "observes hosted Session state"
+    },
+    {
+      "id": "cli-start-session",
+      "from": "cli",
+      "to": "openapi:startSession",
+      "kind": "request",
+      "label": "starts a stopped hosted Session"
+    },
+    {
+      "id": "cli-pause-session",
+      "from": "cli",
+      "to": "openapi:pauseSession",
+      "kind": "request",
+      "label": "pauses a hosted Session"
+    },
+    {
+      "id": "cli-stop-session",
+      "from": "cli",
+      "to": "openapi:stopSession",
+      "kind": "request",
+      "label": "stops a hosted Session"
+    },
+    {
+      "id": "cli-list-manifests",
+      "from": "cli",
+      "to": "openapi:listSourceManifests",
+      "kind": "request",
+      "label": "checks verified source receipts"
+    },
+    {
+      "id": "cli-execution-result",
+      "from": "cli",
+      "to": "openapi:getExecutionResult",
+      "kind": "request",
+      "label": "reads a terminal command result"
+    },
+    {
+      "id": "api-list-projects",
+      "from": "cli",
+      "to": "openapi:listProjects",
+      "kind": "request",
+      "label": "calls public listProjects"
+    },
+    {
+      "id": "api-create-project",
+      "from": "cli",
+      "to": "openapi:createProject",
+      "kind": "request",
+      "label": "calls public createProject"
+    },
+    {
+      "id": "api-get-project",
+      "from": "cli",
+      "to": "openapi:getProject",
+      "kind": "request",
+      "label": "calls public getProject"
+    },
+    {
+      "id": "api-update-project",
+      "from": "cli",
+      "to": "openapi:updateProject",
+      "kind": "request",
+      "label": "calls public updateProject"
+    },
+    {
+      "id": "api-list-environments",
+      "from": "cli",
+      "to": "openapi:listEnvironments",
+      "kind": "request",
+      "label": "calls public listEnvironments"
+    },
+    {
+      "id": "api-create-environment",
+      "from": "cli",
+      "to": "openapi:createEnvironment",
+      "kind": "request",
+      "label": "calls public createEnvironment"
+    },
+    {
+      "id": "api-get-environment",
+      "from": "cli",
+      "to": "openapi:getEnvironment",
+      "kind": "request",
+      "label": "calls public getEnvironment"
+    },
+    {
+      "id": "api-update-environment",
+      "from": "cli",
+      "to": "openapi:updateEnvironment",
+      "kind": "request",
+      "label": "calls public updateEnvironment"
+    },
+    {
+      "id": "api-get-execution",
+      "from": "cli",
+      "to": "openapi:getExecution",
+      "kind": "request",
+      "label": "calls public getExecution"
+    },
+    {
+      "id": "api-cancel-operation",
+      "from": "cli",
+      "to": "openapi:cancelOperation",
+      "kind": "request",
+      "label": "calls public cancelOperation"
+    },
+    {
+      "id": "api-list-sessions",
+      "from": "cli",
+      "to": "openapi:listSessions",
+      "kind": "request",
+      "label": "calls public listSessions"
+    },
+    {
+      "id": "api-create-preview",
+      "from": "cli",
+      "to": "openapi:createPreview",
+      "kind": "request",
+      "label": "calls public createPreview"
+    },
+    {
+      "id": "api-delete-preview",
+      "from": "cli",
+      "to": "openapi:deletePreview",
+      "kind": "request",
+      "label": "calls public deletePreview"
+    }
+  ],
+  "code": [
+    {
+      "id": "start-command",
+      "building": "cli",
+      "name": "ocbox start",
+      "kind": "route",
+      "path": "src/commands/start.ts",
+      "symbol": "Start",
+      "summary": "Creates, resumes or reconciles the selected session for this project and waits until the hosted sandbox is ready.",
+      "calls": ["lifecycle-service"],
+      "lines": "6-39",
+      "area": "commands"
+    },
+    {
+      "id": "exec-command",
+      "building": "cli",
+      "name": "ocbox exec",
+      "kind": "route",
+      "path": "src/commands/exec.ts",
+      "symbol": "Exec",
+      "summary": "Runs a program in the selected session. Tokens after -- are sent as an argv array, never through a shell; --shell is the explicit opt-in. Exits with the remote exit code.",
+      "calls": ["exec-runner"],
+      "lines": "46-72",
+      "area": "commands"
+    },
+    {
+      "id": "sync-push-command",
+      "building": "cli",
+      "name": "ocbox sync push",
+      "kind": "route",
+      "path": "src/commands/sync/push.ts",
+      "symbol": "SyncPush",
+      "summary": "Applies local-only changes to the session workspace. Deletions need --delete and confirmation.",
+      "calls": ["sync-apply"],
+      "lines": "12-46",
+      "area": "commands"
+    },
+    {
+      "id": "destroy-command",
+      "building": "cli",
+      "name": "ocbox destroy",
+      "kind": "route",
+      "path": "src/commands/destroy.ts",
+      "symbol": "Destroy",
+      "summary": "Destroys a session after explicit confirmation and waits for the hosted operation to finish.",
+      "calls": ["lifecycle-service"],
+      "lines": "24-64",
+      "area": "commands"
+    },
+    {
+      "id": "login-command",
+      "building": "cli",
+      "name": "ocbox auth login",
+      "kind": "route",
+      "path": "src/commands/auth/login.ts",
+      "symbol": "AuthLogin",
+      "summary": "Signs the CLI in to the hosted API through the browser.",
+      "calls": ["auth-login"],
+      "lines": "6-59",
+      "area": "commands"
+    },
+    {
+      "id": "auth-login",
+      "building": "cli",
+      "name": "AuthSessionService.login",
+      "kind": "function",
+      "path": "src/auth/service.ts",
+      "symbol": "AuthSessionService.login",
+      "lines": "127-179",
+      "summary": "Binds a loopback listener, opens the authorize URL with a PKCE challenge, waits for the callback, exchanges the code and commits the token pair under the auth gate. Always closes the listener.",
+      "calls": ["loopback-listener", "pkce", "credential-store"],
+      "area": "auth"
+    },
+    {
+      "id": "loopback-listener",
+      "building": "cli",
+      "name": "LoopbackCallbackListener",
+      "kind": "class",
+      "path": "src/auth/loopback.ts",
+      "symbol": "LoopbackCallbackListener.#handle",
+      "summary": "One-shot HTTP listener on 127.0.0.1 at /callback that receives the authorization code and checks state.",
+      "lines": "154-238",
+      "area": "auth"
+    },
+    {
+      "id": "pkce",
+      "building": "cli",
+      "name": "codeChallengeS256",
+      "kind": "function",
+      "path": "src/auth/pkce.ts",
+      "symbol": "codeChallengeS256",
+      "summary": "PKCE S256 challenge from a random verifier, so a stolen code is useless without the verifier kept in memory.",
+      "lines": "27-30",
+      "area": "auth"
+    },
+    {
+      "id": "token-manager",
+      "building": "cli",
+      "name": "HostedTokenManager",
+      "kind": "class",
+      "path": "src/auth/token-manager.ts",
+      "symbol": "HostedTokenManager.#performRefresh",
+      "summary": "Hands out a valid access token, refreshing when it is about to expire. Rotation happens at most once per generation across processes, so parallel commands don't burn the refresh token.",
+      "calls": ["credential-store"],
+      "lines": "315-371",
+      "area": "auth"
+    },
+    {
+      "id": "credential-store",
+      "building": "cli",
+      "name": "HostedOAuthCredentialStore",
+      "kind": "class",
+      "path": "src/credentials/store.ts",
+      "symbol": "HostedOAuthCredentialStore",
+      "summary": "Credential selection port: available OS adapter or protected-file fallback, selected before use. The default runtime wires the protected-file path; project metadata holds only a reference.",
+      "lines": "41-68",
+      "area": "state"
+    },
+    {
+      "id": "lifecycle-store",
+      "building": "cli",
+      "name": "LifecycleStore",
+      "kind": "class",
+      "path": "src/lifecycle/store.ts",
+      "symbol": "LifecycleStore",
+      "summary": "Atomic JSON store for the selected session and the mapping from local sandbox ids to hosted session ids.",
+      "lines": "11-33",
+      "area": "lifecycle"
+    },
+    {
+      "id": "lifecycle-service",
+      "building": "cli",
+      "name": "LifecycleService",
+      "kind": "class",
+      "path": "src/lifecycle/service.ts",
+      "symbol": "LifecycleService.start",
+      "summary": "Session lifecycle on the client: start, stop, destroy and selection, against the configured provider (hosted or fake), with the local store as its memory.",
+      "calls": ["provider-create", "lifecycle-store"],
+      "lines": "84-111",
+      "area": "lifecycle"
+    },
+    {
+      "id": "provider-create",
+      "building": "cli",
+      "name": "OcboxSandboxProvider.create",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "OcboxSandboxProvider.create",
+      "lines": "473-474",
+      "summary": "Calls createSession for the bound project, polls the returned operation until the sandbox is ready, and saves the hosted session id locally.",
+      "calls": ["api-client"],
+      "area": "hosted-api"
+    },
+    {
+      "id": "provider-execute",
+      "building": "cli",
+      "name": "OcboxSandboxProvider.#execute",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "OcboxSandboxProvider.#execute",
+      "lines": "1072-1199",
+      "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
+      "calls": ["api-client"],
+      "area": "hosted-api"
+    },
+    {
+      "id": "exec-runner",
+      "building": "cli",
+      "name": "runExecutionCommand",
+      "kind": "function",
+      "path": "src/execution/command-runner.ts",
+      "symbol": "runExecutionCommand",
+      "summary": "Parses exec arguments, starts the remote command, streams polled output to stdout and stderr, cancels on interrupt and maps the result to an exit code.",
+      "calls": ["provider-execute"],
+      "lines": "229-238",
+      "area": "execution"
+    },
+    {
+      "id": "sync-apply",
+      "building": "cli",
+      "name": "runSyncApply",
+      "kind": "function",
+      "path": "src/sync/service.ts",
+      "symbol": "runSyncApply",
+      "summary": "Plans the sync against the last verified baseline, checks deletions, uploads the archive and records a new baseline only after the hosted apply succeeds.",
+      "calls": ["scan-manifest", "sync-plan", "sync-archive", "upload-source"],
+      "lines": "775-877",
+      "area": "sync"
+    },
+    {
+      "id": "scan-manifest",
+      "building": "cli",
+      "name": "scanSourceManifest",
+      "kind": "function",
+      "path": "src/sync/manifest.ts",
+      "symbol": "scanSourceManifest",
+      "summary": "Walks the project folder with ignore rules and path policy, recording each file's size, mode and SHA-256. Blocks symlinks and paths that escape the root.",
+      "lines": "309-470",
+      "area": "sync"
+    },
+    {
+      "id": "sync-plan",
+      "building": "cli",
+      "name": "planSync",
+      "kind": "function",
+      "path": "src/sync/planner.ts",
+      "symbol": "planSync",
+      "summary": "Compares local files with the baseline to decide adds, changes and deletes, so only real changes travel.",
+      "lines": "251-383",
+      "area": "sync"
+    },
+    {
+      "id": "sync-archive",
+      "building": "cli",
+      "name": "encodeSyncArchive",
+      "kind": "function",
+      "path": "src/sync/archive.ts",
+      "symbol": "encodeSyncArchive",
+      "summary": "Streams the files into the OCBOXA1 archive format that the hosted API verifies and unpacks.",
+      "lines": "144-196",
+      "area": "sync"
+    },
+    {
+      "id": "upload-source",
+      "building": "cli",
+      "name": "uploadPreparedSource",
+      "kind": "function",
+      "path": "src/providers/ocbox/source.ts",
+      "symbol": "uploadPreparedSource",
+      "summary": "Reuses a matching verified manifest if one exists, otherwise creates a manifest, uploads each chunk, verifies the checksum and polls the apply operation.",
+      "calls": ["api-client"],
+      "lines": "131-348",
+      "area": "hosted-api"
+    },
+    {
+      "id": "api-client",
+      "building": "cli",
+      "name": "createHostedApiClient",
+      "kind": "function",
+      "path": "src/auth/hosted-client.ts",
+      "symbol": "createHostedApiClient",
+      "summary": "Generated OpenAPI client with an authenticated transport: adds the bearer token and, for replayable requests only, refreshes once on 401 and retries. Errors stay redacted.",
+      "calls": ["token-manager"],
+      "lines": "303-324",
+      "area": "auth"
+    },
+    {
+      "id": "default-api-url",
+      "building": "cli",
+      "name": "DEFAULT_API_URL",
+      "kind": "config",
+      "path": "src/providers/ocbox/defaults.ts",
+      "symbol": "DEFAULT_API_URL",
+      "summary": "The hosted API the CLI talks to by default: staging until launch.",
+      "lines": "2-2",
+      "area": "hosted-api"
+    },
+    {
+      "id": "claude-hook",
+      "building": "cli",
+      "name": "runClaudeRoutingHook",
+      "kind": "function",
+      "path": "src/agents/claude-code/hook.ts",
+      "symbol": "runClaudeRoutingHook",
+      "summary": "Reads the agent's PreToolUse JSON. For a covered Bash call it runs the command with ocbox exec in the box, then always answers deny with the remote result as the reason, so the local copy never runs.",
+      "calls": ["exec-runner"],
+      "lines": "115-151",
+      "area": "agents"
+    },
+    {
+      "id": "agent-setup",
+      "building": "cli",
+      "name": "planSetup",
+      "kind": "function",
+      "path": "src/agents/claude-code/planner.ts",
+      "symbol": "planSetup",
+      "summary": "ocbox agent setup claude-code: writes an owned hook entry into the agent's settings, idempotently, and can be undone with ocbox agent remove.",
+      "lines": "361-502",
+      "area": "agents"
+    },
+    {
+      "id": "auth-status",
+      "building": "cli",
+      "area": "auth",
+      "name": "AuthSessionService.status",
+      "kind": "function",
+      "path": "src/auth/service.ts",
+      "symbol": "AuthSessionService.status",
+      "lines": "236-297",
+      "summary": "Checks credential/metadata identity under the shared state lock; mismatches clear stale state or surface INVALID_STATE."
+    },
+    {
+      "id": "auth-logout",
+      "building": "cli",
+      "area": "auth",
+      "name": "AuthSessionService.logout",
+      "kind": "function",
+      "path": "src/auth/service.ts",
+      "symbol": "AuthSessionService.logout",
+      "lines": "299-366",
+      "summary": "Attempts token revocation, then clears local credentials and metadata even when the network fails; local cleanup failures are reported."
+    },
+    {
+      "id": "auth-http",
+      "building": "cli",
+      "area": "auth",
+      "name": "AuthenticatedHttpClient.request",
+      "kind": "function",
+      "path": "src/auth/authenticated-client.ts",
+      "symbol": "AuthenticatedHttpClient.request",
+      "lines": "184-221",
+      "summary": "Binds bearer use to API origin and deployment subpath; permits one 401 refresh/retry only for replay-safe requests."
+    },
+    {
+      "id": "auth-gate",
+      "building": "cli",
+      "area": "auth",
+      "name": "createSessionGate",
+      "kind": "function",
+      "path": "src/auth/session-gate.ts",
+      "symbol": "createSessionGate",
+      "lines": "30-62",
+      "summary": "Serializes login commits, logout, credential reads and refresh across CLI processes using auth.state.lock."
+    },
+    {
+      "id": "hosted-operations",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "waitForHostedOperation",
+      "kind": "function",
+      "path": "src/providers/ocbox/operations.ts",
+      "symbol": "waitForHostedOperation",
+      "lines": "201-391",
+      "summary": "Polls an operation with validated checkpoints, Retry-After and a default 5-minute deadline; source apply uses a 1-second healthy interval."
+    },
+    {
+      "id": "hosted-events",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "collectExecutionEvents",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents",
+      "lines": "104-434",
+      "summary": "One 331-line event-collection state machine: orders/deduplicates output, checkpoints cursors and falls back to polling after bounded stream failures. Its stage closures share cursor/deadline state."
+    },
+    {
+      "id": "hosted-mutate",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "OcboxSandboxProvider.#mutate",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "OcboxSandboxProvider.#mutate",
+      "lines": "798-901",
+      "summary": "Sends start/pause/stop/destroy against the public API and reconciles the resulting hosted Session under a lifecycle deadline."
+    },
+    {
+      "id": "hosted-cancel",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "OcboxSandboxProvider.cancelSandboxExecution",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "OcboxSandboxProvider.cancelSandboxExecution",
+      "lines": "1009-1070",
+      "summary": "Finds the active hosted Execution, requests cancellation and waits for a terminal result instead of assuming cancellation succeeded."
+    },
+    {
+      "id": "lifecycle-status",
+      "building": "cli",
+      "area": "lifecycle",
+      "name": "LifecycleService.status",
+      "kind": "function",
+      "path": "src/lifecycle/service.ts",
+      "symbol": "LifecycleService.status",
+      "lines": "138-155",
+      "summary": "Refreshes the selected local Session against provider observations and updates its safe public view."
+    },
+    {
+      "id": "lifecycle-list",
+      "building": "cli",
+      "area": "lifecycle",
+      "name": "LifecycleService.list",
+      "kind": "function",
+      "path": "src/lifecycle/service.ts",
+      "symbol": "LifecycleService.list",
+      "lines": "266-273",
+      "summary": "Returns local Session views; state reads retain the project identity and selected Session."
+    },
+    {
+      "id": "lifecycle-use",
+      "building": "cli",
+      "area": "lifecycle",
+      "name": "LifecycleService.use",
+      "kind": "function",
+      "path": "src/lifecycle/service.ts",
+      "symbol": "LifecycleService.use",
+      "lines": "129-136",
+      "summary": "Selects an existing Session after validating it belongs to the current local project."
+    },
+    {
+      "id": "sync-hosted",
+      "building": "cli",
+      "area": "sync",
+      "name": "runHostedPush",
+      "kind": "function",
+      "path": "src/sync/service.ts",
+      "symbol": "runHostedPush",
+      "lines": "671-769",
+      "summary": "Hosted push refuses remote deletion; scans at most 100 files, 64 KiB each and 512 KiB total, then sends an archive capped at 1 MiB."
+    },
+    {
+      "id": "sync-diff",
+      "building": "cli",
+      "area": "sync",
+      "name": "runSyncDiff",
+      "kind": "function",
+      "path": "src/sync/service.ts",
+      "symbol": "runSyncDiff",
+      "lines": "587-596",
+      "summary": "Builds a read-only comparison against manifests and the verified baseline; hosted capability checks can refuse unsupported operations."
+    },
+    {
+      "id": "sync-recover",
+      "building": "cli",
+      "area": "sync",
+      "name": "runSyncRecover",
+      "kind": "function",
+      "path": "src/sync/service.ts",
+      "symbol": "runSyncRecover",
+      "lines": "883-911",
+      "summary": "Recovers an interrupted local transfer journal under the sync lock; hosted recovery is refused when the capability is absent."
+    },
+    {
+      "id": "exec-helper",
+      "building": "cli",
+      "area": "execution",
+      "name": "runExecutionHelper",
+      "kind": "function",
+      "path": "src/execution/helper-runtime.ts",
+      "symbol": "runExecutionHelper",
+      "lines": "84-242",
+      "summary": "Exec helper validates a protocol request, emits bounded events and turns timeout or interruption into cancellation before its terminal result."
+    },
+    {
+      "id": "agent-codex-plan",
+      "building": "cli",
+      "area": "agents",
+      "name": "planCodexSetup",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "planCodexSetup",
+      "lines": "452-768",
+      "summary": "One 317-line pure setup planner: checks trust/ownership, computes expected file hashes and emits an atomic change plan. Its branches share the prospective documents; apply is a separate mapped method."
+    },
+    {
+      "id": "agent-codex-apply",
+      "building": "cli",
+      "area": "agents",
+      "name": "applyCodexChangePlan",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "applyCodexChangePlan",
+      "lines": "1227-1272",
+      "summary": "Revalidates configuration fingerprints before applying the plan and rolls back written files when a later write fails."
+    },
+    {
+      "id": "module-agents-claude-code-merge",
+      "building": "cli",
+      "area": "agents",
+      "name": "planMerge",
+      "kind": "function",
+      "path": "src/agents/claude-code/merge.ts",
+      "symbol": "planMerge",
+      "lines": "120-253",
+      "summary": "Plans an ownership-aware merge of routing hooks and permissions; existing unrelated settings survive, while collisions and ambiguous owned entries are reported."
+    },
+    {
+      "id": "module-agents-claude-code-settings-model",
+      "building": "cli",
+      "area": "agents",
+      "name": "parseSettingsJson",
+      "kind": "function",
+      "path": "src/agents/claude-code/settings-model.ts",
+      "symbol": "parseSettingsJson",
+      "lines": "77-194",
+      "summary": "Parses settings JSON into validated hook/permission records and preserves parse findings instead of trusting malformed agent configuration."
+    },
+    {
+      "id": "module-agents-codex-ownership",
+      "building": "cli",
+      "area": "agents",
+      "name": "parseOwnedCodexCommand",
+      "kind": "function",
+      "path": "src/agents/codex/ownership.ts",
+      "symbol": "parseOwnedCodexCommand",
+      "lines": "102-130",
+      "summary": "Recognizes the exact adapter-owned hook command and arguments; unrelated commands do not become removable merely because they mention the CLI."
+    },
+    {
+      "id": "module-agents-codex-paths",
+      "building": "cli",
+      "area": "agents",
+      "name": "resolveCodexPaths",
+      "kind": "function",
+      "path": "src/agents/codex/paths.ts",
+      "symbol": "resolveCodexPaths",
+      "lines": "76-142",
+      "summary": "Resolves user/project configuration layers and limits owned writes to their permitted roots; project trust is checked separately."
+    },
+    {
+      "id": "module-agents-codex-toml-edit",
+      "building": "cli",
+      "area": "agents",
+      "name": "editTomlHooks",
+      "kind": "function",
+      "path": "src/agents/codex/toml-edit.ts",
+      "symbol": "editTomlHooks",
+      "lines": "415-423",
+      "summary": "editTomlHooks implements agents behavior in src/agents/codex/toml-edit.ts; see the linked area guide for state, capability and failure rules."
+    },
+    {
+      "id": "module-agents-codex-version",
+      "building": "cli",
+      "area": "agents",
+      "name": "checkCodexVersion",
+      "kind": "function",
+      "path": "src/agents/codex/version.ts",
+      "symbol": "checkCodexVersion",
+      "lines": "136-203",
+      "summary": "Parses and gates the detected version against pinned releases; ambiguous suffixes or unsupported versions produce capability findings."
+    },
+    {
+      "id": "module-agents-executable-resolution",
+      "building": "cli",
+      "area": "agents",
+      "name": "resolveExecutableOnPath",
+      "kind": "function",
+      "path": "src/agents/executable-resolution.ts",
+      "symbol": "resolveExecutableOnPath",
+      "lines": "130-157",
+      "summary": "Resolves executable candidates from PATH and platform extensions without treating an arbitrary existing file as a runnable agent binary."
+    },
+    {
+      "id": "module-api-client-errors",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "mapApiFailureToOcboxError",
+      "kind": "function",
+      "path": "src/api/client/errors.ts",
+      "symbol": "mapApiFailureToOcboxError",
+      "lines": "69-201",
+      "summary": "Maps status, public error envelope and safe request/retry metadata to the CLI error catalogue; unexpected raw provider response bytes are not forwarded."
+    },
+    {
+      "id": "module-auth-config",
+      "building": "cli",
+      "area": "auth",
+      "name": "normalizeIssuer",
+      "kind": "function",
+      "path": "src/auth/config.ts",
+      "symbol": "normalizeIssuer",
+      "lines": "62-89",
+      "summary": "Normalizes the API issuer base and refuses credentialed URLs, fragments or off-loopback cleartext transport before protocol endpoints are derived."
+    },
+    {
+      "id": "module-auth-oauth-client",
+      "building": "cli",
+      "area": "auth",
+      "name": "CliOAuthClient.exchangeAuthorizationCode",
+      "kind": "function",
+      "path": "src/auth/oauth-client.ts",
+      "symbol": "CliOAuthClient.exchangeAuthorizationCode",
+      "lines": "254-265",
+      "summary": "Posts the authorization code with its original verifier and redirect URI, bounds the response and validates the token pair before storage."
+    },
+    {
+      "id": "module-auth-runtime",
+      "building": "cli",
+      "area": "auth",
+      "name": "createHostedTokenManager",
+      "kind": "function",
+      "path": "src/auth/runtime.ts",
+      "symbol": "createHostedTokenManager",
+      "lines": "242-276",
+      "summary": "Public token/authenticated-client ports for the hosted provider (T14). Tokens are read and rotated only through the T3 credential store, behind the cross-process refresh gate, and bound to the configured issuer, client, and credential identity through the machine-level auth metadata."
+    },
+    {
+      "id": "module-cli-runtime",
+      "building": "cli",
+      "area": "commands",
+      "name": "createLifecycleService",
+      "kind": "function",
+      "path": "src/cli/runtime.ts",
+      "symbol": "createLifecycleService",
+      "lines": "167-193",
+      "summary": "Builds the selected project LifecycleService, local state store and provider registry from validated configuration, flags and API credentials."
+    },
+    {
+      "id": "module-commands-agent-hook",
+      "building": "cli",
+      "area": "commands",
+      "name": "readStandardInput",
+      "kind": "function",
+      "path": "src/commands/agent/hook.ts",
+      "symbol": "readStandardInput",
+      "lines": "21-27",
+      "summary": "readStandardInput implements commands behavior in src/commands/agent/hook.ts; see the linked area guide for state, capability and failure rules."
+    },
+    {
+      "id": "module-commands-agent-remove",
+      "building": "cli",
+      "area": "commands",
+      "name": "removeCodexLayer",
+      "kind": "function",
+      "path": "src/commands/agent/remove.ts",
+      "symbol": "removeCodexLayer",
+      "lines": "45-129",
+      "summary": "removeCodexLayer implements commands behavior in src/commands/agent/remove.ts; see the linked area guide for state, capability and failure rules."
+    },
+    {
+      "id": "module-commands-agent-setup",
+      "building": "cli",
+      "area": "commands",
+      "name": "parseCodexLayer",
+      "kind": "function",
+      "path": "src/commands/agent/setup.ts",
+      "symbol": "parseCodexLayer",
+      "lines": "41-45",
+      "summary": "parseCodexLayer implements commands behavior in src/commands/agent/setup.ts; see the linked area guide for state, capability and failure rules."
+    },
+    {
+      "id": "module-credentials-windows-acl",
+      "building": "cli",
+      "area": "state",
+      "name": "PowerShellWindowsAclProtector.protectAndVerify",
+      "kind": "function",
+      "path": "src/credentials/windows-acl.ts",
+      "symbol": "PowerShellWindowsAclProtector.protectAndVerify",
+      "lines": "96-103",
+      "summary": "Asks the Windows protection helper to establish and verify user-only credential access; failure is propagated rather than weakening protection."
+    },
+    {
+      "id": "module-domain-entities",
+      "building": "cli",
+      "area": "domain",
+      "name": "PROVIDER_NAME_PATTERN",
+      "kind": "config",
+      "path": "src/domain/entities.ts",
+      "symbol": "PROVIDER_NAME_PATTERN",
+      "lines": "18-35",
+      "summary": "Defines the accepted provider-name syntax used to validate local domain identifiers; it does not resolve or call a remote provider."
+    },
+    {
+      "id": "module-domain-lifecycle",
+      "building": "cli",
+      "area": "domain",
+      "name": "canTransitionSessionState",
+      "kind": "function",
+      "path": "src/domain/lifecycle.ts",
+      "symbol": "canTransitionSessionState",
+      "lines": "39-41",
+      "summary": "Checks whether a proposed local Session state transition is legal before orchestration stores the new state."
+    },
+    {
+      "id": "module-domain-operation",
+      "building": "cli",
+      "area": "domain",
+      "name": "OPERATION_ACTIONS",
+      "kind": "config",
+      "path": "src/domain/operation.ts",
+      "symbol": "OPERATION_ACTIONS",
+      "lines": "12-28",
+      "summary": "Defines the allowed local Operation actions for lifecycle, execution and source work; validation rejects unknown action values."
+    },
+    {
+      "id": "module-domain-spec",
+      "building": "cli",
+      "area": "domain",
+      "name": "SandboxSpecSchema",
+      "kind": "config",
+      "path": "src/domain/spec.ts",
+      "symbol": "SandboxSpecSchema",
+      "lines": "200-213",
+      "summary": "Defines the validated sandbox specification and constraints used by configuration and provider contracts; validation does not prove hosted admission."
+    },
+    {
+      "id": "module-execution-helper-protocol",
+      "building": "cli",
+      "area": "execution",
+      "name": "encodeHelperEventFrame",
+      "kind": "function",
+      "path": "src/execution/helper-protocol.ts",
+      "symbol": "encodeHelperEventFrame",
+      "lines": "86-95",
+      "summary": "Encodes one bounded helper event frame using the request framing format."
+    },
+    {
+      "id": "module-execution-service",
+      "building": "cli",
+      "area": "execution",
+      "name": "ExecutionService.start",
+      "kind": "function",
+      "path": "src/execution/service.ts",
+      "symbol": "ExecutionService.start",
+      "lines": "117-213",
+      "summary": "Validates the selected execution target, starts the helper protocol and separates command completion from infrastructure or cancellation outcomes."
+    },
+    {
+      "id": "module-metadata-client",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "createMetadataClient",
+      "kind": "function",
+      "path": "src/metadata/client.ts",
+      "symbol": "createMetadataClient",
+      "lines": "83-94",
+      "summary": "Issuer-bound metadata access does not depend on a selected hosted project."
+    },
+    {
+      "id": "module-providers-contract-capabilities",
+      "building": "cli",
+      "area": "provider-contract",
+      "name": "effectiveMaxSandboxesPerSession",
+      "kind": "function",
+      "path": "src/providers/contract/capabilities.ts",
+      "symbol": "effectiveMaxSandboxesPerSession",
+      "lines": "100-104",
+      "summary": "Derives the effective sandbox count from provider capability information instead of assuming a generic specification is supported."
+    },
+    {
+      "id": "module-providers-contract-provider",
+      "building": "cli",
+      "area": "provider-contract",
+      "name": "CreateSandboxRequestSchema",
+      "kind": "config",
+      "path": "src/providers/contract/provider.ts",
+      "symbol": "CreateSandboxRequestSchema",
+      "lines": "24-39",
+      "summary": "Validates provider create input and request context at the local contract boundary; actual implementations enforce their advertised capabilities."
+    },
+    {
+      "id": "module-providers-fake-provider",
+      "building": "cli",
+      "area": "provider-contract",
+      "name": "FakeSandboxProvider.create",
+      "kind": "function",
+      "path": "src/providers/fake/provider.ts",
+      "symbol": "FakeSandboxProvider.create",
+      "lines": "346-347",
+      "summary": "Creates a deterministic local fake-provider sandbox record for validation. It is not evidence of a live hosted sandbox deployment."
+    },
+    {
+      "id": "module-providers-ocbox-wire",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "isTerminalOperationState",
+      "kind": "function",
+      "path": "src/providers/ocbox/wire.ts",
+      "symbol": "isTerminalOperationState",
+      "lines": "203-205",
+      "summary": "Identifies terminal hosted Operation states for polling and reconciliation; pending/running states require another observation."
+    },
+    {
+      "id": "module-state-exclusive-file-lock",
+      "building": "cli",
+      "area": "state",
+      "name": "ExclusiveFileLock.#acquire",
+      "kind": "function",
+      "path": "src/state/exclusive-file-lock.ts",
+      "symbol": "ExclusiveFileLock.#acquire",
+      "lines": "109-125",
+      "summary": "Claims an exclusive local lock with bounded contention and ownership-aware stale recovery; cancellation and timeout do not permit an unlocked update."
+    },
+    {
+      "id": "module-sync-local-transfer-adapter",
+      "building": "cli",
+      "area": "sync",
+      "name": "LocalTransferAdapter.recover",
+      "kind": "function",
+      "path": "src/sync/local-transfer-adapter.ts",
+      "symbol": "LocalTransferAdapter.recover",
+      "lines": "129-170",
+      "summary": "Recovers a local transfer using its durable journal: never promotes staged content or removes an ambiguous backup; restores the original target or proven absence."
+    },
+    {
+      "id": "command-agent-doctor",
+      "building": "cli",
+      "area": "commands",
+      "name": "AgentDoctor.run",
+      "kind": "function",
+      "path": "src/commands/agent/doctor.ts",
+      "symbol": "AgentDoctor.run",
+      "lines": "166-197",
+      "summary": "Diagnose a coding-agent routing adapter (version, precedence, drift, capabilities) Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-agent-hook",
+      "building": "cli",
+      "area": "commands",
+      "name": "AgentHook.run",
+      "kind": "function",
+      "path": "src/commands/agent/hook.ts",
+      "symbol": "AgentHook.run",
+      "lines": "264-306",
+      "summary": "Internal agent hook entrypoint (reads PreToolUse JSON from stdin) Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-agent-index",
+      "building": "cli",
+      "area": "commands",
+      "name": "AgentTopic.run",
+      "kind": "function",
+      "path": "src/commands/agent/index.ts",
+      "symbol": "AgentTopic.run",
+      "lines": "32-34",
+      "summary": "Manage coding-agent routing adapters Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-agent-remove",
+      "building": "cli",
+      "area": "commands",
+      "name": "AgentRemove.run",
+      "kind": "function",
+      "path": "src/commands/agent/remove.ts",
+      "symbol": "AgentRemove.run",
+      "lines": "217-248",
+      "summary": "Remove a coding-agent routing adapter (restores owned changes) Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-agent-setup",
+      "building": "cli",
+      "area": "commands",
+      "name": "AgentSetup.run",
+      "kind": "function",
+      "path": "src/commands/agent/setup.ts",
+      "symbol": "AgentSetup.run",
+      "lines": "233-264",
+      "summary": "Set up a coding-agent routing adapter (explicit, idempotent, fail-closed) Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-auth-index",
+      "building": "cli",
+      "area": "commands",
+      "name": "AuthTopic.run",
+      "kind": "function",
+      "path": "src/commands/auth/index.ts",
+      "symbol": "AuthTopic.run",
+      "lines": "22-24",
+      "summary": "Authenticate the CLI with the hosted service Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-auth-login",
+      "building": "cli",
+      "area": "commands",
+      "name": "AuthLogin.run",
+      "kind": "function",
+      "path": "src/commands/auth/login.ts",
+      "symbol": "AuthLogin.run",
+      "lines": "24-58",
+      "summary": "Authorize the public CLI client with OAuth 2.1 authorization-code and S256 PKCE Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-auth-logout",
+      "building": "cli",
+      "area": "commands",
+      "name": "AuthLogout.run",
+      "kind": "function",
+      "path": "src/commands/auth/logout.ts",
+      "symbol": "AuthLogout.run",
+      "lines": "10-14",
+      "summary": "Revoke the hosted credential when possible and always clear local credential material Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-auth-status",
+      "building": "cli",
+      "area": "commands",
+      "name": "AuthStatus.run",
+      "kind": "function",
+      "path": "src/commands/auth/status.ts",
+      "symbol": "AuthStatus.run",
+      "lines": "10-14",
+      "summary": "Report hosted login, expiry, scope, and audience facts without exposing secret values Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-cancel",
+      "building": "cli",
+      "area": "commands",
+      "name": "Cancel.run",
+      "kind": "function",
+      "path": "src/commands/cancel.ts",
+      "symbol": "Cancel.run",
+      "lines": "25-43",
+      "summary": "Cancel a remote execution and wait for its final state Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-destroy",
+      "building": "cli",
+      "area": "commands",
+      "name": "Destroy.run",
+      "kind": "function",
+      "path": "src/commands/destroy.ts",
+      "symbol": "Destroy.run",
+      "lines": "32-63",
+      "summary": "Destroy a Session after explicit confirmation Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-environment-create",
+      "building": "cli",
+      "area": "commands",
+      "name": "EnvironmentCreate.run",
+      "kind": "function",
+      "path": "src/commands/environment/create.ts",
+      "symbol": "EnvironmentCreate.run",
+      "lines": "19-26",
+      "summary": "Create hosted environment metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-environment-get",
+      "building": "cli",
+      "area": "commands",
+      "name": "EnvironmentGet.run",
+      "kind": "function",
+      "path": "src/commands/environment/get.ts",
+      "symbol": "EnvironmentGet.run",
+      "lines": "11-16",
+      "summary": "Get hosted environment metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-environment-list",
+      "building": "cli",
+      "area": "commands",
+      "name": "EnvironmentList.run",
+      "kind": "function",
+      "path": "src/commands/environment/list.ts",
+      "symbol": "EnvironmentList.run",
+      "lines": "17-24",
+      "summary": "List hosted environment metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-environment-update",
+      "building": "cli",
+      "area": "commands",
+      "name": "EnvironmentUpdate.run",
+      "kind": "function",
+      "path": "src/commands/environment/update.ts",
+      "symbol": "EnvironmentUpdate.run",
+      "lines": "23-31",
+      "summary": "Update hosted environment metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-exec",
+      "building": "cli",
+      "area": "commands",
+      "name": "Exec.run",
+      "kind": "function",
+      "path": "src/commands/exec.ts",
+      "symbol": "Exec.run",
+      "lines": "59-71",
+      "summary": "Execute a program in the selected Session Sandbox\\n\\nTokens after `--` are passed to the remote program verbatim as a structured argv array; they are never evaluated by any shell. Use `--shell COMMAND` for an explicit Bash command string. Validates flags and emits the shared human/JSON result or a t"
+    },
+    {
+      "id": "command-init",
+      "building": "cli",
+      "area": "commands",
+      "name": "Init.run",
+      "kind": "function",
+      "path": "src/commands/init.ts",
+      "symbol": "Init.run",
+      "lines": "15-23",
+      "summary": "Create or validate opencloudbox.toml safely Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-ls",
+      "building": "cli",
+      "area": "commands",
+      "name": "ListSessions.run",
+      "kind": "function",
+      "path": "src/commands/ls.ts",
+      "symbol": "ListSessions.run",
+      "lines": "9-17",
+      "summary": "List Sessions and their primary Sandbox bindings Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-pause",
+      "building": "cli",
+      "area": "commands",
+      "name": "Pause.run",
+      "kind": "function",
+      "path": "src/commands/pause.ts",
+      "symbol": "Pause.run",
+      "lines": "13-23",
+      "summary": "Pause a Session while preserving memory and filesystem Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-project-create",
+      "building": "cli",
+      "area": "commands",
+      "name": "ProjectCreate.run",
+      "kind": "function",
+      "path": "src/commands/project/create.ts",
+      "symbol": "ProjectCreate.run",
+      "lines": "12-18",
+      "summary": "Create hosted project metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-project-get",
+      "building": "cli",
+      "area": "commands",
+      "name": "ProjectGet.run",
+      "kind": "function",
+      "path": "src/commands/project/get.ts",
+      "symbol": "ProjectGet.run",
+      "lines": "11-16",
+      "summary": "Get hosted project metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-project-list",
+      "building": "cli",
+      "area": "commands",
+      "name": "ProjectList.run",
+      "kind": "function",
+      "path": "src/commands/project/list.ts",
+      "symbol": "ProjectList.run",
+      "lines": "11-17",
+      "summary": "List hosted project metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-project-update",
+      "building": "cli",
+      "area": "commands",
+      "name": "ProjectUpdate.run",
+      "kind": "function",
+      "path": "src/commands/project/update.ts",
+      "symbol": "ProjectUpdate.run",
+      "lines": "19-26",
+      "summary": "Update hosted project metadata Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-providers",
+      "building": "cli",
+      "area": "commands",
+      "name": "Providers.run",
+      "kind": "function",
+      "path": "src/commands/providers.ts",
+      "symbol": "Providers.run",
+      "lines": "10-35",
+      "summary": "Show provider availability, authentication, and capabilities Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-start",
+      "building": "cli",
+      "area": "commands",
+      "name": "Start.run",
+      "kind": "function",
+      "path": "src/commands/start.ts",
+      "symbol": "Start.run",
+      "lines": "13-38",
+      "summary": "Create, resume, start, or reconcile the selected Session Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-status",
+      "building": "cli",
+      "area": "commands",
+      "name": "Status.run",
+      "kind": "function",
+      "path": "src/commands/status.ts",
+      "symbol": "Status.run",
+      "lines": "13-18",
+      "summary": "Inspect a Session and its primary Sandbox binding Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-stop",
+      "building": "cli",
+      "area": "commands",
+      "name": "Stop.run",
+      "kind": "function",
+      "path": "src/commands/stop.ts",
+      "symbol": "Stop.run",
+      "lines": "13-23",
+      "summary": "Stop a Session while preserving its filesystem Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-sync-diff",
+      "building": "cli",
+      "area": "commands",
+      "name": "SyncDiff.run",
+      "kind": "function",
+      "path": "src/commands/sync/diff.ts",
+      "symbol": "SyncDiff.run",
+      "lines": "23-29",
+      "summary": "Compare the local workspace, the Session workspace, and the last verified baseline Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-sync-index",
+      "building": "cli",
+      "area": "commands",
+      "name": "SyncTopic.run",
+      "kind": "function",
+      "path": "src/commands/sync/index.ts",
+      "symbol": "SyncTopic.run",
+      "lines": "24-26",
+      "summary": "Inspect and transfer source for a Session Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-sync-pull",
+      "building": "cli",
+      "area": "commands",
+      "name": "SyncPull.run",
+      "kind": "function",
+      "path": "src/commands/sync/pull.ts",
+      "symbol": "SyncPull.run",
+      "lines": "32-44",
+      "summary": "Apply Session-workspace-only changes to the local workspace Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-sync-push",
+      "building": "cli",
+      "area": "commands",
+      "name": "SyncPush.run",
+      "kind": "function",
+      "path": "src/commands/sync/push.ts",
+      "symbol": "SyncPush.run",
+      "lines": "32-45",
+      "summary": "Apply local-only changes to the Session workspace Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-sync-recover",
+      "building": "cli",
+      "area": "commands",
+      "name": "SyncRecover.run",
+      "kind": "function",
+      "path": "src/commands/sync/recover.ts",
+      "symbol": "SyncRecover.run",
+      "lines": "20-26",
+      "summary": "Resolve a previous interrupted sync that requires recovery Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "command-use",
+      "building": "cli",
+      "area": "commands",
+      "name": "Use.run",
+      "kind": "function",
+      "path": "src/commands/use.ts",
+      "symbol": "Use.run",
+      "lines": "11-16",
+      "summary": "Select a Session for subsequent commands Validates flags and emits the shared human/JSON result or a typed error."
+    }
+  ],
+  "journeys": [
+    {
+      "id": "cli-login",
+      "name": "Sign in from the CLI",
+      "summary": "Sign in from the CLI: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Generate PKCE and state, bind 127.0.0.1 on a random port and open the browser authorization page; the listener accepts only one matching callback.",
+          "building": "cli",
+          "code": ["auth-login", "pkce", "loopback-listener"],
+          "connection": "cli-authorize",
+          "on_failure": [
+            {
+              "story": "Wrong or replayed state is refused; cancellation and timeout close the listener without storing tokens.",
+              "building": "cli",
+              "code": ["auth-login", "pkce", "loopback-listener"]
+            }
+          ]
+        },
+        {
+          "story": "Exchange the authorization code with its original verifier; validate the response before persisting credentials under the auth state lock.",
+          "building": "cli",
+          "code": ["auth-login", "api-client"],
+          "connection": "cli-token"
+        },
+        {
+          "story": "Store bearer material through the credential port and non-secret metadata separately; a failed metadata commit rolls back the prior generation.",
+          "building": "cli",
+          "code": ["auth-login", "credential-store"]
+        }
+      ]
+    },
+    {
+      "id": "cli-start-box",
+      "name": "Start a box from the CLI",
+      "summary": "Start a box from the CLI: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "The lifecycle checks selected local Session state. A resumable Session is reconciled; otherwise creation saves a local operation before the request.",
+          "building": "cli",
+          "code": "lifecycle-service"
+        },
+        {
+          "story": "The hosted provider sends `createSession` with an idempotency key and retains the returned running operation for bounded recovery.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-create-session"
+        },
+        {
+          "story": "Poll the operation with Retry-After and a default 5-minute deadline; terminal success is checked against the hosted Session before local state becomes active.",
+          "building": "cli",
+          "code": ["provider-create", "hosted-operations"],
+          "connection": "cli-get-operation",
+          "repeat": true,
+          "on_failure": [
+            {
+              "story": "A timeout preserves recoverable Session evidence and returns OPERATION_TIMEOUT; it does not pretend the server cancelled the create.",
+              "building": "cli",
+              "code": ["provider-create", "hosted-operations"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-sync-push",
+      "name": "Push local files to the box",
+      "summary": "Push local files to the box: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Hosted push scans the folder, excluding sensitive/unsafe paths; refuses remote deletion, files over 64 KiB, more than 100 files or more than 512 KiB total.",
+          "building": "cli",
+          "code": ["sync-hosted", "scan-manifest"]
+        },
+        {
+          "story": "Encode and hash an archive capped at 1 MiB; list verified receipts to avoid replaying an obsolete snapshot after an A→B→A change.",
+          "building": "cli",
+          "code": ["sync-archive", "upload-source"],
+          "connection": "cli-list-manifests"
+        },
+        {
+          "story": "Create a `source manifest` with content and lineage-derived idempotency keys; the hosted Session must still accept source work.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-source-manifest"
+        },
+        {
+          "story": "Upload checksum-verified chunks, retrying a retryable failure at most 3 times; a 409 is accepted only when the returned chunk checksum matches.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-source-chunks",
+          "repeat": true
+        },
+        {
+          "story": "Verify the complete source and poll a returned apply operation on a 1-second healthy interval within a default 5-minute deadline.",
+          "building": "cli",
+          "code": ["upload-source", "hosted-operations"],
+          "connection": "cli-verify-checksum",
+          "repeat": true,
+          "on_failure": [
+            {
+              "story": "Incomplete source or checksum mismatch returns a typed integrity failure. Success requires a matching manifest, checksum and chunk count.",
+              "building": "cli",
+              "code": ["upload-source", "hosted-operations"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-exec",
+      "name": "Run a command from the CLI",
+      "summary": "Run a command from the CLI: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the selected Session and provider capabilities; the execution service starts the helper with a validated request and bounded output protocol.",
+          "building": "cli",
+          "code": ["exec-runner", "exec-helper"]
+        },
+        {
+          "story": "The hosted provider submits `createExecution` under an idempotency key and retains the returned pending execution handle.",
+          "building": "cli",
+          "code": "provider-execute",
+          "connection": "cli-create-execution"
+        },
+        {
+          "story": "Collect output by cursor and increasing sequence, skipping duplicates; after bounded stream failures the collector polls until its deadline.",
+          "building": "cli",
+          "code": "hosted-events",
+          "connection": "cli-execution-events",
+          "repeat": true
+        },
+        {
+          "story": "Read the terminal result and emit the command exit code. Interrupt or timeout requests remote cancellation before reporting its local outcome.",
+          "building": "cli",
+          "code": ["provider-execute", "exec-helper"],
+          "connection": "cli-execution-result",
+          "on_failure": [
+            {
+              "story": "A transport timeout is not proof the remote command stopped. Cancellation must converge to a terminal result or surface a typed failure.",
+              "building": "cli",
+              "code": ["provider-execute", "exec-helper"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agent-routed-command",
+      "name": "A coding agent's command runs in the box",
+      "summary": "A coding agent's command runs in the box: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "A `PreToolUse` event reaches the owned adapter hook. Guard rules decide whether the command may run in the selected Session.",
+          "building": "cli",
+          "code": ["claude-hook", "agent-setup"],
+          "connection": "agent-hook"
+        },
+        {
+          "story": "The hook invokes ocbox exec with a 570000 ms remote deadline inside the configured 600-second hook timeout, leaving a 30-second decision margin.",
+          "building": "cli",
+          "code": ["claude-hook", "exec-helper"]
+        },
+        {
+          "story": "After the remote result the hook emits a blocking `deny` decision so the covered command is not repeated locally; guard refusal also emits a deny.",
+          "building": "cli",
+          "code": "claude-hook",
+          "on_failure": [
+            {
+              "story": "Setup checks pinned versions and capability gates; unsupported configurations fail before editing an agent settings file.",
+              "building": "cli",
+              "code": "claude-hook"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-destroy",
+      "name": "Destroy a box from the CLI",
+      "summary": "Destroy a box from the CLI: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Load the selected Session under its local project identity and record a pending destroy operation before dispatch.",
+          "building": "cli",
+          "code": "lifecycle-service"
+        },
+        {
+          "story": "Send destroySession with its idempotency key and poll the operation under the lifecycle deadline.",
+          "building": "cli",
+          "code": ["hosted-mutate", "hosted-operations"],
+          "connection": "cli-destroy-session",
+          "repeat": true
+        },
+        {
+          "story": "Confirm the hosted Session has been deleted before removing its local mapping; a lost reply remains recoverable instead of becoming false success or a hidden error.",
+          "building": "cli",
+          "code": "hosted-mutate",
+          "connection": "cli-get-session",
+          "repeat": true,
+          "on_failure": [
+            {
+              "story": "A server destroy still pending returns a typed failure; retaining the mapping allows a later retry and reconciliation.",
+              "building": "cli",
+              "code": "hosted-mutate"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-token-refresh",
+      "name": "Refresh CLI tokens",
+      "summary": "Refresh CLI tokens: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "A credential approaching expiry is checked against issuer, client, audience and scope metadata while the cross-process auth state lock is held.",
+          "building": "cli",
+          "code": "token-manager"
+        },
+        {
+          "story": "Rotate through `exchangeCliToken`. Another process adopts a newer generation rather than reusing the superseded refresh token.",
+          "building": "cli",
+          "code": "token-manager",
+          "connection": "cli-token"
+        },
+        {
+          "story": "Replace the matching credential generation; replay-safe HTTP requests can retry once after a 401, while unsafe mutations surface the failure.",
+          "building": "cli",
+          "code": "auth-http",
+          "on_failure": [
+            {
+              "story": "Revoked or reused refresh material clears the matching generation and returns `AUTH_REQUIRED`; another process's newer login is retained.",
+              "building": "cli",
+              "code": "auth-http"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-auth-status",
+      "name": "Inspect CLI authentication",
+      "summary": "Inspect CLI authentication: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Load auth metadata and its credential reference under the state lock; tokens are never printed.",
+          "building": "cli",
+          "code": "auth-status"
+        },
+        {
+          "story": "Verify identity, issuer, audience, scopes and expiry against the local `auth.json` binding and its referenced credential material.",
+          "building": "cli",
+          "code": "auth-status"
+        },
+        {
+          "story": "Emit only logged-in and expiry facts; unsafe or inconsistent state returns INVALID_STATE rather than a misleading status.",
+          "building": "cli",
+          "code": "auth-status"
+        }
+      ]
+    },
+    {
+      "id": "cli-auth-logout",
+      "name": "Sign the CLI out",
+      "summary": "Sign the CLI out: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Acquire `auth.state.lock` and load the current credential generation before server revocation or local cleanup.",
+          "building": "cli",
+          "code": "auth-logout"
+        },
+        {
+          "story": "Attempt public token revocation; this network effect is followed by local cleanup even when the request fails.",
+          "building": "cli",
+          "code": "auth-logout",
+          "connection": "cli-revoke-token"
+        },
+        {
+          "story": "Clear both local stores and report cleanup failures as INVALID_STATE; secret token values never enter command output.",
+          "building": "cli",
+          "code": "auth-logout"
+        }
+      ]
+    },
+    {
+      "id": "cli-resume",
+      "name": "Resume a stopped box",
+      "summary": "Resume a stopped box: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Validate the local Session state and save a pending lifecycle operation before calling the hosted API.",
+          "building": "cli",
+          "code": "lifecycle-service"
+        },
+        {
+          "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
+          "building": "cli",
+          "code": "hosted-mutate",
+          "connection": "cli-start-session"
+        },
+        {
+          "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
+          "building": "cli",
+          "code": ["hosted-mutate", "hosted-operations"],
+          "connection": "cli-get-session",
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "id": "cli-pause",
+      "name": "Pause a box",
+      "summary": "Pause a box: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Validate the local Session state and save a pending lifecycle operation before calling the hosted API.",
+          "building": "cli",
+          "code": "lifecycle-service"
+        },
+        {
+          "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
+          "building": "cli",
+          "code": "hosted-mutate",
+          "connection": "cli-pause-session"
+        },
+        {
+          "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
+          "building": "cli",
+          "code": ["hosted-mutate", "hosted-operations"],
+          "connection": "cli-get-session",
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "id": "cli-stop",
+      "name": "Stop a box",
+      "summary": "Stop a box: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Validate the local Session state and save a pending lifecycle operation before calling the hosted API.",
+          "building": "cli",
+          "code": "lifecycle-service"
+        },
+        {
+          "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
+          "building": "cli",
+          "code": "hosted-mutate",
+          "connection": "cli-stop-session"
+        },
+        {
+          "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
+          "building": "cli",
+          "code": ["hosted-mutate", "hosted-operations"],
+          "connection": "cli-get-session",
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "id": "cli-status",
+      "name": "Inspect a Session",
+      "summary": "Inspect a Session: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "building": "cli",
+          "code": "lifecycle-status"
+        },
+        {
+          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "building": "cli",
+          "code": "lifecycle-status"
+        },
+        {
+          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "building": "cli",
+          "code": "lifecycle-status"
+        }
+      ]
+    },
+    {
+      "id": "cli-list",
+      "name": "List local Sessions",
+      "summary": "List local Sessions: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "building": "cli",
+          "code": "lifecycle-list"
+        },
+        {
+          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "building": "cli",
+          "code": "lifecycle-list"
+        },
+        {
+          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "building": "cli",
+          "code": "lifecycle-list"
+        }
+      ]
+    },
+    {
+      "id": "cli-use",
+      "name": "Select a Session",
+      "summary": "Select a Session: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "building": "cli",
+          "code": "lifecycle-use"
+        },
+        {
+          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "building": "cli",
+          "code": "lifecycle-use"
+        },
+        {
+          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "building": "cli",
+          "code": "lifecycle-use"
+        }
+      ]
+    },
+    {
+      "id": "cli-sync-diff",
+      "name": "Inspect source differences",
+      "summary": "Inspect source differences: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "building": "cli",
+          "code": "sync-diff"
+        },
+        {
+          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "building": "cli",
+          "code": "sync-diff"
+        },
+        {
+          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "building": "cli",
+          "code": "sync-diff"
+        }
+      ]
+    },
+    {
+      "id": "cli-sync-recover",
+      "name": "Recover an interrupted local sync",
+      "summary": "Recover an interrupted local sync: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "building": "cli",
+          "code": "sync-recover"
+        },
+        {
+          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "building": "cli",
+          "code": "sync-recover"
+        },
+        {
+          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "building": "cli",
+          "code": "sync-recover"
+        }
+      ]
+    },
+    {
+      "id": "cli-cancel",
+      "name": "Cancel a command",
+      "summary": "Cancel a command: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve the selected Session and locate its current hosted execution; absent work is reported as a typed error.",
+          "building": "cli",
+          "code": "hosted-cancel"
+        },
+        {
+          "story": "Request `cancelExecution` and continue observing until the hosted result is terminal; a deadline is not proof the command stopped.",
+          "building": "cli",
+          "code": "hosted-cancel",
+          "connection": "cli-cancel-execution",
+          "repeat": true
+        },
+        {
+          "story": "Emit the confirmed cancellation outcome; a deadline failure reports that convergence is incomplete.",
+          "building": "cli",
+          "code": "hosted-cancel"
+        }
+      ]
+    },
+    {
+      "id": "agent-setup",
+      "name": "Install a coding-agent adapter",
+      "summary": "Install a coding-agent adapter: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Inspect agent version, supported configuration layers and project trust; unsupported or untrusted settings fail with an error before a write.",
+          "building": "cli",
+          "code": ["agent-setup", "agent-codex-plan"]
+        },
+        {
+          "story": "Plan changes only to owned `PreToolUse` hook fragments, record backups and expected content hashes, then apply after rechecking file drift.",
+          "building": "cli",
+          "code": ["agent-setup", "agent-codex-plan", "agent-codex-apply"]
+        },
+        {
+          "story": "Write an ownership manifest so doctor/remove can identify only this adapter; a partial write fails and rolls back from the saved content.",
+          "building": "cli",
+          "code": ["agent-setup", "agent-codex-apply"]
+        }
+      ]
+    },
+    {
+      "id": "agent-doctor",
+      "name": "Inspect adapter drift",
+      "summary": "Inspect adapter drift: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "building": "cli",
+          "code": ["command-agent-doctor"]
+        },
+        {
+          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "building": "cli",
+          "code": ["command-agent-doctor"]
+        },
+        {
+          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "building": "cli",
+          "code": ["command-agent-doctor"]
+        }
+      ]
+    },
+    {
+      "id": "agent-remove",
+      "name": "Remove owned adapter settings",
+      "summary": "Remove owned adapter settings: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "building": "cli",
+          "code": ["command-agent-remove"]
+        },
+        {
+          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "building": "cli",
+          "code": ["command-agent-remove"]
+        },
+        {
+          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "building": "cli",
+          "code": ["command-agent-remove"]
+        }
+      ]
+    },
+    {
+      "id": "project-metadata",
+      "name": "Manage project metadata",
+      "summary": "Manage project metadata: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "building": "cli",
+          "code": [
+            "command-project-create",
+            "command-project-get",
+            "command-project-list",
+            "command-project-update"
+          ]
+        },
+        {
+          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "building": "cli",
+          "code": [
+            "command-project-create",
+            "command-project-get",
+            "command-project-list",
+            "command-project-update"
+          ]
+        },
+        {
+          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "building": "cli",
+          "code": [
+            "command-project-create",
+            "command-project-get",
+            "command-project-list",
+            "command-project-update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "environment-metadata",
+      "name": "Manage environment metadata",
+      "summary": "Manage environment metadata: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "building": "cli",
+          "code": [
+            "command-environment-create",
+            "command-environment-get",
+            "command-environment-list",
+            "command-environment-update"
+          ]
+        },
+        {
+          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "building": "cli",
+          "code": [
+            "command-environment-create",
+            "command-environment-get",
+            "command-environment-list",
+            "command-environment-update"
+          ]
+        },
+        {
+          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "building": "cli",
+          "code": [
+            "command-environment-create",
+            "command-environment-get",
+            "command-environment-list",
+            "command-environment-update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-init",
+      "name": "Initialize project configuration",
+      "summary": "Initialize project configuration: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "building": "cli",
+          "code": ["command-init"]
+        },
+        {
+          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "building": "cli",
+          "code": ["command-init"]
+        },
+        {
+          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "building": "cli",
+          "code": ["command-init"]
+        }
+      ]
+    },
+    {
+      "id": "public-api-calls",
+      "name": "Public API calls and response validation",
+      "summary": "Public API calls and response validation: local preparation, public API or filesystem effects, and confirmed completion.",
+      "steps": [
+        {
+          "story": "The client calls listProjects through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-list-projects"
+        },
+        {
+          "story": "The client calls createProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-create-project"
+        },
+        {
+          "story": "The client calls getProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-get-project"
+        },
+        {
+          "story": "The client calls updateProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-update-project"
+        },
+        {
+          "story": "The client calls listEnvironments through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-list-environments"
+        },
+        {
+          "story": "The client calls createEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-create-environment"
+        },
+        {
+          "story": "The client calls getEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-get-environment"
+        },
+        {
+          "story": "The client calls updateEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "module-metadata-client",
+          "connection": "api-update-environment"
+        },
+        {
+          "story": "The client calls getExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "hosted-events",
+          "connection": "api-get-execution"
+        },
+        {
+          "story": "The client calls getExecutionResult through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "hosted-events",
+          "connection": "cli-execution-result"
+        },
+        {
+          "story": "The client calls listExecutionEvents through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "hosted-events",
+          "connection": "cli-execution-events"
+        },
+        {
+          "story": "The client calls getOperation through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "hosted-operations",
+          "connection": "cli-get-operation"
+        },
+        {
+          "story": "The client calls cancelOperation through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "hosted-operations",
+          "connection": "api-cancel-operation"
+        },
+        {
+          "story": "The client calls createSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-create-session"
+        },
+        {
+          "story": "The client calls listSessions through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "api-list-sessions"
+        },
+        {
+          "story": "The client calls getSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-get-session"
+        },
+        {
+          "story": "The client calls destroySession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-destroy-session"
+        },
+        {
+          "story": "The client calls pauseSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-pause-session"
+        },
+        {
+          "story": "The client calls startSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-start-session"
+        },
+        {
+          "story": "The client calls stopSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-stop-session"
+        },
+        {
+          "story": "The client calls cancelExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-cancel-execution"
+        },
+        {
+          "story": "The client calls createExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "cli-create-execution"
+        },
+        {
+          "story": "The client calls createPreview through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "api-create-preview"
+        },
+        {
+          "story": "The client calls deletePreview through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "provider-create",
+          "connection": "api-delete-preview"
+        },
+        {
+          "story": "The client calls listSourceManifests through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-list-manifests"
+        },
+        {
+          "story": "The client calls createSourceManifest through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-source-manifest"
+        },
+        {
+          "story": "The client calls uploadSourceChunk through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-source-chunks"
+        },
+        {
+          "story": "The client calls verifySourceChecksum through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "building": "cli",
+          "code": "upload-source",
+          "connection": "cli-verify-checksum"
+        }
+      ]
+    }
+  ],
+  "guides": [
+    {
+      "id": "cli-guide",
+      "title": "ocbox CLI: architecture and boundaries",
+      "path": "docs/architecture/cli.md",
+      "about": ["cli"],
+      "journeys": [
+        "cli-login",
+        "cli-start-box",
+        "cli-sync-push",
+        "cli-exec",
+        "agent-routed-command",
+        "cli-destroy",
+        "cli-token-refresh",
+        "cli-auth-status",
+        "cli-auth-logout",
+        "cli-resume",
+        "cli-pause",
+        "cli-stop",
+        "cli-status",
+        "cli-list",
+        "cli-use",
+        "cli-sync-diff",
+        "cli-sync-recover",
+        "cli-cancel",
+        "agent-setup",
+        "agent-doctor",
+        "agent-remove",
+        "project-metadata",
+        "environment-metadata",
+        "cli-init",
+        "public-api-calls"
+      ]
+    },
+    {
+      "id": "auth-guide",
+      "title": "CLI authentication and credential lifecycle",
+      "path": "docs/architecture/authentication.md",
+      "about": ["cli"],
+      "journeys": ["cli-login", "cli-auth-status", "cli-auth-logout", "cli-token-refresh"]
+    },
+    {
+      "id": "lifecycle-guide",
+      "title": "CLI Sessions and hosted command execution",
+      "path": "docs/architecture/sessions-and-execution.md",
+      "about": ["cli"],
+      "journeys": [
+        "cli-start-box",
+        "cli-resume",
+        "cli-pause",
+        "cli-stop",
+        "cli-destroy",
+        "cli-exec",
+        "cli-cancel"
+      ]
+    },
+    {
+      "id": "sync-guide",
+      "title": "CLI source delivery and local transfer recovery",
+      "path": "docs/architecture/source-and-sync.md",
+      "about": ["cli"],
+      "journeys": ["cli-sync-push", "cli-sync-diff", "cli-sync-recover"]
+    },
+    {
+      "id": "agents-guide",
+      "title": "Coding-agent adapters: ownership and routing",
+      "path": "docs/architecture/agents.md",
+      "about": ["cli"],
+      "journeys": ["agent-routed-command", "agent-setup", "agent-doctor", "agent-remove"]
+    },
+    {
+      "id": "state-guide",
+      "title": "CLI local state and protected credentials",
+      "path": "docs/architecture/state.md",
+      "about": ["cli"],
+      "journeys": ["cli-login", "cli-use", "cli-destroy"]
+    },
+    {
+      "id": "metadata-guide",
+      "title": "CLI metadata, configuration and capabilities",
+      "path": "docs/architecture/metadata.md",
+      "about": ["cli"],
+      "journeys": ["project-metadata", "environment-metadata", "cli-init"]
+    },
+    {
+      "id": "map-tooling-guide",
+      "title": "Architecture map tooling and dependency ownership",
+      "path": "docs/architecture/map-tooling.md",
+      "about": ["cli"],
+      "journeys": []
+    }
+  ]
+}

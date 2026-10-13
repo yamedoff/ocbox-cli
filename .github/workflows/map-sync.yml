@@ -1,0 +1,21 @@
+name: map sync
+# Re-sync the map to Notion now: Actions → "map sync" → Run workflow.
+# Leave "pr" empty to re-apply map.json from the sync branch (backfill, recovery),
+# or give a PR number to refresh that PR's Map changes.
+# The architecture-map Notion Worker sees this run through the repo webhook (workflow_run) and does the work;
+# this job only records the request, so it needs no secrets. Keep the run-name: it carries the PR number.
+run-name: "map sync${{ inputs.pr && format(' PR #{0}', inputs.pr) || '' }}"
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number (empty = re-apply the sync branch)"
+        required: false
+        default: ""
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PR: ${{ inputs.pr }}
+        run: echo "Map sync requested for $GITHUB_REPOSITORY ${PR:+PR #$PR}. The Notion Worker does the rest; check the Architecture page in a minute."
