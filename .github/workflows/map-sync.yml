@@ -18,4 +18,5 @@ jobs:
     steps:
       - env:
           PR: ${{ inputs.pr }}
-        run: echo "Map sync requested for $GITHUB_REPOSITORY ${PR:+PR #$PR}. The Notion Worker does the rest; check the Architecture page in a minute."
+        run: |
+          echo "Map sync requested for $GITHUB_REPOSITORY ${PR:+PR #$PR}. The Notion Worker does the rest; check the Architecture page in a minute."
