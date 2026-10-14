@@ -333,7 +333,9 @@
       "path": "src/commands/start.ts",
       "symbol": "Start",
       "summary": "Creates, resumes or reconciles the selected session for this project and waits until the hosted sandbox is ready.",
-      "calls": ["lifecycle-service"],
+      "calls": [
+        "lifecycle-service"
+      ],
       "lines": "6-39",
       "area": "commands"
     },
@@ -345,7 +347,9 @@
       "path": "src/commands/exec.ts",
       "symbol": "Exec",
       "summary": "Runs a program in the selected session. Tokens after -- are sent as an argv array, never through a shell; --shell is the explicit opt-in. Exits with the remote exit code.",
-      "calls": ["exec-runner"],
+      "calls": [
+        "exec-runner"
+      ],
       "lines": "46-72",
       "area": "commands"
     },
@@ -357,7 +361,9 @@
       "path": "src/commands/sync/push.ts",
       "symbol": "SyncPush",
       "summary": "Applies local-only changes to the session workspace. Deletions need --delete and confirmation.",
-      "calls": ["sync-apply"],
+      "calls": [
+        "sync-apply"
+      ],
       "lines": "12-46",
       "area": "commands"
     },
@@ -369,7 +375,9 @@
       "path": "src/commands/destroy.ts",
       "symbol": "Destroy",
       "summary": "Destroys a session after explicit confirmation and waits for the hosted operation to finish.",
-      "calls": ["lifecycle-service"],
+      "calls": [
+        "lifecycle-service"
+      ],
       "lines": "24-64",
       "area": "commands"
     },
@@ -381,7 +389,9 @@
       "path": "src/commands/auth/login.ts",
       "symbol": "AuthLogin",
       "summary": "Signs the CLI in to the hosted API through the browser.",
-      "calls": ["auth-login"],
+      "calls": [
+        "auth-login"
+      ],
       "lines": "6-59",
       "area": "commands"
     },
@@ -394,7 +404,11 @@
       "symbol": "AuthSessionService.login",
       "lines": "127-179",
       "summary": "Binds a loopback listener, opens the authorize URL with a PKCE challenge, waits for the callback, exchanges the code and commits the token pair under the auth gate. Always closes the listener.",
-      "calls": ["loopback-listener", "pkce", "credential-store"],
+      "calls": [
+        "loopback-listener",
+        "pkce",
+        "credential-store"
+      ],
       "area": "auth"
     },
     {
@@ -427,7 +441,9 @@
       "path": "src/auth/token-manager.ts",
       "symbol": "HostedTokenManager.#performRefresh",
       "summary": "Hands out a valid access token, refreshing when it is about to expire. Rotation happens at most once per generation across processes, so parallel commands don't burn the refresh token.",
-      "calls": ["credential-store"],
+      "calls": [
+        "credential-store"
+      ],
       "lines": "315-371",
       "area": "auth"
     },
@@ -461,7 +477,10 @@
       "path": "src/lifecycle/service.ts",
       "symbol": "LifecycleService.start",
       "summary": "Session lifecycle on the client: start, stop, destroy and selection, against the configured provider (hosted or fake), with the local store as its memory.",
-      "calls": ["provider-create", "lifecycle-store"],
+      "calls": [
+        "provider-create",
+        "lifecycle-store"
+      ],
       "lines": "84-111",
       "area": "lifecycle"
     },
@@ -474,7 +493,9 @@
       "symbol": "OcboxSandboxProvider.create",
       "lines": "473-474",
       "summary": "Calls createSession for the bound project, polls the returned operation until the sandbox is ready, and saves the hosted session id locally.",
-      "calls": ["api-client"],
+      "calls": [
+        "api-client"
+      ],
       "area": "hosted-api"
     },
     {
@@ -486,7 +507,9 @@
       "symbol": "OcboxSandboxProvider.#execute",
       "lines": "1072-1199",
       "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
-      "calls": ["api-client"],
+      "calls": [
+        "api-client"
+      ],
       "area": "hosted-api"
     },
     {
@@ -497,7 +520,9 @@
       "path": "src/execution/command-runner.ts",
       "symbol": "runExecutionCommand",
       "summary": "Parses exec arguments, starts the remote command, streams polled output to stdout and stderr, cancels on interrupt and maps the result to an exit code.",
-      "calls": ["provider-execute"],
+      "calls": [
+        "provider-execute"
+      ],
       "lines": "229-238",
       "area": "execution"
     },
@@ -509,7 +534,12 @@
       "path": "src/sync/service.ts",
       "symbol": "runSyncApply",
       "summary": "Plans the sync against the last verified baseline, checks deletions, uploads the archive and records a new baseline only after the hosted apply succeeds.",
-      "calls": ["scan-manifest", "sync-plan", "sync-archive", "upload-source"],
+      "calls": [
+        "scan-manifest",
+        "sync-plan",
+        "sync-archive",
+        "upload-source"
+      ],
       "lines": "775-877",
       "area": "sync"
     },
@@ -554,7 +584,9 @@
       "path": "src/providers/ocbox/source.ts",
       "symbol": "uploadPreparedSource",
       "summary": "Reuses a matching verified manifest if one exists, otherwise creates a manifest, uploads each chunk, verifies the checksum and polls the apply operation.",
-      "calls": ["api-client"],
+      "calls": [
+        "api-client"
+      ],
       "lines": "131-348",
       "area": "hosted-api"
     },
@@ -566,7 +598,9 @@
       "path": "src/auth/hosted-client.ts",
       "symbol": "createHostedApiClient",
       "summary": "Generated OpenAPI client with an authenticated transport: adds the bearer token and, for replayable requests only, refreshes once on 401 and retries. Errors stay redacted.",
-      "calls": ["token-manager"],
+      "calls": [
+        "token-manager"
+      ],
       "lines": "303-324",
       "area": "auth"
     },
@@ -589,7 +623,9 @@
       "path": "src/agents/claude-code/hook.ts",
       "symbol": "runClaudeRoutingHook",
       "summary": "Reads the agent's PreToolUse JSON. For a covered Bash call it runs the command with ocbox exec in the box, then always answers deny with the remote result as the reason, so the local copy never runs.",
-      "calls": ["exec-runner"],
+      "calls": [
+        "exec-runner"
+      ],
       "lines": "115-151",
       "area": "agents"
     },
@@ -661,14 +697,14 @@
     },
     {
       "id": "hosted-events",
+      "name": "collectExecutionEvents.pollFallback",
       "building": "cli",
-      "area": "hosted-api",
-      "name": "collectExecutionEvents",
       "kind": "function",
       "path": "src/providers/ocbox/executions.ts",
-      "symbol": "collectExecutionEvents",
-      "lines": "104-434",
-      "summary": "One 331-line event-collection state machine: orders/deduplicates output, checkpoints cursors and falls back to polling after bounded stream failures. Its stage closures share cursor/deadline state."
+      "symbol": "collectExecutionEvents.pollFallback",
+      "summary": "After more than 3 event-page failures, poll execution state (250 ms default), drain remaining events best effort and read terminal result within the original 5-minute deadline.",
+      "area": "hosted-api",
+      "lines": "343-364"
     },
     {
       "id": "hosted-mutate",
@@ -771,14 +807,14 @@
     },
     {
       "id": "agent-codex-plan",
+      "name": "desiredSessionFragment",
       "building": "cli",
-      "area": "agents",
-      "name": "planCodexSetup",
       "kind": "function",
       "path": "src/agents/codex/planner.ts",
-      "symbol": "planCodexSetup",
-      "lines": "452-768",
-      "summary": "One 317-line pure setup planner: checks trust/ownership, computes expected file hashes and emits an atomic change plan. Its branches share the prospective documents; apply is a separate mapped method."
+      "symbol": "desiredSessionFragment",
+      "summary": "Build the owned PreToolUse routing fragment for the selected Session. Setup validates version/trust/schema before merging this fragment; no files are written by the planner.",
+      "area": "agents",
+      "lines": "225-244"
     },
     {
       "id": "agent-codex-apply",
@@ -1472,6 +1508,105 @@
       "symbol": "Use.run",
       "lines": "11-16",
       "summary": "Select a Session for subsequent commands Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "hosted-event-page",
+      "name": "collectExecutionEvents.fetchEventPage",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents.fetchEventPage",
+      "summary": "Fetch at most 100 events by default and validate the public page before ingest. Non-success responses map to typed client errors.",
+      "area": "hosted-api",
+      "lines": "259-290"
+    },
+    {
+      "id": "hosted-event-ingest",
+      "name": "collectExecutionEvents.ingestPage",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents.ingestPage",
+      "summary": "Sort by sequence, skip duplicates, report stream-labelled output/progress and persist the next cursor checkpoint.",
+      "area": "hosted-api",
+      "lines": "292-315"
+    },
+    {
+      "id": "hosted-event-drain",
+      "name": "collectExecutionEvents.drainRemainingEvents",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents.drainRemainingEvents",
+      "summary": "Drain remaining events before terminal fallback result; reset invalid cursor, stop on terminal/exhaustion or a failed best-effort page.",
+      "area": "hosted-api",
+      "lines": "323-341"
+    },
+    {
+      "id": "hosted-execution-read",
+      "name": "collectExecutionEvents.readExecution",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents.readExecution",
+      "summary": "Retry transient execution reads with Retry-After/backoff inside the original deadline; invalid representations and permanent errors fail.",
+      "area": "hosted-api",
+      "lines": "139-197"
+    },
+    {
+      "id": "hosted-result-read",
+      "name": "collectExecutionEvents.readResult",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/providers/ocbox/executions.ts",
+      "symbol": "collectExecutionEvents.readResult",
+      "summary": "Read and validate terminal result with bounded retries. Deadline expiry returns OPERATION_TIMEOUT, not proof that remote work stopped.",
+      "area": "hosted-api",
+      "lines": "199-257"
+    },
+    {
+      "id": "codex-plan-representation",
+      "name": "representationFor",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "representationFor",
+      "summary": "Choose the manifest-pinned representation, otherwise requested or detected hooks layout; ownership keeps migration from duplicating hooks.",
+      "area": "agents",
+      "lines": "246-256"
+    },
+    {
+      "id": "codex-plan-drift",
+      "name": "buildFragmentDrift",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "buildFragmentDrift",
+      "summary": "Compare current owned fragments and file hashes with the manifest; report drift rather than silently replacing unrelated content.",
+      "area": "agents",
+      "lines": "324-345"
+    },
+    {
+      "id": "codex-plan-removal",
+      "name": "removeMatchingGroups",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "removeMatchingGroups",
+      "summary": "Remove only matching owned groups and preserve all unrelated hook groups; setup records the resulting repairs.",
+      "area": "agents",
+      "lines": "384-393"
+    },
+    {
+      "id": "codex-plan-failure",
+      "name": "failedSetup",
+      "building": "cli",
+      "kind": "function",
+      "path": "src/agents/codex/planner.ts",
+      "symbol": "failedSetup",
+      "summary": "Return a failed setup plan with zero changes, validation errors and remediation. Unsupported settings cannot become an apply plan.",
+      "area": "agents",
+      "lines": "424-450"
     }
   ],
   "journeys": [
@@ -1483,26 +1618,59 @@
         {
           "story": "Generate PKCE and state, bind 127.0.0.1 on a random port and open the browser authorization page; the listener accepts only one matching callback.",
           "building": "cli",
-          "code": ["auth-login", "pkce", "loopback-listener"],
+          "code": [
+            "auth-login",
+            "pkce",
+            "loopback-listener"
+          ],
           "connection": "cli-authorize",
           "on_failure": [
             {
-              "story": "Wrong or replayed state is refused; cancellation and timeout close the listener without storing tokens.",
+              "story": "Wrong or replayed state is rejected; cancellation and timeout close the listener without storing tokens.",
               "building": "cli",
-              "code": ["auth-login", "pkce", "loopback-listener"]
+              "code": [
+                "auth-login",
+                "pkce",
+                "loopback-listener"
+              ]
+            },
+            {
+              "building": "cli",
+              "code": [
+                "auth-login",
+                "pkce",
+                "loopback-listener"
+              ],
+              "story": "Browser launch failure prints the authorization URL; callback timeout/wrong state fails login and finally closes the listener."
             }
           ]
         },
         {
           "story": "Exchange the authorization code with its original verifier; validate the response before persisting credentials under the auth state lock.",
           "building": "cli",
-          "code": ["auth-login", "api-client"],
+          "code": [
+            "auth-login",
+            "api-client"
+          ],
           "connection": "cli-token"
         },
         {
           "story": "Store bearer material through the credential port and non-secret metadata separately; a failed metadata commit rolls back the prior generation.",
           "building": "cli",
-          "code": ["auth-login", "credential-store"]
+          "code": [
+            "auth-login",
+            "credential-store"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "auth-login",
+                "credential-store"
+              ],
+              "story": "If metadata commit fails, restore the prior credential/metadata pair under the gate. Failed restoration returns INVALID_STATE."
+            }
+          ]
         }
       ]
     },
@@ -1520,19 +1688,40 @@
           "story": "The hosted provider sends `createSession` with an idempotency key and retains the returned running operation for bounded recovery.",
           "building": "cli",
           "code": "provider-create",
-          "connection": "cli-create-session"
+          "connection": "cli-create-session",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "provider-create",
+              "story": "A lost create reply leaves the saved operation/spec and stable key. Rerun start to reconcile the same local create intent. Return only validated state."
+            }
+          ]
         },
         {
           "story": "Poll the operation with Retry-After and a default 5-minute deadline; terminal success is checked against the hosted Session before local state becomes active.",
           "building": "cli",
-          "code": ["provider-create", "hosted-operations"],
+          "code": [
+            "provider-create",
+            "hosted-operations"
+          ],
           "connection": "cli-get-operation",
           "repeat": true,
           "on_failure": [
             {
               "story": "A timeout preserves recoverable Session evidence and returns OPERATION_TIMEOUT; it does not pretend the server cancelled the create.",
               "building": "cli",
-              "code": ["provider-create", "hosted-operations"]
+              "code": [
+                "provider-create",
+                "hosted-operations"
+              ]
+            },
+            {
+              "building": "cli",
+              "code": [
+                "provider-create",
+                "hosted-operations"
+              ],
+              "story": "Five-minute wait expiry or permanent server failure reports a typed error and retains recovery evidence; it cannot certify remote absence."
             }
           ]
         }
@@ -1544,14 +1733,20 @@
       "summary": "Push local files to the box: local preparation, public API or filesystem effects, and confirmed completion.",
       "steps": [
         {
-          "story": "Hosted push scans the folder, excluding sensitive/unsafe paths; refuses remote deletion, files over 64 KiB, more than 100 files or more than 512 KiB total.",
+          "story": "Hosted push scans the folder, excluding sensitive/unsafe paths; rejects remote deletion, files over 64 KiB, more than 100 files or more than 512 KiB total.",
           "building": "cli",
-          "code": ["sync-hosted", "scan-manifest"]
+          "code": [
+            "sync-hosted",
+            "scan-manifest"
+          ]
         },
         {
           "story": "Encode and hash an archive capped at 1 MiB; list verified receipts to avoid replaying an obsolete snapshot after an A→B→A change.",
           "building": "cli",
-          "code": ["sync-archive", "upload-source"],
+          "code": [
+            "sync-archive",
+            "upload-source"
+          ],
           "connection": "cli-list-manifests"
         },
         {
@@ -1565,19 +1760,40 @@
           "building": "cli",
           "code": "upload-source",
           "connection": "cli-source-chunks",
-          "repeat": true
+          "repeat": true,
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "upload-source",
+              "story": "Only retryable chunk failures retry, at most 3 attempts. Accept conflict only if the receipt checksum matches; otherwise preserve the failure."
+            }
+          ]
         },
         {
           "story": "Verify the complete source and poll a returned apply operation on a 1-second healthy interval within a default 5-minute deadline.",
           "building": "cli",
-          "code": ["upload-source", "hosted-operations"],
+          "code": [
+            "upload-source",
+            "hosted-operations"
+          ],
           "connection": "cli-verify-checksum",
           "repeat": true,
           "on_failure": [
             {
               "story": "Incomplete source or checksum mismatch returns a typed integrity failure. Success requires a matching manifest, checksum and chunk count.",
               "building": "cli",
-              "code": ["upload-source", "hosted-operations"]
+              "code": [
+                "upload-source",
+                "hosted-operations"
+              ]
+            },
+            {
+              "building": "cli",
+              "code": [
+                "upload-source",
+                "hosted-operations"
+              ],
+              "story": "A wrong manifest/checksum/chunk count fails receipt verification. Deadline preserves remote operation identity; it does not claim source applied."
             }
           ]
         }
@@ -1591,7 +1807,10 @@
         {
           "story": "Resolve the selected Session and provider capabilities; the execution service starts the helper with a validated request and bounded output protocol.",
           "building": "cli",
-          "code": ["exec-runner", "exec-helper"]
+          "code": [
+            "exec-runner",
+            "exec-helper"
+          ]
         },
         {
           "story": "The hosted provider submits `createExecution` under an idempotency key and retains the returned pending execution handle.",
@@ -1602,20 +1821,46 @@
         {
           "story": "Collect output by cursor and increasing sequence, skipping duplicates; after bounded stream failures the collector polls until its deadline.",
           "building": "cli",
-          "code": "hosted-events",
+          "code": [
+            "hosted-events",
+            "hosted-event-page",
+            "hosted-event-ingest",
+            "hosted-event-drain"
+          ],
           "connection": "cli-execution-events",
-          "repeat": true
+          "repeat": true,
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "hosted-events",
+              "story": "Reset an invalid cursor; after more than 3 event failures fall back to state/result polling within the original deadline. Nonretryable errors fail immediately."
+            }
+          ]
         },
         {
           "story": "Read the terminal result and emit the command exit code. Interrupt or timeout requests remote cancellation before reporting its local outcome.",
           "building": "cli",
-          "code": ["provider-execute", "exec-helper"],
+          "code": [
+            "provider-execute",
+            "exec-helper"
+          ],
           "connection": "cli-execution-result",
           "on_failure": [
             {
               "story": "A transport timeout is not proof the remote command stopped. Cancellation must converge to a terminal result or surface a typed failure.",
               "building": "cli",
-              "code": ["provider-execute", "exec-helper"]
+              "code": [
+                "provider-execute",
+                "exec-helper"
+              ]
+            },
+            {
+              "building": "cli",
+              "code": [
+                "provider-execute",
+                "exec-helper"
+              ],
+              "story": "Interrupt/timeout requests cancellation. Unconfirmed remote completion remains a typed failure; a local deadline cannot prove the command stopped."
             }
           ]
         }
@@ -1629,13 +1874,19 @@
         {
           "story": "A `PreToolUse` event reaches the owned adapter hook. Guard rules decide whether the command may run in the selected Session.",
           "building": "cli",
-          "code": ["claude-hook", "agent-setup"],
+          "code": [
+            "claude-hook",
+            "agent-setup"
+          ],
           "connection": "agent-hook"
         },
         {
           "story": "The hook invokes ocbox exec with a 570000 ms remote deadline inside the configured 600-second hook timeout, leaving a 30-second decision margin.",
           "building": "cli",
-          "code": ["claude-hook", "exec-helper"]
+          "code": [
+            "claude-hook",
+            "exec-helper"
+          ]
         },
         {
           "story": "After the remote result the hook emits a blocking `deny` decision so the covered command is not repeated locally; guard refusal also emits a deny.",
@@ -1664,9 +1915,22 @@
         {
           "story": "Send destroySession with its idempotency key and poll the operation under the lifecycle deadline.",
           "building": "cli",
-          "code": ["hosted-mutate", "hosted-operations"],
+          "code": [
+            "hosted-mutate",
+            "hosted-operations"
+          ],
           "connection": "cli-destroy-session",
-          "repeat": true
+          "repeat": true,
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "hosted-mutate",
+                "hosted-operations"
+              ],
+              "story": "If destroy/poll fails, retain the pending operation and mapping. Confirmation is required before dropping local binding state."
+            }
+          ]
         },
         {
           "story": "Confirm the hosted Session has been deleted before removing its local mapping; a lost reply remains recoverable instead of becoming false success or a hidden error.",
@@ -1698,7 +1962,14 @@
           "story": "Rotate through `exchangeCliToken`. Another process adopts a newer generation rather than reusing the superseded refresh token.",
           "building": "cli",
           "code": "token-manager",
-          "connection": "cli-token"
+          "connection": "cli-token",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "token-manager",
+              "story": "Revoked/reused refresh credentials require sign-in. Compare-delete only the failing generation so a newer concurrent login survives."
+            }
+          ]
         },
         {
           "story": "Replace the matching credential generation; replay-safe HTTP requests can retry once after a 401, while unsafe mutations surface the failure.",
@@ -1773,12 +2044,22 @@
           "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
           "building": "cli",
           "code": "hosted-mutate",
-          "connection": "cli-start-session"
+          "connection": "cli-start-session",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "hosted-mutate",
+              "story": "Unsupported capability fails before mutation. A lost reply leaves the saved operation/key for the same lifecycle action to reconcile."
+            }
+          ]
         },
         {
           "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
           "building": "cli",
-          "code": ["hosted-mutate", "hosted-operations"],
+          "code": [
+            "hosted-mutate",
+            "hosted-operations"
+          ],
           "connection": "cli-get-session",
           "repeat": true
         }
@@ -1798,12 +2079,22 @@
           "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
           "building": "cli",
           "code": "hosted-mutate",
-          "connection": "cli-pause-session"
+          "connection": "cli-pause-session",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "hosted-mutate",
+              "story": "Unsupported capability fails before mutation. A lost reply leaves the saved operation/key for the same lifecycle action to reconcile."
+            }
+          ]
         },
         {
           "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
           "building": "cli",
-          "code": ["hosted-mutate", "hosted-operations"],
+          "code": [
+            "hosted-mutate",
+            "hosted-operations"
+          ],
           "connection": "cli-get-session",
           "repeat": true
         }
@@ -1823,12 +2114,22 @@
           "story": "Send the requested mutation with an idempotency key; capability or Session state refusal returns a typed error.",
           "building": "cli",
           "code": "hosted-mutate",
-          "connection": "cli-stop-session"
+          "connection": "cli-stop-session",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "hosted-mutate",
+              "story": "Unsupported capability fails before mutation. A lost reply leaves the saved operation/key for the same lifecycle action to reconcile."
+            }
+          ]
         },
         {
           "story": "Poll and reconcile the hosted Session before saving the resulting local state; a deadline failure preserves recovery evidence.",
           "building": "cli",
-          "code": ["hosted-mutate", "hosted-operations"],
+          "code": [
+            "hosted-mutate",
+            "hosted-operations"
+          ],
           "connection": "cli-get-session",
           "repeat": true
         }
@@ -1837,20 +2138,27 @@
     {
       "id": "cli-status",
       "name": "Inspect a Session",
-      "summary": "Inspect a Session: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Inspect the selected local Session and verify its mapped hosted sandbox without replacing it.",
       "steps": [
         {
-          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "story": "Resolve --session or activeSessionId under the current project; missing local identity fails before a hosted request.",
           "building": "cli",
           "code": "lifecycle-status"
         },
         {
-          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "story": "Read the mapped sandbox through getSession; a missing mapping is SANDBOX_NOT_FOUND error. A destroyed or unbound local Session returns its local view.",
           "building": "cli",
-          "code": "lifecycle-status"
+          "code": "lifecycle-status",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "lifecycle-status",
+              "story": "A stale/foreign mapping is SANDBOX_NOT_FOUND; failed reads do not replace the selected Session."
+            }
+          ]
         },
         {
-          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "story": "Emit the saved local Session plus observed sandbox state; status does not create a Session or automatically repair a failed lifecycle action.",
           "building": "cli",
           "code": "lifecycle-status"
         }
@@ -1859,20 +2167,27 @@
     {
       "id": "cli-list",
       "name": "List local Sessions",
-      "summary": "List local Sessions: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "List saved local Session views; listing does not enumerate all hosted Sessions.",
       "steps": [
         {
-          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "story": "Load this project’s lifecycle state and sort saved Sessions by createdAt; an empty state produces an empty list.",
           "building": "cli",
           "code": "lifecycle-list"
         },
         {
-          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "story": "Build each view from saved state: bindings/sandbox/operation records. No hosted listSessions request runs in LifecycleService.list.",
           "building": "cli",
-          "code": "lifecycle-list"
+          "code": "lifecycle-list",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "lifecycle-list",
+              "story": "Invalid saved schema fails the read; local listing cannot silently hide corruption as no Sessions."
+            }
+          ]
         },
         {
-          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "story": "Emit local views including active selection and pending operation evidence; a corrupt state fails validation instead of becoming an empty list.",
           "building": "cli",
           "code": "lifecycle-list"
         }
@@ -1881,20 +2196,27 @@
     {
       "id": "cli-use",
       "name": "Select a Session",
-      "summary": "Select a Session: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Select an existing local Session for later commands.",
       "steps": [
         {
-          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "story": "Parse the requested Session ID and load its saved local record under this project; an unknown identity is rejected.",
           "building": "cli",
           "code": "lifecycle-use"
         },
         {
-          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "story": "Update activeSessionId under the local state lock. This chooses a Session; it does not start the box or mutate its remote workspace.",
           "building": "cli",
-          "code": "lifecycle-use"
+          "code": "lifecycle-use",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "lifecycle-use",
+              "story": "Missing local identity is rejected; lock conflict leaves activeSessionId unchanged and returns OPERATION_CONFLICT error."
+            }
+          ]
         },
         {
-          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "story": "Emit the selected Session view. A lock conflict reports OPERATION_CONFLICT; no hosted lifecycle request is needed to select it. Return only validated state.",
           "building": "cli",
           "code": "lifecycle-use"
         }
@@ -1903,20 +2225,27 @@
     {
       "id": "cli-sync-diff",
       "name": "Inspect source differences",
-      "summary": "Inspect source differences: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Plan differences on supported local providers; hosted diff is refused.",
       "steps": [
         {
-          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "story": "Resolve the selected Session and sync roots. Hosted provider returns CAPABILITY_UNSUPPORTED before attempting a two-sided scan.",
           "building": "cli",
           "code": "sync-diff"
         },
         {
-          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "story": "For a local provider, reject unresolved recovery; require no unresolved transfer/baseline recovery, scan both sides under ignore/path rules and build the three-way plan.",
           "building": "cli",
-          "code": "sync-diff"
+          "code": "sync-diff",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "sync-diff",
+              "story": "Pending recovery, unsafe paths or unreadable source produces an explicit error before any transfer."
+            }
+          ]
         },
         {
-          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "story": "Emit conflicts, exclusions, collisions and proposed operations without applying them. Unsafe paths are rejected; no --force bypass exists.",
           "building": "cli",
           "code": "sync-diff"
         }
@@ -1925,20 +2254,28 @@
     {
       "id": "cli-sync-recover",
       "name": "Recover an interrupted local sync",
-      "summary": "Recover an interrupted local sync: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Restore interrupted local transfer evidence without promoting staged content.",
       "steps": [
         {
-          "story": "Resolve the current project and selected Session; missing or foreign state is refused with a typed error.",
+          "story": "Hosted recover returns CAPABILITY_UNSUPPORTED. For a local provider acquire the sync lock before inspecting recovery journals.",
           "building": "cli",
           "code": "sync-recover"
         },
         {
-          "story": "Run the capability-specific read or local recovery under its state/transfer lock. Hosted sync diff and recover are refused when unsupported.",
+          "story": "Visit remote then local target, recover any interrupted transfer, and reconcile a pending verified baseline. Ambiguous backup evidence stops recovery.",
           "building": "cli",
-          "code": "sync-recover"
+          "code": "sync-recover",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "sync-recover",
+              "story": "An ambiguous backup/journal rejects recovery and retains evidence; another transfer stays blocked."
+            }
+          ],
+          "repeat": true
         },
         {
-          "story": "Emit a bounded, redacted view. Read-only paths do not change the remote workspace; recovery failures retain their journal.",
+          "story": "Report recovered and operationId; unresolved failures retain journal/backup evidence and block later sync rather than discarding it.",
           "building": "cli",
           "code": "sync-recover"
         }
@@ -1959,7 +2296,14 @@
           "building": "cli",
           "code": "hosted-cancel",
           "connection": "cli-cancel-execution",
-          "repeat": true
+          "repeat": true,
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "hosted-cancel",
+              "story": "If the 30000-ms default wait expires, report incomplete convergence and retain the execution identity; timeout is not successful cancellation."
+            }
+          ]
         },
         {
           "story": "Emit the confirmed cancellation outcome; a deadline failure reports that convergence is incomplete.",
@@ -1976,71 +2320,132 @@
         {
           "story": "Inspect agent version, supported configuration layers and project trust; unsupported or untrusted settings fail with an error before a write.",
           "building": "cli",
-          "code": ["agent-setup", "agent-codex-plan"]
+          "code": [
+            "agent-setup",
+            "agent-codex-plan"
+          ]
         },
         {
           "story": "Plan changes only to owned `PreToolUse` hook fragments, record backups and expected content hashes, then apply after rechecking file drift.",
           "building": "cli",
-          "code": ["agent-setup", "agent-codex-plan", "agent-codex-apply"]
+          "code": [
+            "agent-setup",
+            "agent-codex-plan",
+            "agent-codex-apply"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "agent-setup",
+                "agent-codex-plan",
+                "agent-codex-apply"
+              ],
+              "story": "Untrusted project, unsupported schema/version or missing usable Session returns a failed plan with zero settings changes."
+            }
+          ]
         },
         {
           "story": "Write an ownership manifest so doctor/remove can identify only this adapter; a partial write fails and rolls back from the saved content.",
           "building": "cli",
-          "code": ["agent-setup", "agent-codex-apply"]
+          "code": [
+            "agent-setup",
+            "agent-codex-apply"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "agent-setup",
+                "agent-codex-apply"
+              ],
+              "story": "Rechecked file drift aborts apply. Partial writes roll back saved content; failed rollback remains an explicit error."
+            }
+          ]
         }
       ]
     },
     {
       "id": "agent-doctor",
       "name": "Inspect adapter drift",
-      "summary": "Inspect adapter drift: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Inspect the installed adapter and report drift without repairing settings.",
       "steps": [
         {
-          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "story": "Detect the selected agent/version and configuration paths, including project trust and supported schema; malformed options fail before inspection.",
           "building": "cli",
-          "code": ["command-agent-doctor"]
+          "code": [
+            "command-agent-doctor"
+          ]
         },
         {
-          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "story": "Read ownership manifest and compare owned fragments/content hashes. Report missing/modified/duplicate fragments and capability blockers.",
           "building": "cli",
-          "code": ["command-agent-doctor"]
+          "code": [
+            "command-agent-doctor"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "command-agent-doctor"
+              ],
+              "story": "Unreadable/corrupt settings appear as failed checks and remediation; no repair is written by doctor."
+            }
+          ]
         },
         {
-          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "story": "Emit structured status checks and remediation; doctor does not apply a repair plan or overwrite user hooks.",
           "building": "cli",
-          "code": ["command-agent-doctor"]
+          "code": [
+            "command-agent-doctor"
+          ]
         }
       ]
     },
     {
       "id": "agent-remove",
       "name": "Remove owned adapter settings",
-      "summary": "Remove owned adapter settings: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Remove only settings whose ownership can be proven from the adapter manifest.",
       "steps": [
         {
-          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "story": "Load the agent’s ownership manifest and current settings; unsupported layers or unsafe paths are rejected before a write.",
           "building": "cli",
-          "code": ["command-agent-remove"]
+          "code": [
+            "command-agent-remove"
+          ]
         },
         {
-          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "story": "Plan removal of recorded hook fragments while retaining unrelated settings; verify file expected-state hashes/expected content immediately before apply.",
           "building": "cli",
-          "code": ["command-agent-remove"]
+          "code": [
+            "command-agent-remove"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "command-agent-remove"
+              ],
+              "story": "Ownership ambiguity or file drift rejects destructive edits; partial apply attempts rollback and reports failure."
+            }
+          ]
         },
         {
-          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "story": "Codex prints the removal plan unless --yes requests apply; recheck expected files before edits. Partial apply attempts rollback and reports a failure; unrelated hooks remain owned by the user.",
           "building": "cli",
-          "code": ["command-agent-remove"]
+          "code": [
+            "command-agent-remove"
+          ]
         }
       ]
     },
     {
       "id": "project-metadata",
       "name": "Manage project metadata",
-      "summary": "Manage project metadata: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Read and mutate project metadata through the public contract, independently of sandbox selection.",
       "steps": [
         {
-          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "story": "Parse identifiers, names (1–200 characters) and list limit (1–100); build an issuer-bound authenticated client without requiring a selected sandbox.",
           "building": "cli",
           "code": [
             "command-project-create",
@@ -2050,17 +2455,29 @@
           ]
         },
         {
-          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "story": "Send one project list/get/create/update request. Pagination is caller-driven; mutation uses the supplied retry key or a new UUID, so cross-invocation replay requires retaining --idempotency-retry key.",
           "building": "cli",
           "code": [
             "command-project-create",
             "command-project-get",
             "command-project-list",
             "command-project-update"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "command-project-create",
+                "command-project-get",
+                "command-project-list",
+                "command-project-update"
+              ],
+              "story": "Non-success API status or strict response-schema failure becomes a typed error with request identity; no unknown response bytes enter output."
+            }
           ]
         },
         {
-          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "story": "Validate a strict public response schema: create expects 201, other actions 200. Preserve request/replay metadata; unsafe response fields or transport parsing failures become typed errors.",
           "building": "cli",
           "code": [
             "command-project-create",
@@ -2074,10 +2491,10 @@
     {
       "id": "environment-metadata",
       "name": "Manage environment metadata",
-      "summary": "Manage environment metadata: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Read and mutate environment metadata through the public contract, independently of sandbox selection.",
       "steps": [
         {
-          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "story": "Parse identifiers, names (1–200 characters) and list limit (1–100); build an issuer-bound authenticated client without requiring a selected sandbox.",
           "building": "cli",
           "code": [
             "command-environment-create",
@@ -2087,17 +2504,29 @@
           ]
         },
         {
-          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "story": "Send one environment list/get/create/update request. Pagination is caller-driven; mutation uses the supplied retry key or a new UUID, so cross-invocation replay requires retaining --idempotency-retry key.",
           "building": "cli",
           "code": [
             "command-environment-create",
             "command-environment-get",
             "command-environment-list",
             "command-environment-update"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": [
+                "command-environment-create",
+                "command-environment-get",
+                "command-environment-list",
+                "command-environment-update"
+              ],
+              "story": "Empty update or invalid selected flag fails validation; authentication/ownership/server failures stay typed and retain request identity."
+            }
           ]
         },
         {
-          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "story": "Validate a strict public response schema: create expects 201, other actions 200. Preserve request/replay metadata; unsafe response fields or transport parsing failures become typed errors.",
           "building": "cli",
           "code": [
             "command-environment-create",
@@ -2111,197 +2540,265 @@
     {
       "id": "cli-init",
       "name": "Initialize project configuration",
-      "summary": "Initialize project configuration: local preparation, public API or filesystem effects, and confirmed completion.",
+      "summary": "Create or validate project config, completing hosted project onboarding when needed.",
       "steps": [
         {
-          "story": "Resolve configuration and parse command flags; malformed identifiers or unsafe inputs raise a validation error before an effect.",
+          "story": "Resolve config and provider: explicit flag, existing config, or hosted after login/fake otherwise. Parse existing config before changes; invalid state fails early.",
           "building": "cli",
-          "code": ["command-init"]
+          "code": [
+            "command-init"
+          ]
         },
         {
-          "story": "Execute the selected command through its owned API or local port. Capability checks reject unsupported hosted paths.",
+          "story": "If hosted project ID is absent, page project names for this directory, reject a repeated cursor, or create a project. This onboarding changes metadata, never creates a box.",
           "building": "cli",
-          "code": ["command-init"]
+          "code": [
+            "command-init"
+          ],
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "command-init",
+              "story": "Repeated pagination cursor, authentication failure or invalid project response fails onboarding. A config write failure cannot be reported as successful initialization."
+            }
+          ],
+          "repeat": true
         },
         {
-          "story": "Emit the shared human/JSON result or the typed error; command output uses the public representation and redacts sensitive data.",
+          "story": "Revalidate config, update existing content only when changed, or create exclusively with mode 0600 and sync. Filesystem error fails init; success returns created or validated.",
           "building": "cli",
-          "code": ["command-init"]
+          "code": [
+            "command-init"
+          ]
         }
       ]
     },
     {
       "id": "public-api-calls",
-      "name": "Public API calls and response validation",
-      "summary": "Public API calls and response validation: local preparation, public API or filesystem effects, and confirmed completion.",
+      "name": "Public client operation catalogue",
+      "summary": "Alternative client calls, not a sequential workflow. Each lane documents validation at one public contract boundary; command journeys explain the actual order.",
       "steps": [
         {
-          "story": "The client calls listProjects through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call listProjects and validate its public page. Continue with nextCursor only when the caller requests another page; malformed pages fail with a typed client error.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-list-projects"
         },
         {
-          "story": "The client calls createProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createProject with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-create-project"
         },
         {
-          "story": "The client calls getProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getProject for the configured identity and validate the public DTO. Missing or foreign resources map to a typed not-found error; response internals never enter output.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-get-project"
         },
         {
-          "story": "The client calls updateProject through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call updateProject with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-update-project"
         },
         {
-          "story": "The client calls listEnvironments through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call listEnvironments and validate its public page. Continue with nextCursor only when the caller requests another page; malformed pages fail with a typed client error.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-list-environments"
         },
         {
-          "story": "The client calls createEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createEnvironment with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-create-environment"
         },
         {
-          "story": "The client calls getEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getEnvironment for the configured identity and validate the public DTO. Missing or foreign resources map to a typed not-found error; response internals never enter output.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-get-environment"
         },
         {
-          "story": "The client calls updateEnvironment through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call updateEnvironment with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "module-metadata-client",
           "connection": "api-update-environment"
         },
         {
-          "story": "The client calls getExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getExecution for the saved identity. Validate the public response and preserve pending/terminal distinctions; an elapsed wait cannot certify that remote work stopped.",
           "building": "cli",
           "code": "hosted-events",
           "connection": "api-get-execution"
         },
         {
-          "story": "The client calls getExecutionResult through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getExecutionResult for the saved identity. Validate the public response and preserve pending/terminal distinctions; an elapsed wait cannot certify that remote work stopped.",
           "building": "cli",
           "code": "hosted-events",
           "connection": "cli-execution-result"
         },
         {
-          "story": "The client calls listExecutionEvents through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call listExecutionEvents and validate its public page. Continue with nextCursor only when the caller requests another page; malformed pages fail with a typed client error.",
           "building": "cli",
           "code": "hosted-events",
           "connection": "cli-execution-events"
         },
         {
-          "story": "The client calls getOperation through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getOperation for the saved identity. Validate the public response and preserve pending/terminal distinctions; an elapsed wait cannot certify that remote work stopped.",
           "building": "cli",
           "code": "hosted-operations",
           "connection": "cli-get-operation"
         },
         {
-          "story": "The client calls cancelOperation through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call cancelOperation with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "hosted-operations",
           "connection": "api-cancel-operation"
         },
         {
-          "story": "The client calls createSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createSession with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-create-session"
         },
         {
-          "story": "The client calls listSessions through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call listSessions and validate its public page. Continue with nextCursor only when the caller requests another page; malformed pages fail with a typed client error.",
           "building": "cli",
           "code": "provider-create",
           "connection": "api-list-sessions"
         },
         {
-          "story": "The client calls getSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call getSession for the configured identity and validate the public DTO. Missing or foreign resources map to a typed not-found error; response internals never enter output.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-get-session"
         },
         {
-          "story": "The client calls destroySession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call destroySession with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-destroy-session"
         },
         {
-          "story": "The client calls pauseSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call pauseSession with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-pause-session"
         },
         {
-          "story": "The client calls startSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call startSession with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-start-session"
         },
         {
-          "story": "The client calls stopSession through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call stopSession with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-stop-session"
         },
         {
-          "story": "The client calls cancelExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call cancelExecution with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-cancel-execution"
         },
         {
-          "story": "The client calls createExecution through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createExecution with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "cli-create-execution"
         },
         {
-          "story": "The client calls createPreview through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createPreview with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "api-create-preview"
         },
         {
-          "story": "The client calls deletePreview through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call deletePreview with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "provider-create",
           "connection": "api-delete-preview"
         },
         {
-          "story": "The client calls listSourceManifests through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call listSourceManifests and validate its public page. Continue with nextCursor only when the caller requests another page; malformed pages fail with a typed client error.",
           "building": "cli",
           "code": "upload-source",
           "connection": "cli-list-manifests"
         },
         {
-          "story": "The client calls createSourceManifest through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call createSourceManifest with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "upload-source",
           "connection": "cli-source-manifest"
         },
         {
-          "story": "The client calls uploadSourceChunk through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call uploadSourceChunk with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "upload-source",
           "connection": "cli-source-chunks"
         },
         {
-          "story": "The client calls verifySourceChecksum through its authenticated public contract. Inputs and response shapes are validated; non-success status becomes a typed error.",
+          "story": "Call verifySourceChecksum with its public request shape and mutation key. Validate success status and DTO; failures retain known operation identity rather than pretending the effect succeeded.",
           "building": "cli",
           "code": "upload-source",
           "connection": "cli-verify-checksum"
+        }
+      ]
+    },
+    {
+      "id": "cli-sync-pull",
+      "name": "Pull source on a local provider",
+      "summary": "Copy remote-only changes into local files on supported providers, with explicit deletion and recovery gates.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "command-sync-pull",
+          "story": "Resolve selected Session, local target and provider workspace. Hosted pull returns CAPABILITY_UNSUPPORTED before any local file changes."
+        },
+        {
+          "building": "cli",
+          "code": "sync-diff",
+          "story": "On a local provider, acquire the sync lock and build the three-way plan. Reject conflicts, unsafe paths and unresolved recovery; deletions require --delete and confirmation/--yes."
+        },
+        {
+          "building": "cli",
+          "code": "sync-recover",
+          "story": "Stage and journal each approved transfer, verify target before commit and publish baseline only from verified results. Partial failure retains recoverable evidence.",
+          "repeat": true,
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "sync-recover",
+              "story": "An interrupted target move retains the backup and journal; run sync recover before another transfer. Recovery rejects promotion of staged content."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-providers",
+      "name": "Inspect provider capabilities",
+      "summary": "Show the configured provider and declared capabilities without claiming that every interface is deployed.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": "command-providers",
+          "story": "Load and validate project config; resolve the provider registry entry. An unknown provider fails configuration before any command is dispatched."
+        },
+        {
+          "building": "cli",
+          "code": "command-providers",
+          "story": "Ask the selected adapter for declared capabilities and render its bounded public view. An unsupported capability remains a refusal at the operation boundary.",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": "command-providers",
+              "story": "Invalid config/provider selection returns a typed error; a declared method alone cannot make an unavailable hosted capability succeed."
+            }
+          ]
         }
       ]
     }
@@ -2311,7 +2808,9 @@
       "id": "cli-guide",
       "title": "ocbox CLI: architecture and boundaries",
       "path": "docs/architecture/cli.md",
-      "about": ["cli"],
+      "about": [
+        "cli"
+      ],
       "journeys": [
         "cli-login",
         "cli-start-box",
@@ -2337,21 +2836,32 @@
         "project-metadata",
         "environment-metadata",
         "cli-init",
-        "public-api-calls"
+        "public-api-calls",
+        "cli-sync-pull",
+        "cli-providers"
       ]
     },
     {
       "id": "auth-guide",
       "title": "CLI authentication and credential lifecycle",
       "path": "docs/architecture/authentication.md",
-      "about": ["cli"],
-      "journeys": ["cli-login", "cli-auth-status", "cli-auth-logout", "cli-token-refresh"]
+      "about": [
+        "cli"
+      ],
+      "journeys": [
+        "cli-login",
+        "cli-auth-status",
+        "cli-auth-logout",
+        "cli-token-refresh"
+      ]
     },
     {
       "id": "lifecycle-guide",
       "title": "CLI Sessions and hosted command execution",
       "path": "docs/architecture/sessions-and-execution.md",
-      "about": ["cli"],
+      "about": [
+        "cli"
+      ],
       "journeys": [
         "cli-start-box",
         "cli-resume",
@@ -2366,35 +2876,63 @@
       "id": "sync-guide",
       "title": "CLI source delivery and local transfer recovery",
       "path": "docs/architecture/source-and-sync.md",
-      "about": ["cli"],
-      "journeys": ["cli-sync-push", "cli-sync-diff", "cli-sync-recover"]
+      "about": [
+        "cli"
+      ],
+      "journeys": [
+        "cli-sync-push",
+        "cli-sync-diff",
+        "cli-sync-recover",
+        "cli-sync-pull"
+      ]
     },
     {
       "id": "agents-guide",
       "title": "Coding-agent adapters: ownership and routing",
       "path": "docs/architecture/agents.md",
-      "about": ["cli"],
-      "journeys": ["agent-routed-command", "agent-setup", "agent-doctor", "agent-remove"]
+      "about": [
+        "cli"
+      ],
+      "journeys": [
+        "agent-routed-command",
+        "agent-setup",
+        "agent-doctor",
+        "agent-remove"
+      ]
     },
     {
       "id": "state-guide",
       "title": "CLI local state and protected credentials",
       "path": "docs/architecture/state.md",
-      "about": ["cli"],
-      "journeys": ["cli-login", "cli-use", "cli-destroy"]
+      "about": [
+        "cli"
+      ],
+      "journeys": [
+        "cli-login",
+        "cli-use",
+        "cli-destroy"
+      ]
     },
     {
       "id": "metadata-guide",
       "title": "CLI metadata, configuration and capabilities",
       "path": "docs/architecture/metadata.md",
-      "about": ["cli"],
-      "journeys": ["project-metadata", "environment-metadata", "cli-init"]
+      "about": [
+        "cli"
+      ],
+      "journeys": [
+        "project-metadata",
+        "environment-metadata",
+        "cli-init"
+      ]
     },
     {
       "id": "map-tooling-guide",
       "title": "Architecture map tooling and dependency ownership",
       "path": "docs/architecture/map-tooling.md",
-      "about": ["cli"],
+      "about": [
+        "cli"
+      ],
       "journeys": []
     }
   ]
