@@ -2,7 +2,6 @@
   "name": "opencloudbox",
   "version": "0.1.0",
   "description": "Public command-line interface for OpenCloudBox",
-  "private": true,
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -19,7 +18,9 @@
     "opencloudbox": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "oclif.manifest.json"
   ],
   "exports": {
     "./contracts": {
@@ -33,7 +34,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": "24.20.0"
+    "node": ">=22"
   },
   "devEngines": {
     "runtime": {
@@ -44,7 +45,7 @@
     "packageManager": {
       "name": "pnpm",
       "version": "11.24.0",
-      "onFail": "error"
+      "onFail": "warn"
     }
   },
   "packageManager": "pnpm@11.24.0",
@@ -58,7 +59,7 @@
     "api:check": "node scripts/check-api-contract.mjs",
     "api:generate": "node scripts/generate-api-client.mjs",
     "bench:sync": "vitest bench bench/sync-manifest.bench.ts",
-    "build": "tsup && tsup --config tsup.helper.config.ts",
+    "build": "tsup && tsup --config tsup.helper.config.ts && node scripts/build-cli-manifest.mjs",
     "cli:smoke": "node dist/index.js --version && node dist/index.js --help && node dist/index.js sync --help && pnpm run helper:smoke",
     "dependencies:check": "pnpm audit --audit-level=high",
     "format": "biome format . --write",
@@ -67,10 +68,13 @@
     "licenses:check": "node scripts/check-licenses.mjs",
     "lint": "biome lint .",
     "test": "pnpm run api:check && pnpm run test:unit && pnpm run test:image-verifier && pnpm run build && pnpm run test:cli",
-    "test:cli": "node scripts/test-cli-lifecycle.mjs && node scripts/test-cli-exec.mjs && node scripts/test-cli-sync.mjs && node scripts/test-cli-auth.mjs",
+    "test:cli": "node scripts/test-cli-manifest.mjs && node scripts/test-cli-lifecycle.mjs && node scripts/test-cli-exec.mjs && node scripts/test-cli-sync.mjs && node scripts/test-cli-auth.mjs && node scripts/test-cli-metadata.mjs",
+    "test:cli:metadata": "node scripts/test-cli-metadata.mjs",
     "test:image-verifier": "node scripts/test-image-verifier.mjs",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test:unit",
+    "accept:installed": "node scripts/accept-installed.mjs --self-test"
   },
   "dependencies": {
     "@oclif/core": "4.14.0",
@@ -85,5 +89,16 @@
     "tsup": "8.5.1",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
+  },
+  "keywords": [
+    "opencloudbox",
+    "ocbox",
+    "cli",
+    "cloud",
+    "sandbox"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

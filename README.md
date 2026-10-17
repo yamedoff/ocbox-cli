@@ -3,8 +3,18 @@
 `ocbox` is the public command-line interface for OpenCloudBox. The current v0.1
 surface contains the oclif shell, provider-neutral domain and adapter contracts,
 the execution engine/helper boundary, the manifest-based `sync diff|push|pull`
-source transport, and OAuth 2.1 PKCE CLI authentication. Provider integrations
-remain out of scope.
+source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle commands use the issuer-bound login credential.
+
+## Install
+
+Requires Node.js ≥22.
+
+```sh
+npm i -g opencloudbox
+ocbox --help
+```
+
+The `opencloudbox` command is also available as an alias for `ocbox`.
 
 Library consumers import the side-effect-free contract entrypoint without
 starting the CLI:
@@ -26,6 +36,77 @@ routing adapter's setup/remove behavior and its manifest-loss reconstruction
 limits. See [docs/codex-adapter.md](docs/codex-adapter.md) for the Codex
 routing adapter's plan/apply setup, remove/restore behavior, manifest
 recovery, hook exit contract, Windows discovery, and byte-preserving edits.
+
+## Sync to a hosted sandbox
+
+After `ocbox init` and `ocbox start`, upload your current project before running it:
+
+```sh
+ocbox sync push
+ocbox exec -- cat a.txt
+ocbox sync push --exclude 'fixtures/**' --exclude large.bin
+```
+
+Hosted push uses the selected sandbox's persisted session mapping and uploads a
+checksummed OCBOXA1 source archive through manifest/chunk/checksum API routes.
+The server delivers the files under `/workspace/<projectId>`; hosted commands
+run from that project directory. Push reports uploaded paths and file bytes
+(with archive bytes separately). An unchanged push revalidates the latest
+matching server receipt and uploads no chunks; retries use session-scoped,
+content-addressed idempotency keys and immutable chunks.
+
+Staging limits are 100 files, 64 KiB per file, 512 KiB total file content, and
+1 MiB for the framed archive. Oversized files fail before upload and identify
+paths to exclude with `--exclude` or `.opencloudboxignore`. Existing ignore,
+secret, and path rules also apply. The OpenAPI schema ceilings may be higher;
+these are the managed staging policy limits.
+
+Hosted `sync pull`, `sync diff`, and `sync recover` are not supported yet: the
+API exposes manifest metadata, without file readback. Hosted push adds or
+replaces uploaded files; it cannot remove remote files, so `--delete` is
+unsupported. `--remote-dir` is available for the offline fake provider only,
+which retains its local workspace, three-way planning, and recovery behavior.
+
+## Hosted project and environment onboarding
+
+Log in once, then initialize and run a hosted sandbox without environment variables:
+
+```sh
+ocbox auth login
+ocbox init
+ocbox start
+ocbox exec -- node --version
+```
+
+The default API is staging (`https://api.staging.opencloudbox.dev`), switched to
+production at launch via `DEFAULT_API_URL`. `--api-url` and `OCBOX_API_URL`
+override it. `init` reuses a project named after the current directory or creates
+one and saves its ID in `opencloudbox.toml`. Project selection is `--project`,
+then `OCBOX_PROJECT_ID`, then the saved ID. Use `ocbox init --provider fake` for
+the offline harness. Hosted configs omit resource overrides by default so the
+server chooses the free tier. Optional `--cpu` (cores), `--memory` (bytes),
+`--image`, `--region`, and `--runtime` request explicit resources.
+
+Metadata commands also use the protected login credential:
+
+```sh
+ocbox project list --limit 20 --json
+ocbox project create --name "My project" --idempotency-key onboarding-project-001 --json
+ocbox project get --project-id PROJECT_ID --json
+ocbox project update --project-id PROJECT_ID --name "My renamed project" --json
+ocbox environment list --project-id PROJECT_ID --json
+ocbox environment create --project-id PROJECT_ID --name development --json
+ocbox environment get --environment-id ENVIRONMENT_ID --json
+ocbox environment update --environment-id ENVIRONMENT_ID --selected true --json
+```
+
+Replace the ID placeholders with the IDs returned by create/list. List commands
+return one bounded page; pass its `nextCursor` to `--cursor` for the next page.
+Mutation commands accept `--idempotency-key` for a safe retry across invocations;
+otherwise they generate a new UUID per invocation. Environment update accepts
+`--name`, `--selected true`, or `--selected false` and requires at least one.
+
+Use `--state-dir` consistently with login if you override the auth state root.
 
 ## Toolchain
 
@@ -67,3 +148,25 @@ pnpm run licenses:check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
 [docs/dependency-policy.md](docs/dependency-policy.md) for pinning policy.
+
+The installed-CLI acceptance harness packs and installs the CLI into an isolated
+directory and exercises login and the hosted journey. Its offline self-test uses
+a local HTTP fixture:
+
+```sh
+node scripts/accept-installed.mjs --self-test
+node scripts/accept-installed.mjs --api-url https://api.example.test
+```
+
+To run against the hosted service with a test mailbox, set
+`OCB_TEST_MAILBOX_API_KEY`, `OCB_TEST_MAILBOX_NAMESPACE`,
+`OCB_TEST_MAILBOX_API_URL`, `OCB_TEST_MAILBOX_DOMAIN`, and
+`OCB_ACCEPT_WEB_ORIGIN`, then run
+`node scripts/accept-installed.mjs --api-url <hosted API origin>`.
+The test mailbox adapter polls tagged messages from the email provider.
+Without the mailbox credentials, login waits for manual browser authorization.
+Add `--verbose` to print sub-step methods, paths without query values, statuses,
+and durations to stderr. Credentials and mailbox bodies stay out of evidence
+and the installed CLI's environment.
+
+Use `ocbox cancel [execution-id] [--sandbox <local-id>]` from any terminal to cancel an execution; `--wait-timeout` bounds the wait in milliseconds.

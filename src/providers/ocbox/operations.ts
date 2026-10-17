@@ -14,6 +14,7 @@ import {
   type RetryPolicy,
   resolvePollDelayMilliseconds,
   sleepWithSignal,
+  parseRetryAfterSeconds,
 } from './retry.js'
 import {
   HostedOperationSchema,
@@ -21,10 +22,16 @@ import {
   type HostedOperationState,
 } from './wire.js'
 
+export const DEFAULT_SOURCE_APPLY_POLL_MILLISECONDS = 1_000
+
 export interface WaitOperationOptions {
+  /** Let the caller map terminal failures for its command. */
+  readonly returnTerminalFailure?: boolean | undefined
   readonly deadlineMilliseconds?: number | undefined
   readonly maxWaitMilliseconds?: number | undefined
   readonly pollMilliseconds?: number | undefined
+  /** Opt in to a steady cadence after healthy polls; failures still back off. */
+  readonly healthyPollMilliseconds?: number | undefined
   readonly signal?: AbortSignal | undefined
   readonly sleep?: ((milliseconds: number) => Promise<void>) | undefined
   readonly now?: (() => number) | undefined
@@ -224,7 +231,7 @@ export async function waitForHostedOperation(
     checkpoint.state !== null &&
     isTerminalOperationState(checkpoint.state)
   ) {
-    const failure = terminalFailureOf(checkpoint.operation)
+    const failure = options.returnTerminalFailure ? null : terminalFailureOf(checkpoint.operation)
     if (failure !== null) throw failure
     return {
       fromCheckpoint: true,
@@ -272,7 +279,23 @@ export async function waitForHostedOperation(
       })
     } catch (error) {
       if (options.signal?.aborted === true) throw cancelledError(createId)
-      throw error
+      if (
+        options.healthyPollMilliseconds === undefined ||
+        !(error instanceof OcboxError) ||
+        !error.retryable
+      )
+        throw error
+      await save()
+      await abortableSleep(
+        sleep,
+        Math.min(
+          resolvePollDelayMilliseconds({ attempt, policy, random, retryAfterSeconds: null }),
+          deadline.remainingMilliseconds(),
+        ),
+        options.signal,
+        createId,
+      )
+      continue
     }
     if (result.status < 200 || result.status >= 300) {
       const envelope = envelopeOf(result.body)
@@ -280,7 +303,10 @@ export async function waitForHostedOperation(
         operation: 'getOperation',
         requestId: result.requestId ?? envelope.requestId ?? null,
         responseRequestId: envelope.requestId ?? result.requestId ?? null,
-        retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
+        retryAfterSeconds:
+          parseRetryAfterSeconds(result.retryAfter) ??
+          envelope.retryAfterSeconds ??
+          retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
         status: result.status,
@@ -292,7 +318,8 @@ export async function waitForHostedOperation(
             attempt,
             policy,
             random,
-            retryAfterSeconds: retryAfterOf(result.body),
+            retryAfterSeconds:
+              parseRetryAfterSeconds(result.retryAfter) ?? retryAfterOf(result.body),
           }),
           deadline.remainingMilliseconds(),
         )
@@ -324,7 +351,10 @@ export async function waitForHostedOperation(
     latestRequestId = result.requestId
     latestOperation = operation
     await save()
-    if (operation.state === 'succeeded') {
+    if (
+      operation.state === 'succeeded' ||
+      (options.returnTerminalFailure && isTerminalOperationState(operation.state))
+    ) {
       return {
         fromCheckpoint: false,
         operation,
@@ -344,12 +374,16 @@ export async function waitForHostedOperation(
       })
     }
     const delay = Math.min(
-      resolvePollDelayMilliseconds({
-        attempt,
-        policy,
-        random,
-        retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
-      }),
+      result.status === 200 &&
+        operation.error === null &&
+        options.healthyPollMilliseconds !== undefined
+        ? options.healthyPollMilliseconds
+        : resolvePollDelayMilliseconds({
+            attempt,
+            policy,
+            random,
+            retryAfterSeconds: operation.error?.retryAfterSeconds ?? null,
+          }),
       remaining,
     )
     await abortableSleep(sleep, delay, options.signal, createId)
@@ -404,7 +438,10 @@ export async function cancelHostedOperation(
         operation: 'cancelOperation',
         requestId: result.requestId ?? envelope.requestId ?? null,
         responseRequestId: envelope.requestId ?? result.requestId ?? null,
-        retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
+        retryAfterSeconds:
+          parseRetryAfterSeconds(result.retryAfter) ??
+          envelope.retryAfterSeconds ??
+          retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
         status: result.status,
@@ -421,7 +458,11 @@ export async function cancelHostedOperation(
       }
       await sleepWithSignal(
         Math.min(
-          resolvePollDelayMilliseconds({ attempt, retryAfterSeconds: retryAfterOf(result.body) }),
+          resolvePollDelayMilliseconds({
+            attempt,
+            retryAfterSeconds:
+              parseRetryAfterSeconds(result.retryAfter) ?? retryAfterOf(result.body),
+          }),
           remaining,
         ),
         signal,

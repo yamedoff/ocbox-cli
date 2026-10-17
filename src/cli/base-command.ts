@@ -1,8 +1,9 @@
 import { Command, Flags } from '@oclif/core'
 import type { OutputWriter } from '../output/index.js'
-import { createOutputWriter, type RuntimeFlags } from './runtime.js'
+import { createOutputWriter, hostedRuntimeFlags, type RuntimeFlags } from './runtime.js'
 
 export const runtimeFlags = {
+  ...hostedRuntimeFlags,
   config: Flags.string({ description: 'Path to opencloudbox.toml' }),
   json: Flags.boolean({ description: 'Emit one stable JSON envelope' }),
   jsonl: Flags.boolean({ description: 'Emit one compact JSON envelope per line' }),

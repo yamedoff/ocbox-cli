@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
-import { Flags } from '@oclif/core'
+import { Flags, ux } from '@oclif/core'
 import { RequestIdSchema } from '../contracts.js'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
-import { createLifecycleService } from '../cli/runtime.js'
+import { createLifecycleService, loadProjectConfig } from '../cli/runtime.js'
 import { sessionViewLine } from '../cli/views.js'
 import { OcboxError } from '../errors/index.js'
 
@@ -32,6 +32,7 @@ export default class Destroy extends OcboxCommand {
   async run(): Promise<void> {
     const { flags } = await this.parse(Destroy)
     const interrupt = this.abortOnInterrupt()
+    let spinning = false
     try {
       await this.emitResult(flags, 'session.destroyed', sessionViewLine, async () => {
         if (flags.yes !== true && !(await confirmDestroy())) {
@@ -41,9 +42,22 @@ export default class Destroy extends OcboxCommand {
             requestId: RequestIdSchema.parse(randomUUID()),
           })
         }
+        if (
+          !flags.json &&
+          !flags.jsonl &&
+          (await loadProjectConfig(flags)).provider.name === 'ocbox'
+        ) {
+          if (process.stderr.isTTY) {
+            ux.action.start('Waiting for hosted sandbox deletion')
+            spinning = true
+          } else {
+            process.stderr.write('Waiting for hosted sandbox deletion...\n')
+          }
+        }
         return (await createLifecycleService(flags, interrupt.signal)).destroy(flags.session)
       })
     } finally {
+      if (spinning) ux.action.stop()
       interrupt.dispose()
     }
   }

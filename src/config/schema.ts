@@ -6,8 +6,8 @@ import {
   OperatingSystemSchema,
   ProviderRuntimeClassSchema,
   SandboxSourceSpecSchema,
-  SandboxSpecSchema,
   type SandboxSpec,
+  SandboxSpecSchema,
 } from '../domain/spec.js'
 import {
   findSensitiveMaterial,
@@ -32,22 +32,26 @@ const AllowedHostSchema = z
 
 export const ProviderConfigSchema = z.strictObject({
   name: z.string().regex(PROVIDER_NAME_PATTERN),
-  runtimeClass: ProviderRuntimeClassSchema,
-  region: z.string().regex(REGION_PATTERN),
+  runtimeClass: ProviderRuntimeClassSchema.default('container'),
+  region: z.string().regex(REGION_PATTERN).default('local'),
 })
 
 export const ResourceConfigSchema = z.strictObject({
-  cpuMillicores: z.number().int().positive().safe(),
-  memoryBytes: z.number().int().positive().safe(),
-  diskBytes: z.number().int().positive().safe(),
+  cpuMillicores: z.number().int().positive().safe().default(1000),
+  memoryBytes: z.number().int().positive().safe().default(2147483648),
+  diskBytes: z.number().int().positive().safe().default(10737418240),
 })
 
 export const SandboxConfigSchema = z.strictObject({
   operatingSystem: OperatingSystemSchema,
   architecture: ArchitectureSchema,
-  image: ImageReferenceSchema,
+  image: ImageReferenceSchema.default({ kind: 'template', reference: 'fake-node-24' }),
   environmentName: z.string().regex(REGION_PATTERN).default('development'),
-  resources: ResourceConfigSchema,
+  resources: ResourceConfigSchema.default({
+    cpuMillicores: 1000,
+    memoryBytes: 2147483648,
+    diskBytes: 10737418240,
+  }),
 })
 
 export const NetworkConfigSchema = z
@@ -139,6 +143,7 @@ export const NonSecretEnvironmentSchema = z
 /** Canonical, versioned project configuration stored in `opencloudbox.toml`. */
 export const ProjectConfigSchema = z.strictObject({
   schemaVersion: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
+  projectId: z.string().trim().min(1).optional(),
   provider: ProviderConfigSchema,
   sandbox: SandboxConfigSchema,
   network: NetworkConfigSchema,
