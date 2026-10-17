@@ -54,6 +54,98 @@ export function parseOpenapiOps(text) {
         out.add(m[1]);
     return out;
 }
+// ---------- callers: other repos that call this repo's API ----------
+const METHODS = new Set(["get", "put", "post", "delete", "patch", "head", "options", "trace"]);
+/** operationId -> "METHOD /path". A line scanner for block-style YAML (or JSON), not a full parser. */
+export function openapiRoutes(text) {
+    const out = new Map();
+    if (/^\s*\{/.test(text)) {
+        try {
+            const doc = JSON.parse(text);
+            for (const [path, item] of Object.entries(doc.paths || {}))
+                for (const [m, op] of Object.entries(item || {}))
+                    if (METHODS.has(m) && op && typeof op.operationId === "string")
+                        out.set(op.operationId, `${m.toUpperCase()} ${path}`);
+        }
+        catch { /* not JSON: fall through to the YAML scanner */ }
+        if (out.size)
+            return out;
+    }
+    let inPaths = false, pathIndent = -1, path = "", methodIndent = -1, method = "";
+    for (const line of text.split(/\r?\n/)) {
+        if (!line.trim() || /^\s*#/.test(line))
+            continue;
+        const indent = line.length - line.trimStart().length;
+        if (indent === 0) {
+            inPaths = /^paths\s*:\s*$/.test(line);
+            path = "";
+            method = "";
+            pathIndent = -1;
+            continue;
+        }
+        if (!inPaths)
+            continue;
+        const key = /^\s*(['"]?)([^'":]+)\1\s*:/.exec(line)?.[2];
+        if (key?.startsWith("/") && (pathIndent < 0 || indent === pathIndent)) {
+            pathIndent = indent;
+            path = key;
+            method = "";
+            methodIndent = -1;
+            continue;
+        }
+        if (path && key && METHODS.has(key) && indent > pathIndent && (methodIndent < 0 || indent === methodIndent)) {
+            methodIndent = indent;
+            method = key;
+            continue;
+        }
+        if (method && indent <= methodIndent)
+            method = "";
+        const id = /^\s*operationId\s*:\s*['"]?([A-Za-z0-9_.-]+)/.exec(line)?.[1];
+        if (id && path && method)
+            out.set(id, `${method.toUpperCase()} ${path}`);
+    }
+    return out;
+}
+/** Where a map uses each openapi:<operationId> (connections, journey triggers, served operations). */
+export function operationsUsed(map) {
+    const out = new Map(), add = (ref, where) => {
+        if (typeof ref !== "string" || !OP.test(ref))
+            return;
+        const id = ref.slice(8);
+        out.set(id, [...(out.get(id) || []), where]);
+    };
+    for (const c of map.connections || [])
+        add(c.to, `connection ${connId(c)}`);
+    for (const j of map.journeys || [])
+        add(j.trigger, `journey ${j.id}`);
+    return out;
+}
+/**
+ * Cross-repo contract check, run in the repo that serves the API. A caller (another repo's map.json) must only
+ * use operations that still exist here, at the same method and path as the caller's own copy of the OpenAPI file.
+ * Errors: an operation the caller uses is gone, or moved. Warning: the caller's copy differs from this repo's file.
+ */
+export function checkCallers(caller, callerMap, providerSpec, callerSpec) {
+    const out = [];
+    const here = openapiRoutes(providerSpec), theirs = callerSpec === null ? null : openapiRoutes(callerSpec);
+    const used = operationsUsed(callerMap);
+    for (const [id, where] of [...used].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const at = where.slice(0, 3).join(", ") + (where.length > 3 ? ", …" : "");
+        if (!here.has(id))
+            out.push({ level: "error", rule: "X-1", path: caller, message: `X-1: ${caller} calls ${id} (${at}) but this repo's OpenAPI file no longer has it` });
+        else if (theirs?.has(id) && theirs.get(id) !== here.get(id))
+            out.push({ level: "error", rule: "X-1", path: caller, message: `X-1: ${id} is ${here.get(id)} here but ${caller}'s copy says ${theirs.get(id)} (${at})` });
+    }
+    if (callerSpec === null)
+        out.push({ level: "warning", rule: "X-2", path: caller, message: `X-2: ${caller} has no OpenAPI copy set in its map.json ("openapi"), so methods and paths were not compared` });
+    else if (callerSpec.replace(/\r\n/g, "\n").trimEnd() !== providerSpec.replace(/\r\n/g, "\n").trimEnd()) {
+        const a = callerSpec.split(/\r?\n/), b = providerSpec.split(/\r?\n/), A = new Set(a), B = new Set(b);
+        const changed = a.filter((l) => !B.has(l)).length + b.filter((l) => !A.has(l)).length;
+        const added = [...here.keys()].filter((id) => !theirs.has(id)).sort();
+        out.push({ level: "warning", rule: "X-2", path: caller, message: `X-2: ${caller}'s copy of the OpenAPI file is out of date (about ${changed} line${changed === 1 ? "" : "s"} differ${added.length ? `; new here: ${added.slice(0, 6).join(", ")}${added.length > 6 ? ", …" : ""}` : ""}). Update its copy` });
+    }
+    return out;
+}
 const isRelPath = (p) => !!p && !p.startsWith("/") && !/^[A-Za-z]:/.test(p) && !p.split(/[\\/]/).includes("..") && !/^~/.test(p);
 const INDENT_LANG = /\.(py|pyi|rb|ya?ml|coffee)$/i;
 const KW_BLOCK = "function\\*?|class|def|func|fn|struct|enum|interface|trait|impl|module|object|record|namespace|protocol|extension";

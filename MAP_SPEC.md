@@ -172,3 +172,19 @@ The public repo owns client facts and public operation IDs. The private repo own
 server implementation facts. Notion joins the journeys at those operation IDs.
 Review the complete public diff before pushing; a post-push content guard only
 detects already-published content. Never copy a private map into a public repo.
+
+## Calls between repos (X-1, X-2)
+
+A public repo calls the private API only through `openapi:<operationId>` and keeps its own copy of the
+OpenAPI file (`"openapi"` in its map.json). Its own `check` already fails if its map calls an operation
+missing from that copy.
+
+The repo that serves the API also checks its callers. Install the kit there with
+`--callers owner/name@branch` and CI runs `node tools/map/cli.mjs callers --repo owner/name@branch`,
+which reads the caller's map.json and OpenAPI copy from GitHub:
+
+- **X-1 (error):** the caller's map uses an operation this repo's OpenAPI file no longer has, or has at a
+  different method or path than the caller's copy. Fix the API change, or update the caller first.
+- **X-2 (warning):** the caller's copy of the OpenAPI file differs from this repo's. Update the copy.
+
+`--local <dir>` reads the caller from a local checkout instead of GitHub.
