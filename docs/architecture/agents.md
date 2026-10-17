@@ -20,4 +20,31 @@ Both adapter source timeout contracts configure a 600-second hook deadline, a 30
 ## When it fails
 Unsupported versions, untrusted project configuration, managed hook locks, overlapping rules, file drift and missing ownership evidence stop the relevant write or route. applyCodexChangePlan revalidates preconditions and rolls back written files after a later failure. Hook timeout/cancellation is distinct from the remote command's exit code.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+
+## Planning and application are separate
+`src/agents/codex/planner.ts:452-768` validates the installed version, trust, selected recorded Session, parsed configuration and proven hook contract before returning changes. `desiredSessionFragment:225-244`, `representationFor:246-256`, `buildFragmentDrift:324-345`, `removeMatchingGroups:384-393` and `failedSetup:424-450` expose bounded responsibilities. The removal command prints a plan unless `--yes` applies it (`src/commands/agent/remove.ts`); doctor is read-only.
+
+
+## Source responsibilities
+
+These source definitions are the navigation index for the responsibilities above. Line ranges refer to the verified source snapshot.
+
+| Responsibility | Source |
+| --- | --- |
+| runClaudeRoutingHook | `src/agents/claude-code/hook.ts:115-151` |
+| planSetup | `src/agents/claude-code/planner.ts:361-502` |
+| desiredSessionFragment | `src/agents/codex/planner.ts:225-244` |
+| applyCodexChangePlan | `src/agents/codex/planner.ts:1227-1272` |
+| planMerge | `src/agents/claude-code/merge.ts:120-253` |
+| parseSettingsJson | `src/agents/claude-code/settings-model.ts:77-194` |
+| parseOwnedCodexCommand | `src/agents/codex/ownership.ts:102-130` |
+| resolveCodexPaths | `src/agents/codex/paths.ts:76-142` |
+| editTomlHooks | `src/agents/codex/toml-edit.ts:415-423` |
+| checkCodexVersion | `src/agents/codex/version.ts:136-203` |
+| resolveExecutableOnPath | `src/agents/executable-resolution.ts:130-157` |
+| representationFor | `src/agents/codex/planner.ts:246-256` |
+| buildFragmentDrift | `src/agents/codex/planner.ts:324-345` |
+| removeMatchingGroups | `src/agents/codex/planner.ts:384-393` |
+| failedSetup | `src/agents/codex/planner.ts:424-450` |
+
+Verified against ocbox-cli @ 8af54e8

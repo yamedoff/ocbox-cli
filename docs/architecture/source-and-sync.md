@@ -22,4 +22,20 @@ Hosted source: 100 files, 64 KiB per file, 512 KiB total content, 1 MiB archive.
 ## When it fails
 Hosted pull, diff and recover are refused when their hosted capability is absent; hosted push with --delete is unsupported. Local deletion requires --delete and explicit confirmation/--yes. Unsafe paths, sensitive material, checksum mismatch, conflicts and incomplete recovery fail without a force/replace bypass.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+
+## Source responsibilities
+
+These source definitions are the navigation index for the responsibilities above. Line ranges refer to the verified source snapshot.
+
+| Responsibility | Source |
+| --- | --- |
+| runSyncApply | `src/sync/service.ts:775-877` |
+| scanSourceManifest | `src/sync/manifest.ts:309-470` |
+| planSync | `src/sync/planner.ts:251-383` |
+| encodeSyncArchive | `src/sync/archive.ts:144-196` |
+| runHostedPush | `src/sync/service.ts:671-769` |
+| runSyncDiff | `src/sync/service.ts:587-596` |
+| runSyncRecover | `src/sync/service.ts:883-911` |
+| LocalTransferAdapter.recover | `src/sync/local-transfer-adapter.ts:129-170` |
+
+Verified against ocbox-cli @ 8af54e8

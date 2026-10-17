@@ -20,4 +20,15 @@ State-directory flags/environment choose where machine state lives. Credential s
 ## When it fails
 Lock conflict, cancellation, schema corruption, stale generation and protection failure have typed errors. Logout/rollback report failed cleanup. The deprecated Local state map record preserves earlier human notes while active code entries point to the CLI state area.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+
+## Source responsibilities
+
+These source definitions are the navigation index for the responsibilities above. Line ranges refer to the verified source snapshot.
+
+| Responsibility | Source |
+| --- | --- |
+| HostedOAuthCredentialStore | `src/credentials/store.ts:41-68` |
+| PowerShellWindowsAclProtector.protectAndVerify | `src/credentials/windows-acl.ts:96-103` |
+| ExclusiveFileLock.#acquire | `src/state/exclusive-file-lock.ts:109-125` |
+
+Verified against ocbox-cli @ 8af54e8

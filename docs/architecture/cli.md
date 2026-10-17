@@ -18,9 +18,9 @@ Login establishes an issuer/client/audience-bound credential generation. A selec
 The vendored OpenAPI file and generated client define the server contract; provenance and api:check detect drift. Runtime configuration selects API base, hosted project, state directory and resource request. Source upload caps and capability refusals are detailed in Source and sync. The shared map engine has no vendor catalogue; repository-owned dependency declarations classify all imported packages.
 
 ## When it fails
-Invalid configuration, unsupported capabilities, stale credentials, an absent Session and incomplete remote work have distinct typed errors. Human, JSON and JSONL outputs share a redacted result contract. The public repo explains what its client sends and observes; the private repo explains how the server performs that work.
+Invalid configuration, unsupported capabilities, stale credentials, an absent Session and incomplete remote work have distinct typed errors. Human, JSON and JSONL outputs share a redacted result contract. The public repo explains what its client sends and observes; the API operation boundary owns server behavior.
 
 ## Read and play
 Start with Sign in from the CLI, Start a box from the CLI, Push local files to the box and Run a command from the CLI. Public API connection IDs bridge these client stories to server journeys in Notion. This guide describes source behavior at the commit below; it is not a new live product acceptance report.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+Verified against ocbox-cli @ 8af54e8
