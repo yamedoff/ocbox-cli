@@ -4,7 +4,7 @@
 The CLI is an application on the developer's machine. It authenticates, keeps a local project/Session selection, uploads source and runs commands through the public API. It also installs owned coding-agent hooks. It contains client orchestration, not the hosted service implementation.
 
 ## Inside
-The map has one active application building with ten areas: commands, auth, lifecycle, execution, sync, agents, state, hosted API, provider contract and domain validation. The old Local state building is deprecated and kept for its human notes. Coding agents remain an outside caller.
+The map has one active application building with fourteen areas: commands, auth, lifecycle, execution, sync, agents, state, hosted API, provider contract, domain validation, project configuration, output, typed errors, and redaction with path safety. The old Local state building is deprecated and kept for its human notes. Coding agents remain an outside caller.
 
 The command runtime builds a LifecycleService, an authenticated generated client and the selected provider. The registry wires the hosted ocbox provider and a fake provider used for local validation. Provider interfaces describe capabilities; having a method in an interface does not prove that staging supports it.
 
@@ -23,4 +23,4 @@ Invalid configuration, unsupported capabilities, stale credentials, an absent Se
 ## Read and play
 Start with Sign in from the CLI, Start a box from the CLI, Push local files to the box and Run a command from the CLI. Public API connection IDs bridge these client stories to server journeys in Notion. This guide describes source behavior at the commit below; it is not a new live product acceptance report.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+Verified against ocbox-cli @ 21f12a95ae49f7a343c17576a5aea1cb6c36f659
