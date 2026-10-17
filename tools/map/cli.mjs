@@ -7,11 +7,14 @@
 //   node tools/map/cli.mjs report [--base <ref>]                             markdown summary for CI ($GITHUB_STEP_SUMMARY)
 //   node tools/map/cli.mjs sync [--pr <n>]                                   ask the Notion Worker to re-sync now (needs MAP_SYNC_URL + MAP_SYNC_SECRET)
 //   node tools/map/cli.mjs init                                              write a starter map.json from the folder layout
+//   node tools/map/cli.mjs callers --repo <owner/name@branch>[,…] [--local <dir>]
+//                                                                            in the repo that serves the API: fail if another repo's map calls
+//                                                                            an operation that is gone or moved here (reads its map.json from GitHub)
 import { execFileSync } from "node:child_process"
 import { createHmac } from "node:crypto"
 import { existsSync, readFileSync, statSync, writeFileSync, readdirSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { check, coverage, diff, summarize, journeysTouched, parseOpenapiOps, flatten } from "./mapcore.mjs"
+import { check, checkCallers, coverage, diff, summarize, journeysTouched, parseOpenapiOps, flatten } from "./mapcore.mjs"
 
 const args = process.argv.slice(2)
 const cmd = args[0] || "check"
@@ -208,6 +211,43 @@ if (cmd === "sync") {
   process.exit(res.ok ? 0 : 1)
 }
 
+if (cmd === "callers") {
+  const map = readMap()
+  if (!map.openapi) { console.error(red("callers: set \"openapi\" in this repo's map.json to the OpenAPI file it serves")); process.exit(1) }
+  const spec = readRepoFile(map.openapi)
+  if (spec === null) { console.error(red(`callers: ${map.openapi} not found`)); process.exit(1) }
+  const repos = (opt("--repo", "") || "").split(",").map((r) => r.trim()).filter(Boolean)
+  const local = opt("--local", null)
+  if (!repos.length && !local) { console.error(red("callers: pass --repo owner/name@branch (or --local <dir> for a checkout)")); process.exit(1) }
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ""
+  /** A file from another repo: a local checkout, or GitHub's contents API (public repos need no token). */
+  async function remote(full, ref, path) {
+    if (local) { const f = join(resolve(local), path); return existsSync(f) ? readFileSync(f, "utf8") : null }
+    const url = `https://api.github.com/repos/${full}/contents/${path.split("/").map(encodeURIComponent).join("/")}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`
+    const res = await fetch(url, { headers: { accept: "application/vnd.github.raw+json", "user-agent": "architecture-map", ...(token ? { authorization: `Bearer ${token}` } : {}) } })
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`${full}: GitHub returned ${res.status} for ${path}`)
+    return res.text()
+  }
+  let errors = 0, warnings = 0
+  for (const entry of local && !repos.length ? [`local:${local}`] : repos) {
+    const [full, ref] = local ? [entry, ""] : entry.split("@")
+    let callerMap, callerSpec
+    try {
+      const text = await remote(full, ref, "map.json")
+      if (text === null) { console.log(`${yel("warning")} ${full}${ref ? `@${ref}` : ""} has no map.json; nothing to check`); warnings++; continue }
+      callerMap = loadMap(text, `${full} map.json`)
+      callerSpec = callerMap.openapi ? await remote(full, ref, callerMap.openapi) : null
+    } catch (e) { console.error(red(`callers: could not read ${full}: ${e.message}`)); process.exit(2) }
+    const issues = checkCallers(callerMap.repo || full, callerMap, spec, callerSpec)
+    for (const i of issues) console.log(`${i.level === "error" ? red("error") : yel("warning")} ${i.message.replace(/^X-\d+: /, "")}`)
+    errors += issues.filter((i) => i.level === "error").length
+    warnings += issues.filter((i) => i.level === "warning").length
+    if (!issues.some((i) => i.level === "error")) console.log(`${grn("✓")} ${full}${ref ? `@${ref}` : ""}: every operation its map calls exists here at the same method and path`)
+  }
+  process.exit(errors ? 1 : 0)
+}
+
 if (cmd === "init") {
   if (existsSync(mapPath)) { console.error(yel("map.json already exists")); process.exit(1) }
   const kindOf = (dir) => /worker|job|cron/.test(dir) ? "worker" : /web|app|cli|site|ui/.test(dir) ? "app" : /db|database|migrations/.test(dir) ? "database" : "service"
@@ -224,5 +264,5 @@ if (cmd === "init") {
   process.exit(0)
 }
 
-console.error(`unknown command ${cmd}. Commands: check, coverage, touched, diff, report, sync, init`)
+console.error(`unknown command ${cmd}. Commands: check, coverage, touched, diff, report, sync, init, callers`)
 process.exit(1)
