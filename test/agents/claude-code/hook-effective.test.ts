@@ -50,7 +50,7 @@ function hookPayload(command: string): string {
 /**
  * Hosted routes for a mapped sandbox plus one completed remote execution. The
  * effective spec is exactly what the hosted Session reports, so the provider
- * mapping (not the requested spec) decides whether the shell route is valid.
+ * mapping preserves observed OS metadata; an unknown OS is decided remotely.
  */
 function hostedRoutes(effectiveSpec: Record<string, unknown>): {
   commands: string[]
@@ -247,7 +247,7 @@ describe('hosted effective spec reaches the claude-code shell route', () => {
     )
   })
 
-  it('blocks an unobserved effective spec instead of promoting the Linux request', async () => {
+  it('routes an unobserved effective spec without promoting the Linux request', async () => {
     const { commands, target } = await hostedExecutionTarget({ operatingSystem: 'linux' })
     expect(target.sandbox?.specification.effective).toBeNull()
     expect(target.sandbox?.specification.requested.operatingSystem).toBe('linux')
@@ -255,9 +255,9 @@ describe('hosted effective spec reaches the claude-code shell route', () => {
     const { decisions, exitCode } = await runHook(target, 'echo hi')
 
     expect(exitCode).toBe(2)
-    expect(commands).toEqual([])
+    expect(commands).toEqual(['echo hi'])
     expect(decisions[0]?.hookSpecificOutput.permissionDecisionReason).toContain(
-      'ocbox-block[guard]',
+      'ocbox-block[route]',
     )
   })
 })

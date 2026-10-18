@@ -6,6 +6,8 @@ LifecycleService maintains local Session views and operations. OcboxSandboxProvi
 ## Inside
 Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms absence before dropping a local mapping.
 
+Explicit shell mode rejects a known non-Linux effective OS. When the hosted effective specification is incomplete, the adapter keeps it unobserved and the remote executor decides shell compatibility; the requested spec is never promoted to observed metadata.
+
 Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents orders by sequence, skips duplicates, checkpoints the cursor and can fall back from streaming to polling. The helper emits framed events and coordinates interrupt/timeout with cancellation. The command's nonzero exit is separate from infrastructure failure.
 
 ## Data it keeps
@@ -20,4 +22,6 @@ Operation wait defaults to 5 minutes. Event collection defaults to a 5-minute wa
 ## When it fails
 Unsupported capabilities fail before pretending to perform an action. The client has a pause method, but the managed staging serving-capability list does not expose pauseSession. Preview methods exist in the provider but are subject to capability checks; a method's presence is not live deployment evidence. Lost replies preserve recovery evidence. Cancellation requires a terminal observation or reports incomplete convergence.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This also applies to errors while collecting events or reading a final result; it does not turn an unavailable event history into successful command output.
+
+Verified against ocbox-cli @ 8c1d6ce

@@ -472,7 +472,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.create",
-      "lines": "473-474",
+      "lines": "474-475",
       "summary": "Calls createSession for the bound project, polls the returned operation until the sandbox is ready, and saves the hosted session id locally.",
       "calls": ["api-client"],
       "area": "hosted-api"
@@ -484,7 +484,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#execute",
-      "lines": "1072-1199",
+      "lines": "1073-1200",
       "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
       "calls": ["api-client"],
       "area": "hosted-api"
@@ -492,13 +492,13 @@
     {
       "id": "exec-runner",
       "building": "cli",
-      "name": "runExecutionCommand",
+      "name": "runExecutionCommandResult",
       "kind": "function",
       "path": "src/execution/command-runner.ts",
-      "symbol": "runExecutionCommand",
-      "summary": "Parses exec arguments, starts the remote command, streams polled output to stdout and stderr, cancels on interrupt and maps the result to an exit code.",
-      "calls": ["provider-execute"],
-      "lines": "229-238",
+      "symbol": "runExecutionCommandResult",
+      "summary": "Parses arguments, starts the command, streams output, handles cancellation and maps exit codes. Typed errors before or after start keep their safe code/message; other failures retain the generic infrastructure result.",
+      "calls": ["provider-execute", "exec-safe-error"],
+      "lines": "154-230",
       "area": "execution"
     },
     {
@@ -678,7 +678,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#mutate",
-      "lines": "798-901",
+      "lines": "799-902",
       "summary": "Sends start/pause/stop/destroy against the public API and reconciles the resulting hosted Session under a lifecycle deadline."
     },
     {
@@ -689,7 +689,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.cancelSandboxExecution",
-      "lines": "1009-1070",
+      "lines": "1010-1071",
       "summary": "Finds the active hosted Execution, requests cancellation and waits for a terminal result instead of assuming cancellation succeeded."
     },
     {
@@ -1030,8 +1030,8 @@
       "kind": "function",
       "path": "src/execution/service.ts",
       "symbol": "ExecutionService.start",
-      "lines": "117-213",
-      "summary": "Validates the selected execution target, starts the helper protocol and separates command completion from infrastructure or cancellation outcomes."
+      "lines": "118-214",
+      "summary": "Validates selection, bindings, capabilities and deadlines before execution; explicit shell rejects a known non-Linux OS and defers an unobserved OS to the remote executor. Separates command completion from infrastructure or cancellation outcomes."
     },
     {
       "id": "module-metadata-client",
@@ -1472,6 +1472,17 @@
       "symbol": "Use.run",
       "lines": "11-16",
       "summary": "Select a Session for subsequent commands Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "exec-safe-error",
+      "building": "cli",
+      "area": "execution",
+      "name": "Safe execution error detail",
+      "kind": "function",
+      "path": "src/execution/command-runner.ts",
+      "symbol": "safeOutcomeDetail",
+      "lines": "118-133",
+      "summary": "Extracts only code/message from normalized OcboxError or its immediate wrapped cause and known argument/context errors. Unknown errors have no optional detail; raw causes, paths and output are not serialized."
     }
   ],
   "journeys": [
@@ -1589,9 +1600,9 @@
       "summary": "Run a command from the CLI: local preparation, public API or filesystem effects, and confirmed completion.",
       "steps": [
         {
-          "story": "Resolve the selected Session and provider capabilities; the execution service starts the helper with a validated request and bounded output protocol.",
+          "story": "Resolve the selected Session and provider capabilities; validate bindings and deadlines. Explicit shell rejects a known non-Linux OS; an unobserved effective specification remains unknown and the remote executor decides shell compatibility.",
           "building": "cli",
-          "code": ["exec-runner", "exec-helper"]
+          "code": ["exec-runner", "exec-helper", "module-execution-service"]
         },
         {
           "story": "The hosted provider submits `createExecution` under an idempotency key and retains the returned pending execution handle.",
@@ -1616,6 +1627,11 @@
               "story": "A transport timeout is not proof the remote command stopped. Cancellation must converge to a terminal result or surface a typed failure.",
               "building": "cli",
               "code": ["provider-execute", "exec-helper"]
+            },
+            {
+              "building": "cli",
+              "code": ["exec-runner", "exec-safe-error"],
+              "story": "A typed event/result error after an accepted start retains the safe code/message in human, JSON and JSONL output. Exit 125 still identifies infrastructure failure; unknown causes retain the generic envelope."
             }
           ]
         }
