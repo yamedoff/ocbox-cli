@@ -24,4 +24,4 @@ Unsupported capabilities fail before pretending to perform an action. The client
 
 Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This also applies to errors while collecting events or reading a final result; it does not turn an unavailable event history into successful command output.
 
-Verified against ocbox-cli @ 1d23bb8
+Verified against ocbox-cli @ 8c1d6ce
