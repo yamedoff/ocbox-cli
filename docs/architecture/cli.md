@@ -15,7 +15,7 @@ Project configuration is separate from machine metadata, protected OAuth credent
 Login establishes an issuer/client/audience-bound credential generation. A selected local Session is reconciled with the hosted Session before execution. Explicit shell mode rejects a known non-Linux OS and defers unknown effective OS compatibility to the remote executor. Upload and execution are asynchronous: requests return handles, and bounded observations converge to a result. An unknown outcome remains recoverable rather than being labelled successful.
 
 ## Limits and config
-The vendored OpenAPI file and generated client define the server contract; provenance and api:check detect drift. Runtime configuration selects API base, hosted project, state directory and resource request. Source upload caps and capability refusals are detailed in Source and sync. The shared map engine has no vendor catalogue; repository-owned dependency declarations classify all imported packages.
+The vendored OpenAPI file and generated client define the server contract; provenance and api:check detect drift. Runtime configuration selects API base, hosted project, state directory and resource request. Source push uses v2 for mapped `sesdo_` Sessions: hash/bundle/page, four capability PUTs, then apply polling with unsigned local resume state. Legacy Sessions retain archive upload. Caps and refusals are detailed in Source and sync. The shared map engine has no vendor catalogue; repository-owned dependency declarations classify all imported packages.
 
 ## When it fails
 Invalid configuration, unsupported capabilities, stale credentials, an absent Session and incomplete remote work have distinct typed errors. Human, JSON and JSONL outputs share a redacted result contract. The public repo explains what its client sends and observes; the private repo explains how the server performs that work.
@@ -25,4 +25,4 @@ Start with Sign in from the CLI, Start a box from the CLI, Push local files to t
 
 Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This also applies to errors while collecting events or reading a final result; it does not turn an unavailable event history into successful command output.
 
-Verified against ocbox-cli @ 8c1d6ce
+Verified against ocbox-cli @ 724cf90caf418d8991c2d91479be8ef6da93486c

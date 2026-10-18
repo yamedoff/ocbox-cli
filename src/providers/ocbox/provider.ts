@@ -68,6 +68,7 @@ import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../c
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
 import { uploadPreparedSource, type PreparedSource } from './source.js'
+import { createCasTransport } from './cas.js'
 import {
   MemoryOperationCheckpointStore,
   type OperationCheckpointDurability,
@@ -420,6 +421,28 @@ export class OcboxSandboxProvider implements SandboxProvider {
       spec: record.spec,
       updatedAt: now,
     })
+  }
+
+  /** Resolve v2 through the owned running mapping; legacy Sessions retain their transport. */
+  async sourceCasTransport(sandboxId: string, signal?: AbortSignal) {
+    const requestId = toRequestId(null)
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
+    if (!record.hostedSessionId.startsWith('sesdo_')) return undefined
+    const owned = await this.#mappedSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (
+      primary === null ||
+      primary.sandboxId !== record.hostedSandboxId ||
+      primary.state !== 'running'
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source sync requires a running mapped sandbox; run ocbox start',
+        requestId,
+      })
+    }
+    return createCasTransport(this.#api, record.hostedSessionId, signal)
   }
 
   /** Upload only through the owned, persisted sandbox-to-session mapping. */
