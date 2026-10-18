@@ -25,4 +25,4 @@ Start with Sign in from the CLI, Start a box from the CLI, Push local files to t
 
 Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This also applies to errors while collecting events or reading a final result; it does not turn an unavailable event history into successful command output.
 
-Verified against ocbox-cli @ 724cf90caf418d8991c2d91479be8ef6da93486c
+Verified against ocbox-cli @ 52e83a796bbd9d149238d69fd4e4f45d0bf9e08f

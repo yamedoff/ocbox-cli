@@ -20,4 +20,4 @@ State-directory flags/environment choose where machine state lives. Credential s
 ## When it fails
 Lock conflict, cancellation, schema corruption, stale generation and protection failure have typed errors. Logout/rollback report failed cleanup. The deprecated Local state map record preserves earlier human notes while active code entries point to the CLI state area.
 
-Verified against ocbox-cli @ 724cf90caf418d8991c2d91479be8ef6da93486c
+Verified against ocbox-cli @ 52e83a796bbd9d149238d69fd4e4f45d0bf9e08f

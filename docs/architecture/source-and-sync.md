@@ -26,4 +26,4 @@ V2: 100,000 entries, 1 GiB total, 256 MiB per file, 4,096 blobs; pages have 512 
 ## When it fails
 Hosted pull, diff and recover are refused when their hosted capability is absent; legacy hosted push with --delete is unsupported. V2 removal of paths from the local success state requires --delete and confirmation/--yes; it is not a cross-machine conflict check. Server conflicts, invalid receipts and integrity errors fail safely; interruption preserves unsigned resume state. Local deletion requires --delete and explicit confirmation/--yes. Unsafe paths, sensitive material, checksum mismatch, conflicts and incomplete recovery fail without a force/replace bypass.
 
-Verified against ocbox-cli @ 724cf90caf418d8991c2d91479be8ef6da93486c
+Verified against ocbox-cli @ 52e83a796bbd9d149238d69fd4e4f45d0bf9e08f
