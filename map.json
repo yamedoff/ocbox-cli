@@ -322,6 +322,20 @@
       "to": "openapi:deletePreview",
       "kind": "request",
       "label": "calls public deletePreview"
+    },
+    {
+      "id": "cli-cas-plan",
+      "from": "cli",
+      "to": "openapi:planSourceCas",
+      "kind": "request",
+      "label": "plans source pages and returns opaque PUT capabilities"
+    },
+    {
+      "id": "cli-cas-apply",
+      "from": "cli",
+      "to": "openapi:applySourceCas",
+      "kind": "request",
+      "label": "commits source and polls the terminal receipt"
     }
   ],
   "code": [
@@ -358,7 +372,7 @@
       "symbol": "SyncPush",
       "summary": "Applies local-only changes to the session workspace. Deletions need --delete and confirmation.",
       "calls": ["sync-apply"],
-      "lines": "12-46",
+      "lines": "12-54",
       "area": "commands"
     },
     {
@@ -472,7 +486,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.create",
-      "lines": "474-475",
+      "lines": "497-498",
       "summary": "Calls createSession for the bound project, polls the returned operation until the sandbox is ready, and saves the hosted session id locally.",
       "calls": ["api-client"],
       "area": "hosted-api"
@@ -484,7 +498,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#execute",
-      "lines": "1073-1200",
+      "lines": "1096-1223",
       "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
       "calls": ["api-client"],
       "area": "hosted-api"
@@ -508,9 +522,9 @@
       "kind": "function",
       "path": "src/sync/service.ts",
       "symbol": "runSyncApply",
-      "summary": "Plans the sync against the last verified baseline, checks deletions, uploads the archive and records a new baseline only after the hosted apply succeeds.",
-      "calls": ["scan-manifest", "sync-plan", "sync-archive", "upload-source"],
-      "lines": "775-877",
+      "summary": "Serializes Session sync; routes mapped fast-path pushes to CAS v2, older hosted Sessions to archive upload, and fake/local transfers to baseline planning and recovery.",
+      "calls": ["scan-manifest", "sync-plan", "sync-archive", "upload-source", "cas-push"],
+      "lines": "783-887",
       "area": "sync"
     },
     {
@@ -521,7 +535,7 @@
       "path": "src/sync/manifest.ts",
       "symbol": "scanSourceManifest",
       "summary": "Walks the project folder with ignore rules and path policy, recording each file's size, mode and SHA-256. Blocks symlinks and paths that escape the root.",
-      "lines": "309-470",
+      "lines": "311-474",
       "area": "sync"
     },
     {
@@ -678,7 +692,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#mutate",
-      "lines": "799-902",
+      "lines": "822-925",
       "summary": "Sends start/pause/stop/destroy against the public API and reconciles the resulting hosted Session under a lifecycle deadline."
     },
     {
@@ -689,7 +703,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.cancelSandboxExecution",
-      "lines": "1010-1071",
+      "lines": "1033-1094",
       "summary": "Finds the active hosted Execution, requests cancellation and waits for a terminal result instead of assuming cancellation succeeded."
     },
     {
@@ -733,7 +747,7 @@
       "kind": "function",
       "path": "src/sync/service.ts",
       "symbol": "runHostedPush",
-      "lines": "671-769",
+      "lines": "679-777",
       "summary": "Hosted push refuses remote deletion; scans at most 100 files, 64 KiB each and 512 KiB total, then sends an archive capped at 1 MiB."
     },
     {
@@ -744,7 +758,7 @@
       "kind": "function",
       "path": "src/sync/service.ts",
       "symbol": "runSyncDiff",
-      "lines": "587-596",
+      "lines": "595-604",
       "summary": "Builds a read-only comparison against manifests and the verified baseline; hosted capability checks can refuse unsupported operations."
     },
     {
@@ -755,7 +769,7 @@
       "kind": "function",
       "path": "src/sync/service.ts",
       "symbol": "runSyncRecover",
-      "lines": "883-911",
+      "lines": "893-921",
       "summary": "Recovers an interrupted local transfer journal under the sync lock; hosted recovery is refused when the capability is absent."
     },
     {
@@ -1448,7 +1462,7 @@
       "kind": "function",
       "path": "src/commands/sync/push.ts",
       "symbol": "SyncPush.run",
-      "lines": "32-45",
+      "lines": "32-53",
       "summary": "Apply local-only changes to the Session workspace Validates flags and emits the shared human/JSON result or a typed error."
     },
     {
@@ -1483,6 +1497,127 @@
       "symbol": "safeOutcomeDetail",
       "lines": "118-133",
       "summary": "Extracts only code/message from normalized OcboxError or its immediate wrapped cause and known argument/context errors. Unknown errors have no optional detail; raw causes, paths and output are not serialized."
+    },
+    {
+      "id": "cas-context",
+      "building": "cli",
+      "area": "sync",
+      "name": "resolveSyncContext",
+      "kind": "function",
+      "path": "src/sync/command.ts",
+      "symbol": "resolveSyncContext",
+      "lines": "31-83",
+      "summary": "Resolve selected Session, running sandbox and hosted mapping before selecting v2 or legacy upload."
+    },
+    {
+      "id": "cas-mapping",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "OcboxSandboxProvider.sourceCasTransport",
+      "kind": "function",
+      "path": "src/providers/ocbox/provider.ts",
+      "symbol": "OcboxSandboxProvider.sourceCasTransport",
+      "lines": "427-446",
+      "summary": "Only an owned running sandbox mapped to a sesdo_ Session gets a v2 transport; older Sessions keep legacy upload."
+    },
+    {
+      "id": "cas-control",
+      "building": "cli",
+      "area": "hosted-api",
+      "name": "createCasTransport",
+      "kind": "function",
+      "path": "src/providers/ocbox/cas.ts",
+      "symbol": "createCasTransport",
+      "lines": "41-101",
+      "summary": "Authenticated generated plan/apply calls use stable keys, strict receipts and safe errors, with at most 3 attempts."
+    },
+    {
+      "id": "cas-push",
+      "building": "cli",
+      "area": "sync",
+      "name": "runCasPush",
+      "kind": "function",
+      "path": "src/sync/cas-push.ts",
+      "symbol": "runCasPush",
+      "lines": "20-151",
+      "summary": "Scan safely under the Session lock, scope unsigned pending/success state by API/Session/root, require deletion approval and preserve resumable identity only for unchanged pages younger than 45 minutes."
+    },
+    {
+      "id": "cas-build",
+      "building": "cli",
+      "area": "sync",
+      "name": "buildCasSnapshot",
+      "kind": "function",
+      "path": "src/sync/cas-snapshot.ts",
+      "symbol": "buildCasSnapshot",
+      "lines": "210-292",
+      "summary": "Build canonical pages capped at 512 entries and 512 KiB, at most 512 pages, 4096 blobs and 32 MiB metadata."
+    },
+    {
+      "id": "cas-pack",
+      "building": "cli",
+      "area": "sync",
+      "name": "packCasFiles",
+      "kind": "function",
+      "path": "src/sync/cas-snapshot.ts",
+      "symbol": "packCasFiles",
+      "lines": "84-207",
+      "summary": "Reuse verified cached bundle slices; pack initial small files into 8 MiB bundles, large files into 16 MiB parts and up to 512 dirty small files as separate blobs."
+    },
+    {
+      "id": "cas-state-read",
+      "building": "cli",
+      "area": "state",
+      "name": "readCasState",
+      "kind": "function",
+      "path": "src/sync/cas-snapshot.ts",
+      "symbol": "readCasState",
+      "lines": "37-52",
+      "summary": "Strictly validate unsigned metadata and page hashes before using cached content; malformed state fails closed."
+    },
+    {
+      "id": "cas-state-write",
+      "building": "cli",
+      "area": "state",
+      "name": "writeCasState",
+      "kind": "function",
+      "path": "src/sync/cas-snapshot.ts",
+      "symbol": "writeCasState",
+      "lines": "53-61",
+      "summary": "Atomically save unsigned metadata with private file mode; source bytes and upload capabilities are absent from JSON."
+    },
+    {
+      "id": "cas-blob-read",
+      "building": "cli",
+      "area": "sync",
+      "name": "readCasBlob",
+      "kind": "function",
+      "path": "src/sync/cas-snapshot.ts",
+      "symbol": "readCasBlob",
+      "lines": "69-81",
+      "summary": "Open cached blobs without following links and verify size and SHA-256 before reuse or PUT."
+    },
+    {
+      "id": "cas-page-validation",
+      "building": "cli",
+      "area": "sync",
+      "name": "validateCasPages",
+      "kind": "function",
+      "path": "src/sync/cas-contract.ts",
+      "symbol": "validateCasPages",
+      "lines": "95-141",
+      "summary": "Check exact page hashes, unique paths, declared blob slices and manifest counts/bytes before accepting unsigned state."
+    },
+    {
+      "id": "cas-transfer",
+      "building": "cli",
+      "area": "sync",
+      "name": "syncCasSnapshot",
+      "kind": "function",
+      "path": "src/sync/cas-transfer.ts",
+      "symbol": "syncCasSnapshot",
+      "lines": "62-176",
+      "summary": "Plan pages, PUT only declared missing blobs with 4 workers and 3 attempts, then poll matching apply receipts every second for 15 minutes."
     }
   ],
   "journeys": [
@@ -1555,7 +1690,12 @@
       "summary": "Push local files to the box: local preparation, public API or filesystem effects, and confirmed completion.",
       "steps": [
         {
-          "story": "Hosted push scans the folder, excluding sensitive/unsafe paths; refuses remote deletion, files over 64 KiB, more than 100 files or more than 512 KiB total.",
+          "building": "cli",
+          "code": ["sync-apply", "cas-context", "cas-mapping"],
+          "story": "Select the transport through the persisted hosted Session mapping: sesdo_ follows the content-addressed resume journey; older hosted Sessions follow the bounded archive steps below, refusing files over 64 KiB."
+        },
+        {
+          "story": "Legacy hosted push scans the folder, excluding sensitive/unsafe paths; refuses remote deletion, files over 64 KiB, more than 100 files or more than 512 KiB total.",
           "building": "cli",
           "code": ["sync-hosted", "scan-manifest"]
         },
@@ -2320,6 +2460,79 @@
           "connection": "cli-verify-checksum"
         }
       ]
+    },
+    {
+      "id": "cli-cas-sync",
+      "name": "Push content-addressed source with resume",
+      "summary": "Mapped sesdo_ Sessions use paged source plans, bounded capability uploads and terminal apply receipts; unsigned local checkpoints support retries.",
+      "steps": [
+        {
+          "building": "cli",
+          "code": ["sync-push-command", "cas-context", "cas-mapping"],
+          "story": "Resolve the owned running hosted Session. sesdo_ selects v2; older hosted Sessions keep the legacy push journey. Missing or foreign mappings fail before source upload."
+        },
+        {
+          "building": "cli",
+          "code": ["cas-push", "scan-manifest"],
+          "story": "Under the Session lock scan with CLI ignore rules and immutable state/cache exclusions; reject links, collisions, more than 100000 entries, files over 256 MiB or content over 1 GiB."
+        },
+        {
+          "building": "cli",
+          "code": [
+            "cas-state-read",
+            "cas-page-validation",
+            "cas-build",
+            "cas-pack",
+            "cas-blob-read"
+          ],
+          "story": "Verify unsigned state and cached bytes; retain unchanged bundle slices, pack initial files in 8 MiB bundles and large files in 16 MiB parts; use separate blobs for up to 512 small edits."
+        },
+        {
+          "building": "cli",
+          "code": ["cas-push", "cas-state-write"],
+          "story": "Require --delete plus confirmation/--yes for locally recorded removed paths. Save unsigned pending pages; reuse an interrupted identity only when pages match and it is younger than 45 minutes."
+        },
+        {
+          "building": "cli",
+          "connection": "cli-cas-plan",
+          "code": ["cas-control", "cas-transfer"],
+          "repeat": true,
+          "story": "Send each canonical page with a stable idempotency key. Validate the matching plan and every missing blob against that page; never save returned PUT capability URLs."
+        },
+        {
+          "building": "cli",
+          "connection": "cli-cas-plan",
+          "code": ["cas-transfer", "cas-blob-read"],
+          "repeat": true,
+          "story": "Consume opaque PUT capabilities returned by plan with 4 parallel uploads, 120-second attempt timeouts and at most 3 attempts. Never add the API bearer or follow redirects.",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": ["cas-push", "cas-state-write"],
+              "story": "Interruption retains unsigned pending metadata. Rerun push to rehash current source, re-plan missing blobs and continue without persisting capabilities."
+            }
+          ]
+        },
+        {
+          "building": "cli",
+          "connection": "cli-cas-apply",
+          "code": ["cas-control", "cas-transfer"],
+          "repeat": true,
+          "story": "Replay the same apply request every second for up to 15 minutes. Success requires the same plan ID and succeeded state; invalid or failed receipts become safe typed errors.",
+          "on_failure": [
+            {
+              "building": "cli",
+              "code": ["cas-push", "cas-control"],
+              "story": "Terminal plan refusal clears its pending identity. Other interrupted outcomes remain resumable; errors exit 1 and expose only safe categories."
+            }
+          ]
+        },
+        {
+          "building": "cli",
+          "code": ["cas-push", "cas-state-write", "command-sync-push"],
+          "story": "Atomically save success metadata and clear pending state. JSONL emits sync.progress phase/count events then sync.pushed with protocolVersion 2 and uploaded blob/byte counts."
+        }
+      ]
     }
   ],
   "guides": [
@@ -2353,7 +2566,8 @@
         "project-metadata",
         "environment-metadata",
         "cli-init",
-        "public-api-calls"
+        "public-api-calls",
+        "cli-cas-sync"
       ]
     },
     {
@@ -2383,7 +2597,7 @@
       "title": "CLI source delivery and local transfer recovery",
       "path": "docs/architecture/source-and-sync.md",
       "about": ["cli"],
-      "journeys": ["cli-sync-push", "cli-sync-diff", "cli-sync-recover"]
+      "journeys": ["cli-sync-push", "cli-sync-diff", "cli-sync-recover", "cli-cas-sync"]
     },
     {
       "id": "agents-guide",
@@ -2397,7 +2611,7 @@
       "title": "CLI local state and protected credentials",
       "path": "docs/architecture/state.md",
       "about": ["cli"],
-      "journeys": ["cli-login", "cli-use", "cli-destroy"]
+      "journeys": ["cli-login", "cli-use", "cli-destroy", "cli-cas-sync"]
     },
     {
       "id": "metadata-guide",

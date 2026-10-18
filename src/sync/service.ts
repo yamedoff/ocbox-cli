@@ -41,9 +41,14 @@ import {
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
+import type { CasTransport } from './cas-contract.js'
+import type { CasProgress } from './cas-transfer.js'
+import { runCasPush } from './cas-push.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
+  readonly casTransport?: CasTransport
+  readonly signal?: AbortSignal | undefined
   readonly providerName: string
   readonly projectId: ProjectId
   readonly sessionId: SessionId
@@ -119,6 +124,8 @@ export interface SyncApplyView extends SyncPlanView {
   readonly baselineUpdated: boolean
   readonly uploadedFiles?: readonly string[]
   readonly uploadedBytes?: number
+  readonly uploadedBlobs?: number
+  readonly protocolVersion?: 2
   readonly archiveBytes?: number
   readonly manifestId?: string
   /** Identity of the applied operation, or null when the plan was a no-op. */
@@ -138,6 +145,7 @@ export interface SyncLockOptions {
 }
 
 export interface SyncApplyOptions extends SyncLockOptions {
+  readonly onProgress?: ((event: CasProgress) => void) | undefined
   readonly cliRules: readonly IgnoreRule[]
   readonly delete: boolean
   readonly yes: boolean
@@ -779,7 +787,9 @@ export async function runSyncApply(
 ): Promise<SyncApplyView> {
   if (context.providerName === 'ocbox') {
     if (mode === 'pull') throw hostedUnsupported('pull')
-    return withSyncLock(context, options, () => runHostedPush(context, options))
+    return withSyncLock(context, options, () =>
+      context.casTransport ? runCasPush(context, options) : runHostedPush(context, options),
+    )
   }
   const now = options.now ?? (() => new Date())
   const roots = rootsFor(mode, context)
@@ -949,6 +959,8 @@ export function renderSyncPlan(view: SyncPlanView): string {
 }
 
 export function renderSyncApplied(view: SyncApplyView): string {
+  if (view.protocolVersion === 2)
+    return `Source synced: uploaded ${view.uploadedBlobs} blob(s), ${view.uploadedBytes} bytes.`
   if (view.uploadedFiles !== undefined)
     return view.applied
       ? `Uploaded ${view.uploadedFiles.length} file(s), ${view.uploadedBytes} bytes (${view.archiveBytes} archive bytes) to the hosted sandbox:\n${view.uploadedFiles.join('\n')}`

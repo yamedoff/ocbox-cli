@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: 45c3392516f0cf7f522a24409cc87482af11126a187e3a981f58d134568a102b
+ * Pinned source SHA-256: 77a6b4b4729dd94831420487ef79352f4d732de67a6884c12496d1228be2b078
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:45c3392516f0cf7f522a24409cc87482af11126a187e3a981f58d134568a102b" as const
+export const OPENAPI_CHECKSUM = "sha256:77a6b4b4729dd94831420487ef79352f4d732de67a6884c12496d1228be2b078" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -31,6 +31,29 @@ export interface ApiResult<ResponseType> {
   readonly requestId: string | null
   readonly replay: boolean
   readonly retryAfter?: string | null
+}
+
+export interface CasPlanRequest {
+  readonly version: number
+  readonly manifest: { readonly syncId: string; readonly pageHashes: readonly string[]; readonly fileCount: number; readonly totalBytes: number }
+  readonly page: { readonly index: number; readonly files: readonly Record<string, unknown>[]; readonly blobs: readonly { readonly hash: string; readonly size: number }[] }
+}
+
+export interface CasApplyRequest {
+  readonly version: number
+  readonly planId: string
+}
+
+export interface CasSourceResult {
+  readonly version: number
+  readonly planId: string
+  readonly state: "uploading" | "pending" | "succeeded" | "failed"
+  readonly expiresAt: number
+  readonly replayed: boolean
+  readonly reason?: string
+  readonly fetchedBlobs?: number
+  readonly fetchedBytes?: number
+  readonly missing?: readonly { readonly hash: string; readonly size: number; readonly url: string }[]
 }
 
 export interface SafeError {
@@ -662,6 +685,8 @@ export interface OpenCloudBoxClient {
   listExecutionEvents(args: { readonly path: { readonly executionId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getExecutionResult(args: { readonly path: { readonly executionId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   cancelExecution(args: { readonly path: { readonly executionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  planSourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasPlanRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>>
+  applySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>>
   listSourceManifests(args: { readonly path: { readonly sessionId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createSourceManifest(args: { readonly path: { readonly sessionId: string }; readonly body: CreateSourceManifestRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   uploadSourceChunk(args: { readonly path: { readonly manifestId: string; readonly chunkIndex: number }; readonly body: UploadSourceChunkRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -1211,6 +1236,48 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
         body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async planSourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasPlanRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>> {
+      const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/cas/plan`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as CasSourceResult | ErrorEnvelope,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async applySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>> {
+      const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/cas/apply`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as CasSourceResult | ErrorEnvelope,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
         retryAfter: response.headers.get('retry-after'),
