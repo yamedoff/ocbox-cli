@@ -26,14 +26,14 @@ export type ExecutionOutcome =
       readonly kind: 'infrastructure_error'
       readonly error: ExecutionInfrastructureError
       /**
-       * Curated code/message from a typed `OcboxError` detected before a remote
-       * process started. It is optional so infrastructure failures with no safe
+       * Curated code/message from a typed `OcboxError`, including failures
+       * after a remote execution started. It is optional so infrastructure failures with no safe
        * typed classification keep the original generic envelope.
        */
       readonly detail?: ExecutionOutcomeDetail
     }
 
-/** Safe, already-redacted classification surfaced for pre-start target failures. */
+/** Safe, already-redacted classification surfaced for execution failures. */
 export interface ExecutionOutcomeDetail {
   readonly code: string
   readonly message: string

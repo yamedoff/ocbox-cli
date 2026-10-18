@@ -492,13 +492,13 @@
     {
       "id": "exec-runner",
       "building": "cli",
-      "name": "runExecutionCommand",
+      "name": "runExecutionCommandResult",
       "kind": "function",
       "path": "src/execution/command-runner.ts",
-      "symbol": "runExecutionCommand",
-      "summary": "Parses exec arguments, starts the remote command, streams polled output to stdout and stderr, cancels on interrupt and maps the result to an exit code.",
-      "calls": ["provider-execute"],
-      "lines": "229-238",
+      "symbol": "runExecutionCommandResult",
+      "summary": "Parses arguments, starts the command, streams output, handles cancellation and maps exit codes. Typed errors before or after start keep their safe code/message; other failures retain the generic infrastructure result.",
+      "calls": ["provider-execute", "exec-safe-error"],
+      "lines": "154-230",
       "area": "execution"
     },
     {
@@ -1472,6 +1472,17 @@
       "symbol": "Use.run",
       "lines": "11-16",
       "summary": "Select a Session for subsequent commands Validates flags and emits the shared human/JSON result or a typed error."
+    },
+    {
+      "id": "exec-safe-error",
+      "building": "cli",
+      "area": "execution",
+      "name": "Safe execution error detail",
+      "kind": "function",
+      "path": "src/execution/command-runner.ts",
+      "symbol": "safeOutcomeDetail",
+      "lines": "118-133",
+      "summary": "Extracts only code/message from normalized OcboxError or its immediate wrapped cause and known argument/context errors. Unknown errors have no optional detail; raw causes, paths and output are not serialized."
     }
   ],
   "journeys": [
@@ -1616,6 +1627,11 @@
               "story": "A transport timeout is not proof the remote command stopped. Cancellation must converge to a terminal result or surface a typed failure.",
               "building": "cli",
               "code": ["provider-execute", "exec-helper"]
+            },
+            {
+              "building": "cli",
+              "code": ["exec-runner", "exec-safe-error"],
+              "story": "A typed event/result error after an accepted start retains the safe code/message in human, JSON and JSONL output. Exit 125 still identifies infrastructure failure; unknown causes retain the generic envelope."
             }
           ]
         }

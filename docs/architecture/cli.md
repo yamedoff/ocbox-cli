@@ -23,4 +23,6 @@ Invalid configuration, unsupported capabilities, stale credentials, an absent Se
 ## Read and play
 Start with Sign in from the CLI, Start a box from the CLI, Push local files to the box and Run a command from the CLI. Public API connection IDs bridge these client stories to server journeys in Notion. This guide describes source behavior at the commit below; it is not a new live product acceptance report.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This also applies to errors while collecting events or reading a final result; it does not turn an unavailable event history into successful command output.
+
+Verified against ocbox-cli @ 8af54e8 (source base; execution error changes verified in this commit)
