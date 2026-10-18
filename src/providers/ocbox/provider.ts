@@ -201,8 +201,9 @@ function commandString(request: ExecRequest): string {
  * source promoted to `effective`; the locally persisted request is never
  * promoted, so requested state is never mistaken for observed state. A hosted
  * payload that is absent or does not fully satisfy the domain `SandboxSpec`
- * stays `effective: null` (unknown/unobserved), keeping the `--shell` Linux
- * target guard fail-closed instead of weakening it. `effectiveObservedAt`
+ * stays `effective: null` (unknown/unobserved). Explicit shell execution with
+ * an unobserved OS is left to the remote executor; a known non-Linux OS is
+ * rejected before dispatch. `effectiveObservedAt`
  * records the host's observation clock (the same clock as the Sandbox lifetime)
  * so the domain timestamp invariant holds without trusting a cross-service
  * clock; provider identity, bindings, and raw/normalized state are untouched.

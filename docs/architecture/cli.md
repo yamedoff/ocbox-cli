@@ -12,7 +12,7 @@ The command runtime builds a LifecycleService, an authenticated generated client
 Project configuration is separate from machine metadata, protected OAuth credentials, Session mappings, execution checkpoints, agent ownership manifests and local transfer journals. Remote product records belong to the API. Local files never contain the server's provider credentials or implementation configuration.
 
 ## States
-Login establishes an issuer/client/audience-bound credential generation. A selected local Session is reconciled with the hosted Session before execution. Upload and execution are asynchronous: requests return handles, and bounded observations converge to a result. An unknown outcome remains recoverable rather than being labelled successful.
+Login establishes an issuer/client/audience-bound credential generation. A selected local Session is reconciled with the hosted Session before execution. Explicit shell mode rejects a known non-Linux OS and defers unknown effective OS compatibility to the remote executor. Upload and execution are asynchronous: requests return handles, and bounded observations converge to a result. An unknown outcome remains recoverable rather than being labelled successful.
 
 ## Limits and config
 The vendored OpenAPI file and generated client define the server contract; provenance and api:check detect drift. Runtime configuration selects API base, hosted project, state directory and resource request. Source upload caps and capability refusals are detailed in Source and sync. The shared map engine has no vendor catalogue; repository-owned dependency declarations classify all imported packages.

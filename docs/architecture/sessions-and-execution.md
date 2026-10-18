@@ -6,6 +6,8 @@ LifecycleService maintains local Session views and operations. OcboxSandboxProvi
 ## Inside
 Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms absence before dropping a local mapping.
 
+Explicit shell mode rejects a known non-Linux effective OS. When the hosted effective specification is incomplete, the adapter keeps it unobserved and the remote executor decides shell compatibility; the requested spec is never promoted to observed metadata.
+
 Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents orders by sequence, skips duplicates, checkpoints the cursor and can fall back from streaming to polling. The helper emits framed events and coordinates interrupt/timeout with cancellation. The command's nonzero exit is separate from infrastructure failure.
 
 ## Data it keeps
