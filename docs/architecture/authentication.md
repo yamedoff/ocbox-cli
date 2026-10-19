@@ -20,4 +20,7 @@ Source defaults: client ocb_cli, audience cli, scopes source:read/product:read/p
 ## When it fails
 Only replay-safe requests may refresh and retry once after 401. A rejected second generation is compare-deleted without erasing another process's newer login. Refresh revocation/reuse becomes AUTH_REQUIRED. Binding mismatch fails before credential use. State-lock contention/cancellation and rollback failure produce explicit conflict, cancellation or INVALID_STATE errors.
 
-Verified against ocbox-cli @ d8ed226cf095cea16a0123974209ba90fb83a9d2
+## Code evidence
+Browser login/commit/status/logout: `src/auth/service.ts:127–384`. Origin binding and replay: `src/auth/authenticated-client.ts:85–119,184–288`. Credential generations: `src/auth/token-manager.ts:223–371`. Authenticated response bounds: `src/auth/hosted-client.ts:106–284`; default credential wiring: `src/auth/runtime.ts:142–153`.
+
+Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
