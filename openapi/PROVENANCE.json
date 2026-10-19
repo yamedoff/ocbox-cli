@@ -3,12 +3,12 @@
   "source": "hosted-service",
   "sourceCommit": "unavailable",
   "sourcePath": "openapi/openapi.yaml",
-  "sha256": "45c3392516f0cf7f522a24409cc87482af11126a187e3a981f58d134568a102b",
-  "bytes": 118198,
+  "sha256": "77a6b4b4729dd94831420487ef79352f4d732de67a6884c12496d1228be2b078",
+  "bytes": 124500,
   "openapi": "3.1.0",
   "title": "OpenCloudBox hosted API",
   "version": "0.1.0",
   "consumedAs": "published-contract-artifact-only",
   "generated": ["src/api/generated/client.ts"],
-  "note": "This public CLI consumes only the supplied current API description. Its source revision was not supplied; unavailable explicitly records that absence. The artifact is pinned by its exact SHA-256 and byte length. No implementation or test code is imported or copied."
+  "note": "Public API description with the source-sync v2 request and response shapes. The source revision is unavailable. Descriptions contain public client behavior only; the artifact is pinned by SHA-256 and byte length."
 }

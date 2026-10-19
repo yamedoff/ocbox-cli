@@ -207,7 +207,15 @@ export async function runExecutionCommandResult(
   }
   const dispose = options.interrupts?.subscribe(onInterrupt) ?? (() => {})
   try {
-    const completion = await Promise.race([run.completion, repeatedInterrupt])
+    const settled = await Promise.race([run.completion, repeatedInterrupt])
+    const detail =
+      settled.outcome.kind === 'infrastructure_error'
+        ? safeOutcomeDetail(settled.outcome.error)
+        : undefined
+    const completion =
+      detail === undefined || settled.outcome.kind !== 'infrastructure_error'
+        ? settled
+        : { ...settled, outcome: { ...settled.outcome, detail } }
     terminal = true
     terminalStreamAccepted = true
     await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)

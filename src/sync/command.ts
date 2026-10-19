@@ -44,6 +44,7 @@ export async function resolveSyncContext(
       ? resolve(process.cwd(), configuredRemote)
       : join(stateDirectory, 'sync', projectId, sessionId, 'remote')
   let hostedUpload: SyncContext['hostedUpload']
+  let casTransport: SyncContext['casTransport']
   if (config.provider.name === 'ocbox') {
     if (configuredRemote)
       throw new OcboxError({
@@ -65,9 +66,12 @@ export async function resolveSyncContext(
     })
     provider.bindLifecycleStore(new LifecycleStore(stateDirectory, projectId))
     const sandboxId = view.sandbox.id
+    casTransport = await provider.sourceCasTransport(sandboxId, signal)
     hostedUpload = (prepared) => provider.uploadSource(sandboxId, prepared, signal)
   }
   return {
+    signal,
+    ...(casTransport ? { casTransport } : {}),
     ...(hostedUpload === undefined ? {} : { hostedUpload }),
     providerName: config.provider.name,
     projectId,

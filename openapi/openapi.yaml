@@ -637,6 +637,94 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/plan:
+    post:
+      operationId: planSourceCas
+      summary: Plan content-addressed source sync v2
+      description: Requires a sesdo_ session. Retry an identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasPlanRequest'
+      responses:
+        '200':
+          description: Source plan or terminal apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/apply:
+    post:
+      operationId: applySourceCas
+      summary: Apply content-addressed source sync v2
+      description: Requires a sesdo_ session. Retry an identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasApplyRequest'
+      responses:
+        '200':
+          description: Source plan or terminal apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /sessions/{sessionId}/source/manifests:
     get:
       operationId: listSourceManifests
@@ -2090,6 +2178,116 @@ components:
           schema:
             $ref: '#/components/schemas/PaymentReconciliation'
   schemas:
+    CasPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [version, manifest, page]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        manifest:
+          type: object
+          additionalProperties: false
+          required: [syncId, pageHashes, fileCount, totalBytes]
+          properties:
+            syncId:
+              type: string
+              pattern: '^[a-f0-9]{32}$'
+            pageHashes:
+              type: array
+              minItems: 1
+              maxItems: 512
+              items:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            fileCount:
+              type: integer
+              minimum: 0
+              maximum: 100000
+            totalBytes:
+              type: integer
+              minimum: 0
+              maximum: 2147483648
+        page:
+          type: object
+          additionalProperties: false
+          required: [index, files, blobs]
+          properties:
+            index:
+              type: integer
+              minimum: 0
+              maximum: 511
+            files:
+              type: array
+              maxItems: 512
+              items:
+                type: object
+                description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. Paths, bounds and slice integrity are validated.'
+                additionalProperties: true
+            blobs:
+              type: array
+              maxItems: 4096
+              items:
+                type: object
+                additionalProperties: false
+                required: [hash, size]
+                properties:
+                  hash:
+                    type: string
+                    pattern: '^[a-f0-9]{64}$'
+                  size:
+                    type: integer
+                    minimum: 0
+                    maximum: 16777216
+    CasApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [version, planId]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        planId:
+          type: string
+          pattern: '^casdo_[a-f0-9]{30}$'
+    CasSourceResult:
+      type: object
+      additionalProperties: false
+      required: [version, planId, state, expiresAt, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        planId:
+          type: string
+        state:
+          type: string
+          enum: [uploading, pending, succeeded, failed]
+        expiresAt:
+          type: integer
+        replayed:
+          type: boolean
+        reason:
+          type: string
+        fetchedBlobs:
+          type: integer
+        fetchedBytes:
+          type: integer
+        missing:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+              size:
+                type: integer
+              url:
+                type: string
+                description: Short-lived PUT capability; never log or persist it.
     SafeError:
       type: object
       additionalProperties: false

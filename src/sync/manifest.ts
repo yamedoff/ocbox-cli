@@ -113,6 +113,8 @@ export interface SourceManifest {
 }
 
 export interface ScanManifestOptions {
+  /** Exact local state paths pruned before scanning, independent of user rules. */
+  readonly excludePaths?: readonly string[]
   readonly ignoreRuleGroups?: readonly (readonly IgnoreRule[])[]
   readonly maxBytes?: number
   readonly maxDirectories?: number
@@ -362,6 +364,8 @@ export async function scanSourceManifest(
     for await (const childName of listChildrenInOrder(directory)) {
       const rawChildSegments = [...rawSegments, childName]
       const rawPath = rawChildSegments.join('/')
+      if (options.excludePaths?.some((path) => rawPath === path || rawPath.startsWith(`${path}/`)))
+        continue
       const normalizedRawPath = rawChildSegments
         .map((segment) => segment.normalize('NFC'))
         .join('/')

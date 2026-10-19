@@ -68,6 +68,7 @@ import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../c
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
 import { uploadPreparedSource, type PreparedSource } from './source.js'
+import { createCasTransport } from './cas.js'
 import {
   MemoryOperationCheckpointStore,
   type OperationCheckpointDurability,
@@ -201,8 +202,9 @@ function commandString(request: ExecRequest): string {
  * source promoted to `effective`; the locally persisted request is never
  * promoted, so requested state is never mistaken for observed state. A hosted
  * payload that is absent or does not fully satisfy the domain `SandboxSpec`
- * stays `effective: null` (unknown/unobserved), keeping the `--shell` Linux
- * target guard fail-closed instead of weakening it. `effectiveObservedAt`
+ * stays `effective: null` (unknown/unobserved). Explicit shell execution with
+ * an unobserved OS is left to the remote executor; a known non-Linux OS is
+ * rejected before dispatch. `effectiveObservedAt`
  * records the host's observation clock (the same clock as the Sandbox lifetime)
  * so the domain timestamp invariant holds without trusting a cross-service
  * clock; provider identity, bindings, and raw/normalized state are untouched.
@@ -419,6 +421,28 @@ export class OcboxSandboxProvider implements SandboxProvider {
       spec: record.spec,
       updatedAt: now,
     })
+  }
+
+  /** Resolve v2 through the owned running mapping; legacy Sessions retain their transport. */
+  async sourceCasTransport(sandboxId: string, signal?: AbortSignal) {
+    const requestId = toRequestId(null)
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
+    if (!record.hostedSessionId.startsWith('sesdo_')) return undefined
+    const owned = await this.#mappedSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (
+      primary === null ||
+      primary.sandboxId !== record.hostedSandboxId ||
+      primary.state !== 'running'
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source sync requires a running mapped sandbox; run ocbox start',
+        requestId,
+      })
+    }
+    return createCasTransport(this.#api, record.hostedSessionId, signal)
   }
 
   /** Upload only through the owned, persisted sandbox-to-session mapping. */
