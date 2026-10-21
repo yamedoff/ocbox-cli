@@ -3650,7 +3650,7 @@
       "path": "src/auth/server-reasons.ts",
       "symbol": "serverAuthReason",
       "summary": "Maps closed public server reason codes to fixed messages and next steps. Unknown response text is never displayed.",
-      "lines": "463-466"
+      "lines": "468-471"
     }
   ],
   "journeys": [

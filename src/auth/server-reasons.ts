@@ -4,6 +4,11 @@ export const SERVER_AUTH_REASONS = {
     message: 'The sign-in form came from an untrusted page.',
     nextStep: 'Start again with `ocbox auth login` and complete sign-in in the same browser.',
   },
+  auth_browser_cross_site_start_refused: {
+    message: 'This sign-in step was started from a different site.',
+    nextStep:
+      'Return to the authorization page opened by `ocbox auth login` and submit the sign-in form there.',
+  },
   auth_browser_cross_site_request: {
     message: 'This sign-in step requires a top-level browser navigation.',
     nextStep: 'Open the sign-in link directly in the browser that started sign-in.',
