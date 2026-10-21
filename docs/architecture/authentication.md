@@ -24,3 +24,7 @@ Only replay-safe requests may refresh and retry once after 401. A rejected secon
 Browser login/commit/status/logout: `src/auth/service.ts:127–384`. Origin binding and replay: `src/auth/authenticated-client.ts:85–119,184–288`. Credential generations: `src/auth/token-manager.ts:223–371`. Authenticated response bounds: `src/auth/hosted-client.ts:106–284`; default credential wiring: `src/auth/runtime.ts:142–153`.
 
 Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
+
+Sign-in errors map closed public server reasons to static text and retain the server reference. The five-minute loopback deadline reports when the browser never returned. Local status errors distinguish missing metadata, unreadable state and mismatched identity/generation; the fix is logout then login using the same state directory. Logout returns revocationReason, including missing/unreadable state and invalid endpoint cases. The auth command boundary stores the last 100 failure references (at most seven days) in auth-failures.json through the atomic store; it stores no error text or sign-in material. Look up a local reference in that file; server references belong to the public API support flow.
+
+Verified against ocbox-cli @ cd231a4 plus auth failure reporting changes.

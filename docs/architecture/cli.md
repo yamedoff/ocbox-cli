@@ -31,3 +31,7 @@ Execution failures after an accepted start use the same safe typed code/message 
 Composition and entry points: `src/cli/runtime.ts:117–280`, `src/commands/exec.ts:59–71`, `src/execution/service.ts:58–214`, `src/execution/command-runner.ts:118–230`, `src/providers/ocbox/provider.ts:427–470,507–616,1096–1223`.
 
 Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
+
+Sign-in errors map closed public server reasons to static text and retain the server reference. The five-minute loopback deadline reports when the browser never returned. Local status errors distinguish missing metadata, unreadable state and mismatched identity/generation; the fix is logout then login using the same state directory. Logout returns revocationReason, including missing/unreadable state and invalid endpoint cases. The auth command boundary stores the last 100 failure references (at most seven days) in auth-failures.json through the atomic store; it stores no error text or sign-in material. Look up a local reference in that file; server references belong to the public API support flow.
+
+Verified against ocbox-cli @ cd231a4 plus auth failure reporting changes.

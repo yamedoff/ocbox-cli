@@ -40,7 +40,18 @@ export interface AuthLogoutView {
   readonly loggedOut: true
   readonly revocationAttempted: boolean
   readonly revoked: boolean
+  readonly revocationReason: RevocationReason
 }
+
+export type RevocationReason =
+  | 'revoked'
+  | 'no_local_credential'
+  | 'metadata_missing'
+  | 'metadata_unreadable'
+  | 'credential_unreadable'
+  | 'identity_mismatch'
+  | 'endpoint_invalid'
+  | 'remote_failed'
 
 export interface AuthLoginOptions {
   readonly signal?: AbortSignal | undefined
@@ -91,9 +102,13 @@ function statusFrom(
   }
 }
 
-function staleStateError(message: string): OcboxError {
+function staleStateError(message: string, reasonCode: string): OcboxError {
   return new OcboxError({
     code: 'INVALID_STATE',
+    details: {
+      reasonCode,
+      nextStep: 'Run `ocbox auth logout` then `ocbox auth login` using the same state directory.',
+    },
     message,
     requestId: newRequestId(),
   })
@@ -203,6 +218,7 @@ export class AuthSessionService {
         throw staleStateError(
           'Login could not commit or restore local authentication state; ' +
             'run `ocbox auth logout` and inspect the state directory',
+          'cli_auth_commit_restore_failed',
         )
       }
       throw error
@@ -243,12 +259,14 @@ export class AuthSessionService {
       } catch {
         throw staleStateError(
           'Stored authentication state could not be validated; run `ocbox auth logout`',
+          'cli_auth_state_unreadable',
         )
       }
       if (metadata === null) {
         if (credential !== null) {
           throw staleStateError(
-            'Stored credentials have no matching login metadata; run `ocbox auth logout`',
+            'The secret store has a login but the selected state directory has no login metadata. This can follow an interrupted login or moving local state. Run `ocbox auth logout` then `ocbox auth login` using the same state directory.',
+            'cli_auth_metadata_missing',
           )
         }
         return statusFrom(null, null, this.#options.clock.now())
@@ -257,6 +275,7 @@ export class AuthSessionService {
         throw staleStateError(
           'Stored login metadata points to an unexpected credential identity; ' +
             'run `ocbox auth logout`',
+          'cli_auth_identity_mismatch',
         )
       }
       if (credential === null) {
@@ -269,6 +288,7 @@ export class AuthSessionService {
           throw staleStateError(
             'Stored authentication metadata is stale and could not be cleared; ' +
               'run `ocbox auth logout` again and inspect the state directory',
+            'cli_auth_stale_metadata_cleanup_failed',
           )
         }
         return statusFrom(null, null, this.#options.clock.now())
@@ -280,6 +300,7 @@ export class AuthSessionService {
       } catch {
         throw staleStateError(
           'Stored login metadata contains an invalid hosted API URL; run `ocbox auth logout`',
+          'cli_auth_issuer_invalid',
         )
       }
       if (
@@ -290,6 +311,7 @@ export class AuthSessionService {
         throw staleStateError(
           'Stored login metadata does not match the credential generation; ' +
             'run `ocbox auth logout` then `ocbox auth login`',
+          'cli_auth_generation_mismatch',
         )
       }
       return statusFrom(metadata, credential, this.#options.clock.now())
@@ -303,9 +325,12 @@ export class AuthSessionService {
       // deletion halfway and leave a credential/metadata split.
       let metadata: AuthMetadata | null = null
       let credential: HostedOAuthCredential | null = null
+      let metadataUnreadable = false
+      let credentialUnreadable = false
       try {
         metadata = await this.#options.metadataStore.load()
       } catch {
+        metadataUnreadable = true
         // A malformed/unreadable metadata record cannot identify a safe remote
         // endpoint, but it must not prevent local credential deletion.
       }
@@ -314,10 +339,20 @@ export class AuthSessionService {
       try {
         credential = await this.#options.credentialStore.get(this.#options.credentialKey)
       } catch {
+        credentialUnreadable = true
         // Cleanup below still attempts the store's delete operation directly.
       }
       let revocationAttempted = false
       let revoked = false
+      let revocationReason: RevocationReason = metadataUnreadable
+        ? 'metadata_unreadable'
+        : credentialUnreadable
+          ? 'credential_unreadable'
+          : credential === null
+            ? 'no_local_credential'
+            : metadata === null
+              ? 'metadata_missing'
+              : 'identity_mismatch'
       if (
         credential !== null &&
         metadata !== null &&
@@ -333,7 +368,9 @@ export class AuthSessionService {
           }
           await this.#options.oauth(endpoints).revoke(input)
           revoked = true
+          revocationReason = 'revoked'
         } catch {
+          revocationReason = revocationAttempted ? 'remote_failed' : 'endpoint_invalid'
           // Invalid legacy metadata and remote revocation failures never block
           // local cleanup; the outcome remains explicit in the returned view.
           revoked = false
@@ -359,9 +396,10 @@ export class AuthSessionService {
         throw staleStateError(
           'Local authentication material could not be fully cleared; ' +
             'run `ocbox auth logout` again and inspect the state directory',
+          'cli_auth_cleanup_failed',
         )
       }
-      return { loggedOut: true, revocationAttempted, revoked }
+      return { loggedOut: true, revocationAttempted, revoked, revocationReason }
     }, options.signal)
   }
 
@@ -370,12 +408,18 @@ export class AuthSessionService {
     const configured = this.#options.endpoints
     if (configured !== null) {
       if (configured.issuer !== metadata.issuer || configured.clientId !== metadata.clientId) {
-        throw staleStateError('Configured authentication endpoints do not match the stored login')
+        throw staleStateError(
+          'Configured authentication endpoints do not match the stored login',
+          'cli_auth_endpoint_mismatch',
+        )
       }
       return configured
     }
     if (metadata.clientId !== DEFAULT_CLIENT_ID) {
-      throw staleStateError('Stored login metadata names an unexpected OAuth client')
+      throw staleStateError(
+        'Stored login metadata names an unexpected OAuth client',
+        'cli_auth_client_mismatch',
+      )
     }
     return protocolEndpointsFromIssuer(metadata.issuer, {
       clientId: metadata.clientId,

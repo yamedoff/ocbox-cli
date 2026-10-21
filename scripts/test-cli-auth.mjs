@@ -476,6 +476,7 @@ try {
     loggedOut: true,
     revocationAttempted: true,
     revoked: true,
+    revocationReason: 'revoked',
   })
   assert.equal(mock.calls.revoke, 2)
   assert.equal(hasCredentialFile(), false)

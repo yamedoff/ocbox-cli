@@ -460,7 +460,7 @@
       "kind": "function",
       "path": "src/auth/service.ts",
       "symbol": "AuthSessionService.login",
-      "lines": "127-179",
+      "lines": "142-194",
       "summary": "Binds a loopback listener, opens the authorize URL with a PKCE challenge, waits for the callback, exchanges the code and commits the token pair under the auth gate. Always closes the listener.",
       "calls": [
         "loopback-listener",
@@ -477,7 +477,7 @@
       "path": "src/auth/loopback.ts",
       "symbol": "LoopbackCallbackListener.#handle",
       "summary": "One-shot HTTP listener on 127.0.0.1 at /callback that receives the authorization code and checks state.",
-      "lines": "154-238",
+      "lines": "171-265",
       "area": "auth"
     },
     {
@@ -709,7 +709,7 @@
       "kind": "function",
       "path": "src/auth/service.ts",
       "symbol": "AuthSessionService.status",
-      "lines": "236-297",
+      "lines": "252-319",
       "summary": "Checks credential identity, canonical issuer, client and scopes under the auth state lock. Missing credentials clear stale metadata; inconsistent stores raise INVALID_STATE."
     },
     {
@@ -720,7 +720,7 @@
       "kind": "function",
       "path": "src/auth/service.ts",
       "symbol": "AuthSessionService.logout",
-      "lines": "299-366",
+      "lines": "321-404",
       "summary": "Attempts token revocation, then clears local credentials and metadata even when the network fails; local cleanup failures are reported."
     },
     {
@@ -995,7 +995,7 @@
       "kind": "function",
       "path": "src/auth/oauth-client.ts",
       "symbol": "CliOAuthClient.exchangeAuthorizationCode",
-      "lines": "254-265",
+      "lines": "257-268",
       "summary": "Posts the authorization code with its original verifier and redirect URI, bounds the response and validates the token pair before storage."
     },
     {
@@ -2095,7 +2095,7 @@
       "kind": "class",
       "path": "src/cli/base-command.ts",
       "symbol": "OcboxCommand",
-      "lines": "15-43",
+      "lines": "21-56",
       "summary": "Base of product commands. emitResult runs the action and prints the result envelope, or a redacted error with exit code 1; abortOnInterrupt turns SIGINT into an AbortSignal. Shared flags include --config, --json, --jsonl, --no-color and --state-dir."
     },
     {
@@ -3209,7 +3209,7 @@
       "kind": "class",
       "path": "src/output/writer.ts",
       "symbol": "OutputWriter",
-      "lines": "57-134",
+      "lines": "57-140",
       "summary": "One writer for human, --json (indented) and --jsonl output. Results and events go to stdout, errors and progress to stderr. Every envelope (schemaVersion 1, kind, name, timestamp, data) passes through redactForOutput; colour only on a TTY without NO_COLOR."
     },
     {
@@ -3616,7 +3616,7 @@
       "kind": "function",
       "path": "src/auth/service.ts",
       "symbol": "AuthSessionService.#commit",
-      "lines": "190-210",
+      "lines": "205-226",
       "summary": "Snapshots both stores under the auth gate, writes the new credential then metadata and restores the prior pair after metadata failure; incomplete restoration raises INVALID_STATE."
     },
     {
@@ -3629,6 +3629,28 @@
       "symbol": "FakeSandboxProvider.#mutate",
       "lines": "515-580",
       "summary": "Replays mutation keys from local state, rejects missing/deleted resources, writes the target state and idempotency result, and can intentionally lose one response to exercise lifecycle recovery."
+    },
+    {
+      "id": "auth-failure-journal",
+      "building": "cli",
+      "area": "auth",
+      "name": "recordLocalAuthFailure",
+      "kind": "function",
+      "path": "src/auth/diagnostics.ts",
+      "symbol": "recordLocalAuthFailure",
+      "summary": "Keeps the last 100 auth failure references for seven days in auth-failures.json, using the atomic local store. Only timestamp, reason and optional server reference are retained.",
+      "lines": "18-54"
+    },
+    {
+      "id": "auth-server-reason",
+      "building": "cli",
+      "area": "auth",
+      "name": "serverAuthReason",
+      "kind": "function",
+      "path": "src/auth/server-reasons.ts",
+      "symbol": "serverAuthReason",
+      "summary": "Maps closed public server reason codes to fixed messages and next steps. Unknown response text is never displayed.",
+      "lines": "463-466"
     }
   ],
   "journeys": [
@@ -3675,6 +3697,13 @@
             "auth-login-commit",
             "credential-store"
           ]
+        },
+        {
+          "code": [
+            "auth-failure-journal",
+            "auth-server-reason"
+          ],
+          "story": "Failures carry a closed reason and next step. Auth errors are recorded by local reference; server references are retained when supplied. A browser that never returns reaches the finite callback deadline. Logout reports why revocation was skipped or failed."
         }
       ]
     },
@@ -3979,6 +4008,13 @@
           "story": "Emit logged-in/expired status with issuer, audience, scopes and expiry from the safe status view. No network request or token refresh is performed by auth status.",
           "building": "cli",
           "code": "auth-status"
+        },
+        {
+          "code": [
+            "auth-failure-journal",
+            "auth-server-reason"
+          ],
+          "story": "Failures carry a closed reason and next step. Auth errors are recorded by local reference; server references are retained when supplied. A browser that never returns reaches the finite callback deadline. Logout reports why revocation was skipped or failed."
         }
       ]
     },
@@ -4005,6 +4041,13 @@
           "story": "Clear both local stores and report cleanup failures as INVALID_STATE; secret token values never enter command output.",
           "building": "cli",
           "code": "auth-logout"
+        },
+        {
+          "code": [
+            "auth-failure-journal",
+            "auth-server-reason"
+          ],
+          "story": "Failures carry a closed reason and next step. Auth errors are recorded by local reference; server references are retained when supplied. A browser that never returns reaches the finite callback deadline. Logout reports why revocation was skipped or failed."
         }
       ]
     },
