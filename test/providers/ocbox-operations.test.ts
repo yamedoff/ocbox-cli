@@ -11,6 +11,94 @@ const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
 const CANCEL_KEY = 'cancel-key-0123456789-abcd'
 
 describe('hosted operation waiter', () => {
+  it('uses eleven steady waits for twelve healthy source apply polls', async () => {
+    let calls = 0
+    let elapsed = 0
+    const sleeps: number[] = []
+    const { api } = await seededApi(async () => jsonResponse(hostedOperationFixture({
+      kind: 'source.apply', state: ++calls === 12 ? 'succeeded' : 'running',
+    })))
+    const options = {
+      healthyPollMilliseconds: 1000,
+      now: () => elapsed,
+      random: () => 0,
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+        elapsed += ms
+      },
+    }
+    await waitForHostedOperation(api, 'op_hosted_1', options)
+    expect(calls).toBe(12)
+    expect(sleeps).toEqual(Array(11).fill(1000))
+    expect(elapsed).toBeLessThanOrEqual(15_000)
+  })
+
+  it.each(['network', '429', '503', 'operation hint'])('resumes steady polling after %s', async (failure) => {
+    let calls = 0
+    let elapsed = 0
+    const sleeps: number[] = []
+    const store = new MemoryOperationCheckpointStore()
+    const { api } = await seededApi(async () => {
+      if (++calls === 2) {
+        if (failure === 'network') throw new TypeError('Connection interrupted')
+        if (failure === '429') return errorResponse('RATE_LIMITED', 429, REQUEST_ID, 2)
+        if (failure === '503') return errorResponse('SERVICE_UNAVAILABLE', 503, REQUEST_ID)
+        return jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'running',
+          error: { code: 'RETRY_LATER', message: 'Try later', retryAfterSeconds: 3 } }))
+      }
+      return jsonResponse(hostedOperationFixture({ kind: 'source.apply',
+        state: calls === 4 ? 'succeeded' : 'running' }))
+    })
+    await waitForHostedOperation(api, 'op_hosted_1', {
+      healthyPollMilliseconds: 1000, now: () => elapsed, random: () => 0, store,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+        elapsed += ms
+      },
+    })
+    const backoff = failure === '429' ? 2000 : failure === 'operation hint' ? 3000 : 500
+    expect(sleeps).toEqual([1000, backoff, 1000])
+    expect((await store.load('op_hosted_1'))?.attempt).toBe(4)
+  })
+
+  it('honours cancellation during a steady wait', async () => {
+    let calls = 0
+    let elapsed = 0
+    const controller = new AbortController()
+    const { api } = await seededApi(async () => {
+      calls += 1
+      return jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'running' }))
+    })
+    const sleeps: number[] = []
+    await expect(waitForHostedOperation(api, 'op_hosted_1', {
+      healthyPollMilliseconds: 1000, now: () => elapsed, signal: controller.signal,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+        elapsed += ms
+        controller.abort()
+      },
+    })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(sleeps).toEqual([1000])
+    expect(calls).toBe(1)
+  })
+
+  it('retains exponential polling for session start', async () => {
+    let calls = 0
+    let elapsed = 0
+    const sleeps: number[] = []
+    const { api } = await seededApi(async () => jsonResponse(hostedOperationFixture({
+      kind: 'session_start', state: ++calls === 4 ? 'succeeded' : 'running',
+    })))
+    await waitForHostedOperation(api, 'op_hosted_1', {
+      now: () => elapsed, random: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+        elapsed += ms
+      },
+    })
+    expect(sleeps).toEqual([250, 500, 1000])
+  })
+
   it('polls pending operations to success and survives a CLI restart', async () => {
     let calls = 0
     const { api } = await seededApi(() => {
@@ -53,6 +141,29 @@ describe('hosted operation waiter', () => {
       }),
     ).rejects.toMatchObject({ code: 'OPERATION_TIMEOUT' })
     expect(sleeps[0]).toBe(5000)
+  })
+
+  it('honours a header-only Retry-After while polling', async () => {
+    let calls = 0
+    const { api } = await seededApi(async () => {
+      if (++calls === 1)
+        return new Response(
+          JSON.stringify({
+            error: { code: 'RATE_LIMITED', message: 'Try later' },
+            requestId: REQUEST_ID,
+          }),
+          { status: 429, headers: { 'retry-after': '2' } },
+        )
+      return jsonResponse(hostedOperationFixture())
+    })
+    const sleeps: number[] = []
+    const result = await waitForHostedOperation(api, 'op_hosted_1', {
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds)
+      },
+    })
+    expect(result.operation.state).toBe('succeeded')
+    expect(sleeps).toEqual([2000])
   })
 
   it('maps terminal failures and cancellations losslessly', async () => {

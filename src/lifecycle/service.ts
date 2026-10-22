@@ -1,29 +1,32 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { type ProjectConfig, toSandboxSpec } from '../config/index.js'
 import {
   assertCapabilitySupported,
   assertSessionTransition,
   BindingIdSchema,
   IdempotencyKeySchema,
-  OperationIdSchema,
-  OperationSchema,
-  ProjectIdSchema,
-  RequestIdSchema,
-  SessionIdSchema,
-  SessionSchema,
-  UtcTimestampSchema,
   type Operation,
   type OperationAction,
   type OperationContext,
+  OperationIdSchema,
+  OperationSchema,
   type ProjectId,
+  ProjectIdSchema,
+  RequestIdSchema,
   type Sandbox,
   type SandboxProvider,
   type Session,
+  SessionIdSchema,
+  SessionSchema,
+  UtcTimestampSchema,
 } from '../contracts.js'
-import { toSandboxSpec, type ProjectConfig } from '../config/index.js'
 import { OcboxError } from '../errors/index.js'
 import type { ExecutionTarget } from '../execution/service.js'
+import { FakeSandboxProvider } from '../providers/fake/provider.js'
+import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
 import type { ProviderRegistry } from '../providers/registry.js'
 import { AtomicStoreCancelledError, AtomicStoreConflictError } from './atomic-json-store.js'
+import { type CancellationResult, executionError } from './cancellation.js'
 import type { LifecycleProjectState } from './schema.js'
 import type { LifecycleStore } from './store.js'
 
@@ -134,7 +137,51 @@ export class LifecycleService {
 
   async status(sessionId?: string): Promise<SessionView> {
     const session = await this.#resolveSession(sessionId)
-    return this.#view(session.id)
+    const view = await this.#view(session.id)
+    if (view.sandbox === null || session.state === 'destroyed') return view
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const observed = await this.#provider(requestId).get(
+      { requestId, issuedAt: this.#timestamp() },
+      { sandboxId: view.sandbox.id },
+    )
+    if (observed === null) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'The sandbox mapping is unavailable for this login, API, or project',
+        requestId,
+      })
+    }
+    return { ...view, sandbox: observed }
+  }
+
+  async cancelExecution(
+    executionId?: string,
+    sandboxId?: string,
+    waitMilliseconds = 30_000,
+  ): Promise<CancellationResult> {
+    const state = await this.#store.load()
+    const sandbox =
+      sandboxId === undefined
+        ? this.#sandboxFor(state, await this.#resolveSession())
+        : Object.values(state.sandboxes).find(
+            (candidate) => candidate.id === sandboxId && candidate.projectId === this.#projectId,
+          )
+    const requestId = RequestIdSchema.parse(this.#createId())
+    if (sandbox === undefined)
+      throw executionError(
+        requestId,
+        'The requested local Sandbox was not found',
+        'SANDBOX_NOT_FOUND',
+      )
+    const provider = this.#provider(requestId)
+    if (!(provider instanceof OcboxSandboxProvider) && !(provider instanceof FakeSandboxProvider)) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: 'Provider does not support cancellation from another terminal',
+        requestId,
+      })
+    }
+    return provider.cancelSandboxExecution(sandbox.id, executionId, waitMilliseconds, this.#signal)
   }
 
   /**
@@ -199,7 +246,21 @@ export class LifecycleService {
         details: { provider: provider.name },
       })
     }
-    return { session, sandbox, capabilities, provider }
+    const observed = await provider.get(
+      { requestId, issuedAt: this.#timestamp() },
+      { sandboxId: sandbox.id },
+    )
+    if (observed === null) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'The sandbox mapping is unavailable for this login, API, or project',
+        requestId,
+      })
+    }
+    if (observed.lifecycle.normalizedState !== 'running') {
+      throw this.#invalidState(session, 'The provider sandbox is not running; run ocbox start')
+    }
+    return { session, sandbox: observed, capabilities, provider }
   }
 
   async list(): Promise<readonly SessionView[]> {
@@ -623,7 +684,10 @@ export class LifecycleService {
   }
 
   #provider(requestId: ReturnType<typeof RequestIdSchema.parse>) {
-    return this.#registry.resolve(this.#config.provider.name, requestId)
+    const provider = this.#registry.resolve(this.#config.provider.name, requestId)
+    if (provider instanceof OcboxSandboxProvider || provider instanceof FakeSandboxProvider)
+      provider.bindLifecycleStore(this.#store)
+    return provider
   }
 
   #allowedStates(action: Exclude<LifecycleAction, 'create'>): readonly Session['state'][] {

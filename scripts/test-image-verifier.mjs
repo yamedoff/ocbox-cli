@@ -10,6 +10,12 @@ verifyImageSources(baseline)
 
 const cases = [
   [
+    'loaded image identity must match the verified OCI config',
+    (sources) => {
+      sources.workflow = sources.workflow.replace('sha256sum "$config_path"', 'echo ignored')
+    },
+  ],
+  [
     'classic load must disable provenance',
     (sources) => {
       sources.workflow = sources.workflow.replace('--provenance=false', '--provenance=mode=max')

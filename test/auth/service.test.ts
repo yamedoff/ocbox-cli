@@ -215,7 +215,10 @@ describe('auth session service', () => {
     const h = harness()
     await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
 
-    await expect(h.service.status()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    await expect(h.service.status()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+      details: { reasonCode: 'cli_auth_metadata_missing' },
+    })
     // Status is read-only for an orphaned secret; explicit logout owns cleanup.
     await expect(h.credentials.get(TEST_KEY)).resolves.toMatchObject({
       accessToken: 'a'.repeat(48),
@@ -288,7 +291,12 @@ describe('auth session service', () => {
     })
 
     const result = await h.service.logout()
-    expect(result).toEqual({ loggedOut: true, revocationAttempted: true, revoked: false })
+    expect(result).toEqual({
+      loggedOut: true,
+      revocationAttempted: true,
+      revoked: false,
+      revocationReason: 'remote_failed',
+    })
     expect(h.revokeCalls).toHaveLength(1)
     expect(h.credentials.values.size).toBe(0)
     expect(h.metadata.value).toBeNull()
@@ -347,6 +355,7 @@ describe('auth session service', () => {
       loggedOut: true,
       revocationAttempted: false,
       revoked: false,
+      revocationReason: 'endpoint_invalid',
     })
     expect(oauthBuilt).toBe(false)
     expect(credentials.values.size).toBe(0)
@@ -810,8 +819,22 @@ describe('auth session gate wiring', () => {
       }),
     })
     const result = await service.logout()
-    expect(result).toEqual({ loggedOut: true, revocationAttempted: true, revoked: false })
+    expect(result).toEqual({
+      loggedOut: true,
+      revocationAttempted: true,
+      revoked: false,
+      revocationReason: 'remote_failed',
+    })
     expect(credentials.values.size).toBe(0)
     expect(metadata.value).toBeNull()
   })
+})
+
+it('reports why revocation was skipped when no credential exists', async () => {
+  const h = harness()
+  expect(await h.service.logout()).toMatchObject({
+    revocationAttempted: false,
+    revocationReason: 'no_local_credential',
+  })
+  expect(h.revokeCalls).toHaveLength(0)
 })

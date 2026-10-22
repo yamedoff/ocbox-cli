@@ -1,8 +1,15 @@
+import { recordLocalAuthFailure } from '../auth/diagnostics.js'
 import { Command, Flags } from '@oclif/core'
 import type { OutputWriter } from '../output/index.js'
-import { createOutputWriter, type RuntimeFlags } from './runtime.js'
+import {
+  createOutputWriter,
+  hostedRuntimeFlags,
+  resolveStateDirectory,
+  type RuntimeFlags,
+} from './runtime.js'
 
 export const runtimeFlags = {
+  ...hostedRuntimeFlags,
   config: Flags.string({ description: 'Path to opencloudbox.toml' }),
   json: Flags.boolean({ description: 'Emit one stable JSON envelope' }),
   jsonl: Flags.boolean({ description: 'Emit one compact JSON envelope per line' }),
@@ -23,6 +30,13 @@ export abstract class OcboxCommand extends Command {
       const result = await action()
       writer.result(name, result, { humanMessage: humanMessage(result) })
     } catch (error) {
+      if (name.startsWith('auth.')) {
+        try {
+          await recordLocalAuthFailure(resolveStateDirectory(flags), error)
+        } catch {
+          /* Preserve the original error if local diagnostics are unavailable. */
+        }
+      }
       writer.error(error)
       process.exitCode = 1
     }

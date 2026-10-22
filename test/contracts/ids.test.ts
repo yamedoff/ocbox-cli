@@ -31,7 +31,7 @@ describe('identity and timestamp primitives', () => {
 
   it('accepts ULIDs and keeps provider-native IDs opaque', () => {
     expect(SessionIdSchema.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
-    expect(ProviderSandboxIdSchema.parse('daytona/native:id/123')).toBe('daytona/native:id/123')
+    expect(ProviderSandboxIdSchema.parse('provider/native:id/123')).toBe('provider/native:id/123')
     expect(ProviderSandboxIdSchema.safeParse('provider id with spaces').success).toBe(false)
   })
 
