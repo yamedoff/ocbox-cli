@@ -1,3 +1,4 @@
+import { serverAuthReason } from './server-reasons.js'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { OcboxError } from '../errors/index.js'
@@ -20,12 +21,18 @@ const CALLBACK_SECURITY_PARAMETERS = [
   'error_uri',
   'iss',
   'state',
+  'reason_code',
+  'request_id',
 ] as const
 
 const SUCCESS_BODY =
   '<!doctype html><meta charset="utf-8"><title>OpenCloudBox</title><p>Authorization complete. You may close this window.</p>'
 const FAILURE_BODY =
   '<!doctype html><meta charset="utf-8"><title>OpenCloudBox</title><p>Authorization could not be completed.</p>'
+
+function failureBody(reasonCode: string): string {
+  return `${FAILURE_BODY}<p>Reason ${reasonCode}. Return to the CLI and run ocbox auth login again.</p>`
+}
 
 function respond(response: ServerResponse, status: number, body: string): void {
   response.writeHead(status, {
@@ -55,8 +62,13 @@ export interface LoopbackListenerInput {
 
 export type LoopbackListenerFactory = (input: LoopbackListenerInput) => Promise<LoopbackListener>
 
-function authError(message: string): OcboxError {
-  return new OcboxError({ code: 'AUTH_REQUIRED', message, requestId: newRequestId() })
+function authError(message: string, reasonCode = 'cli_login_cancelled'): OcboxError {
+  return new OcboxError({
+    details: { reasonCode },
+    code: 'AUTH_REQUIRED',
+    message,
+    requestId: newRequestId(),
+  })
 }
 
 /** Loopback-only OAuth callback server for one short-lived authorization code. */
@@ -134,7 +146,12 @@ export class LoopbackCallbackListener implements LoopbackListener {
       this.#resolve = resolve
       this.#reject = reject
       this.#timer = setTimeout(() => {
-        void this.#fail(authError('Authorization timed out; run `ocbox auth login` again'))
+        void this.#fail(
+          authError(
+            'The browser did not return to the CLI before the login deadline. Check the browser for a failure reference, then run `ocbox auth login --no-browser` again and finish in the same browser.',
+            'cli_login_callback_timeout',
+          ),
+        )
       }, this.#timeoutMilliseconds)
       this.#timer.unref?.()
       if (signal !== undefined) {
@@ -155,34 +172,34 @@ export class LoopbackCallbackListener implements LoopbackListener {
     // After the single accepted callback every later request is refused and
     // can never re-resolve the flow.
     if (this.#settled || this.#accepted) {
-      respond(response, 409, FAILURE_BODY)
+      respond(response, 409, failureBody('cli_login_callback_already_completed'))
       return
     }
     if (request.method !== 'GET') {
-      respond(response, 405, FAILURE_BODY)
+      respond(response, 405, failureBody('cli_login_callback_method_invalid'))
       return
     }
     const expectedHost = `${this.#host}:${this.#port}`
     if (request.headers.host !== expectedHost) {
       // Guards against DNS-rebinding: the Host header must name the exact
       // loopback authority regardless of which name resolved to 127.0.0.1.
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_host_invalid'))
       return
     }
     const target = request.url ?? ''
     if (target.length === 0 || target.length > MAX_REQUEST_TARGET_LENGTH) {
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_target_invalid'))
       return
     }
     let url: URL
     try {
       url = new URL(target, `http://${expectedHost}`)
     } catch {
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_url_invalid'))
       return
     }
     if (url.pathname !== this.#path) {
-      respond(response, 404, FAILURE_BODY)
+      respond(response, 404, failureBody('cli_login_callback_path_invalid'))
       return
     }
 
@@ -194,37 +211,47 @@ export class LoopbackCallbackListener implements LoopbackListener {
     // coexist on one callback.
     for (const parameter of CALLBACK_SECURITY_PARAMETERS) {
       if (url.searchParams.getAll(parameter).length > 1) {
-        respond(response, 400, FAILURE_BODY)
+        respond(response, 400, failureBody('cli_login_callback_parameter_repeated'))
         return
       }
     }
     if (providerError !== null && url.searchParams.get('code') !== null) {
       // A callback carrying both `code` and `error` cannot be classified; the
       // authorization server must send exactly one outcome.
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_outcome_ambiguous'))
       return
     }
     if (providerError !== null) {
       if (!timingSafeEqualText(state, this.#expectedState)) {
-        respond(response, 400, FAILURE_BODY)
+        respond(response, 400, failureBody('cli_login_callback_state_mismatch'))
         return
       }
       respond(response, 200, FAILURE_BODY)
-      this.#fail(authError('Authorization was not granted'))
+      const reason = serverAuthReason(url.searchParams.get('reason_code'))
+      const ref = url.searchParams.get('request_id')
+      const reference = ref !== null && /^req_[a-f0-9]{12}$/.test(ref) ? ` Reference ${ref}.` : ''
+      this.#fail(
+        authError(
+          reason === null
+            ? 'Authorization was not granted. Run `ocbox auth login` again and approve access in the browser.'
+            : `${reason.message} ${reason.nextStep}${reference}`,
+          reason?.reasonCode ?? 'cli_login_authorization_denied',
+        ),
+      )
       return
     }
 
     if (url.searchParams.get('code') === null) {
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_code_missing'))
       return
     }
     const code = url.searchParams.get('code') ?? ''
     if (!timingSafeEqualText(state, this.#expectedState)) {
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_state_mismatch'))
       return
     }
     if (!CODE_PATTERN.test(code)) {
-      respond(response, 400, FAILURE_BODY)
+      respond(response, 400, failureBody('cli_login_callback_code_invalid'))
       return
     }
 

@@ -11,6 +11,21 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', '
  * that shape cannot justify a replay/refresh and must never reach the wire.
  */
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/
+/** Waits before the second and third attempts after a transport failure. */
+const RETRY_DELAYS_MILLISECONDS = [500, 1_500]
+/**
+ * Failures raised before a connection exists, so the request never left this
+ * machine and any method may be sent again. ETIMEDOUT is left out because an
+ * established socket can raise it too.
+ */
+const NEVER_SENT_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'UND_ERR_CONNECT_TIMEOUT',
+])
 
 export interface AuthenticatedRequest {
   readonly method: string
@@ -63,6 +78,37 @@ export interface AuthenticatedHttpClientOptions {
    * minted for a subpath deployment from reaching a same-origin sibling app.
    */
   readonly apiOrigin?: string | undefined
+  /** Waits between attempts after a transport failure; one attempt more than its length. */
+  readonly retryDelaysMilliseconds?: readonly number[] | undefined
+}
+
+/** The transport's own failure code, which names a cause and holds no address. */
+function transportCodeOf(error: unknown): string | null {
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : null
+}
+
+function isReplayable(request: AuthenticatedRequest): boolean {
+  return (
+    IDEMPOTENT_METHODS.has(request.method.toUpperCase()) || request.idempotencyKey !== undefined
+  )
+}
+
+/** Resolves after the delay, or at once when the caller cancels. */
+function pause(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) {
+      resolve()
+      return
+    }
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, milliseconds)
+    signal?.addEventListener('abort', done, { once: true })
+  })
 }
 
 function assertContractIdempotencyKey(value: string): void {
@@ -195,9 +241,7 @@ export class AuthenticatedHttpClient {
     // replay: idempotent methods, or any method carrying a contract idempotency
     // key. Derived once, before any rotation, so a non-replayable request never
     // burns a refresh family unnecessarily.
-    const replayable =
-      IDEMPOTENT_METHODS.has(request.method.toUpperCase()) || request.idempotencyKey !== undefined
-    if (result.response.status === 401 && replayable) {
+    if (result.response.status === 401 && isReplayable(request)) {
       discardBody(result.response)
       const token = await this.#recover(usedToken, request.signal)
       result = await this.#send(request, target, token)
@@ -251,44 +295,55 @@ export class AuthenticatedHttpClient {
     if (request.idempotencyKey !== undefined) {
       headers['idempotency-key'] = request.idempotencyKey
     }
-    const timeout = withTimeout(request.signal, this.#options.timeoutMilliseconds)
-    try {
-      if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
-      const response = await this.#options.fetch(target, {
-        headers,
-        method: request.method,
-        // Redirects are never followed: the bearer credential travels only to
-        // the exact caller-provided, origin-bound target.
-        redirect: 'manual',
-        ...(request.body === undefined ? {} : { body: request.body }),
-        signal: timeout.signal,
-      })
-      if (timeout.didCancel() || timeout.didTimeout()) {
-        discardBody(response)
-        throw this.#transportError(timeout)
-      }
-      if (response.status >= 300 && response.status < 400) {
-        discardBody(response)
-        throw new OcboxError({
-          code: 'PROVIDER_AUTH',
-          message: 'The hosted service returned an unexpected redirect',
-          requestId: newRequestId(),
+    const delays = this.#options.retryDelaysMilliseconds ?? RETRY_DELAYS_MILLISECONDS
+    for (let attempt = 0; ; attempt += 1) {
+      const timeout = withTimeout(request.signal, this.#options.timeoutMilliseconds)
+      try {
+        if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
+        const response = await this.#options.fetch(target, {
+          headers,
+          method: request.method,
+          // Redirects are never followed: the bearer credential travels only to
+          // the exact caller-provided, origin-bound target.
+          redirect: 'manual',
+          ...(request.body === undefined ? {} : { body: request.body }),
+          signal: timeout.signal,
         })
+        if (timeout.didCancel() || timeout.didTimeout()) {
+          discardBody(response)
+          throw this.#transportError(timeout)
+        }
+        if (response.status >= 300 && response.status < 400) {
+          discardBody(response)
+          throw new OcboxError({
+            code: 'PROVIDER_AUTH',
+            message: 'The hosted service returned an unexpected redirect',
+            requestId: newRequestId(),
+          })
+        }
+        return {
+          requestId: response.headers.get('x-request-id'),
+          response,
+          retryAfterSeconds: retryAfterSecondsOf(response),
+        }
+      } catch (error) {
+        if (error instanceof OcboxError) throw error
+        // A timeout may have reached the server and already cost the caller its
+        // whole wait, so it is never retried. A request that may have been sent
+        // is retried only when replaying it cannot run it twice.
+        const code = transportCodeOf(error)
+        const safe = isReplayable(request) || (code !== null && NEVER_SENT_CODES.has(code))
+        if (attempt >= delays.length || timeout.didTimeout() || timeout.didCancel() || !safe) {
+          throw this.#transportError(timeout, code, attempt + 1)
+        }
+      } finally {
+        timeout.dispose()
       }
-      return {
-        requestId: response.headers.get('x-request-id'),
-        response,
-        retryAfterSeconds: retryAfterSecondsOf(response),
-      }
-    } catch (error) {
-      if (error instanceof OcboxError) throw error
-      throw this.#transportError(timeout)
-    } finally {
-      timeout.dispose()
+      await pause(delays[attempt] as number, request.signal)
     }
   }
 
-  #transportError(timeout: TimeoutSignal): OcboxError {
+  #transportError(timeout: TimeoutSignal, code: string | null = null, attempts = 1): OcboxError {
     if (timeout.didTimeout()) {
       return new OcboxError({
         code: 'PROVIDER_TIMEOUT',
@@ -303,9 +358,10 @@ export class AuthenticatedHttpClient {
         requestId: newRequestId(),
       })
     }
+    const tried = attempts === 1 ? '1 attempt' : `${attempts} attempts`
     return new OcboxError({
       code: 'PROVIDER_UNAVAILABLE',
-      message: 'The hosted service could not be reached',
+      message: `The hosted service could not be reached (${code ?? 'connection failed'}, ${tried})`,
       requestId: newRequestId(),
     })
   }

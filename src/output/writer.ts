@@ -101,7 +101,13 @@ export class OutputWriter {
         error instanceof Error
           ? safeHumanMessage(error.message, envelope.data)
           : safeHumanMessage(undefined, envelope.data)
-      const line = this.#useColor ? `\u001B[31m${message}\u001B[0m` : message
+      const reason = error instanceof OcboxError ? error.details?.['reasonCode'] : undefined
+      const suffix =
+        typeof reason === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(reason)
+          ? ` Reason ${reason}. Reference ${error instanceof OcboxError ? error.requestId : ''}.`
+          : ''
+      const rendered = message + suffix
+      const line = this.#useColor ? `\u001B[31m${rendered}\u001B[0m` : rendered
       this.#stderr.write(`${line}\n`)
     } else {
       this.#stderr.write(this.#serialize(envelope))

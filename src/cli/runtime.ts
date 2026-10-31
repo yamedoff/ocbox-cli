@@ -1,16 +1,29 @@
-import { open, readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { open, readFile, writeFile } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
+import { Flags } from '@oclif/core'
+import { parse, stringify } from 'smol-toml'
+import { newRequestId } from '../auth/errors.js'
+import { AuthMetadataStore } from '../auth/metadata.js'
+import { createCredentialStore } from '../auth/runtime.js'
 import {
-  parseProjectConfig,
   type ProjectConfig,
+  parseProjectConfig,
   resolveConfigurationValue,
 } from '../config/index.js'
+import { OcboxError } from '../errors/index.js'
 import { LifecycleService, LifecycleStore, projectIdForPath } from '../lifecycle/index.js'
-import { OutputWriter, type OutputMode } from '../output/index.js'
+import {
+  createMetadataClient,
+  ProjectPageSchema,
+  ProjectSchema,
+  runMetadataAction,
+} from '../metadata/client.js'
+import { type OutputMode, OutputWriter } from '../output/index.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
 import { FakeSandboxProvider } from '../providers/fake/index.js'
 import { ProviderRegistry } from '../providers/index.js'
 import { createOcboxProvider } from '../providers/ocbox/factory.js'
+import { requestedSpecFromConfig } from '../providers/ocbox/requested-spec.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
 
@@ -49,11 +62,31 @@ kind = "none"
 `
 
 export interface RuntimeFlags {
+  readonly 'api-url'?: string | undefined
+  readonly project?: string | undefined
+  readonly provider?: string | undefined
+  readonly cpu?: number | undefined
+  readonly memory?: number | undefined
+  readonly image?: string | undefined
+  readonly region?: string | undefined
+  readonly runtime?: string | undefined
   readonly config?: string | undefined
   readonly json?: boolean | undefined
   readonly jsonl?: boolean | undefined
   readonly 'no-color'?: boolean | undefined
   readonly 'state-dir'?: string | undefined
+}
+
+export const hostedRuntimeFlags = {
+  'api-url': Flags.string({ description: 'Hosted API base URL (overrides OCBOX_API_URL)' }),
+  project: Flags.string({
+    description: 'Hosted project ID (overrides OCBOX_PROJECT_ID and workspace)',
+  }),
+  cpu: Flags.integer({ min: 1, description: 'Requested CPU cores' }),
+  memory: Flags.integer({ min: 1, description: 'Requested memory in bytes' }),
+  image: Flags.string({ description: 'Requested hosted image reference' }),
+  region: Flags.string({ description: 'Requested hosted region' }),
+  runtime: Flags.string({ description: 'Requested hosted runtime' }),
 }
 
 export interface CliIo {
@@ -101,20 +134,34 @@ export function resolveStateDirectory(
 }
 
 export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
-  return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
+  try {
+    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new OcboxError({
+        code: 'CONFIG_INVALID',
+        message: 'Workspace configuration was not found; run ocbox init',
+        requestId: newRequestId(),
+      })
+    throw error
+  }
 }
 
 export function createRegistry(
   stateDirectory: string,
   signal?: AbortSignal,
   environment: NodeJS.ProcessEnv = process.env,
+  hostedOptions: Omit<
+    Parameters<typeof createOcboxProvider>[0],
+    'stateDirectory' | 'environment'
+  > = {},
 ): ProviderRegistry {
   return new ProviderRegistry()
     .register(
       'fake',
       () => new FakeSandboxProvider(stateDirectory, signal === undefined ? {} : { signal }),
     )
-    .register('ocbox', () => createOcboxProvider({ environment, stateDirectory }))
+    .register('ocbox', () => createOcboxProvider({ environment, stateDirectory, ...hostedOptions }))
 }
 
 export async function createLifecycleService(
@@ -128,28 +175,106 @@ export async function createLifecycleService(
     config,
     projectId,
     store: new LifecycleStore(stateDirectory, projectId),
-    registry: createRegistry(stateDirectory, signal),
+    registry: createRegistry(stateDirectory, signal, process.env, {
+      apiUrl: flags['api-url'],
+      projectId: flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId,
+      requestedSpec: {
+        ...requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+        ...Object.fromEntries(
+          ['cpu', 'memory', 'image', 'region', 'runtime'].flatMap((key) => {
+            const value = flags[key as keyof RuntimeFlags]
+            return value === undefined ? [] : [[key, value]]
+          }),
+        ),
+      },
+    }),
     ...(signal === undefined ? {} : { signal }),
   })
 }
 
-/** Creates the starter config exclusively, or validates the existing file. */
+/** Creates the starter config exclusively, or validates and completes onboarding. */
 export async function initializeProject(flags: RuntimeFlags): Promise<'created' | 'validated'> {
   const path = resolveConfigPath(flags)
-  let handle: Awaited<ReturnType<typeof open>> | undefined
+  let source: string
+  let exists = true
   try {
-    handle = await open(path, 'wx', 0o600)
-    await handle.writeFile(DEFAULT_PROJECT_CONFIG, 'utf8')
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    parseProjectConfig(DEFAULT_PROJECT_CONFIG)
-    return 'created'
+    source = await readFile(path, 'utf8')
   } catch (error) {
-    await handle?.close()
-    const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : null
-    if (code !== 'EEXIST') throw error
-    await loadProjectConfig(flags)
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    exists = false
+    source = DEFAULT_PROJECT_CONFIG
+  }
+  const existing = parseProjectConfig(source)
+  let loggedIn = false
+  if (!exists && flags.provider === undefined) {
+    const metadata = await new AuthMetadataStore(
+      join(resolveStateDirectory(flags), 'auth.json'),
+    ).load()
+    loggedIn = metadata !== null && (await createCredentialStore().get(metadata.identity)) !== null
+  }
+  const provider = flags.provider ?? (exists ? existing.provider.name : loggedIn ? 'ocbox' : 'fake')
+  let projectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? existing.projectId
+  if (provider === 'ocbox' && !projectId) {
+    const api = createMetadataClient(flags)
+    const name = basename(process.cwd())
+    let cursor: string | undefined
+    const seen = new Set<string>()
+    do {
+      const result = await runMetadataAction(api, 'project.list', { cursor })
+      const page = ProjectPageSchema.parse(result.resource)
+      projectId = page.data.find((project) => project.name === name)?.id
+      cursor = page.nextCursor ?? undefined
+      if (cursor && seen.has(cursor)) throw new Error('Hosted project pagination repeated a cursor')
+      if (cursor) seen.add(cursor)
+    } while (!projectId && cursor)
+    if (!projectId) {
+      const result = await runMetadataAction(api, 'project.create', { name })
+      projectId = ProjectSchema.parse(result.resource).id
+    }
+  }
+  if (!exists && provider === 'ocbox') {
+    // Omit resource/image/location overrides so the server chooses its free default.
+    source = DEFAULT_PROJECT_CONFIG.replace(
+      'name = "fake"\nruntimeClass = "container"\nregion = "local"',
+      'name = "ocbox"',
+    )
+      .replace('image = { kind = "template", reference = "fake-node-24" }\n', '')
+      .replace(/\[sandbox.resources\]\n[\s\S]*?\n\n/, '')
+  }
+  if (provider !== parseProjectConfig(source).provider.name || projectId !== existing.projectId) {
+    const document = parse(source)
+    ;(document['provider'] as Record<string, unknown>)['name'] = provider
+    if (projectId !== undefined) document['projectId'] = projectId
+    source = stringify(document)
+  }
+  if (
+    ['cpu', 'memory', 'image', 'region', 'runtime'].some(
+      (key) => flags[key as keyof RuntimeFlags] !== undefined,
+    )
+  ) {
+    const document = parse(source)
+    const providerConfig = document['provider'] as Record<string, unknown>
+    const sandbox = document['sandbox'] as Record<string, unknown>
+    const resources = (sandbox['resources'] ?? {}) as Record<string, unknown>
+    if (flags.cpu !== undefined) resources['cpuMillicores'] = flags.cpu * 1000
+    if (flags.memory !== undefined) resources['memoryBytes'] = flags.memory
+    if (flags.cpu !== undefined || flags.memory !== undefined) sandbox['resources'] = resources
+    if (flags.image !== undefined) sandbox['image'] = { kind: 'image', reference: flags.image }
+    if (flags.region !== undefined) providerConfig['region'] = flags.region
+    if (flags.runtime !== undefined) providerConfig['runtimeClass'] = flags.runtime
+    source = stringify(document)
+  }
+  parseProjectConfig(source)
+  if (exists) {
+    if (source !== (await readFile(path, 'utf8'))) await writeFile(path, source, { mode: 0o600 })
     return 'validated'
   }
+  const handle = await open(path, 'wx', 0o600)
+  try {
+    await handle.writeFile(source, 'utf8')
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  return 'created'
 }

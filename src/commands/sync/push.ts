@@ -31,15 +31,24 @@ export default class SyncPush extends OcboxCommand {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(SyncPush)
+    const interrupt = this.abortOnInterrupt()
     await this.emitResult(flags, 'sync.pushed', renderSyncApplied, async () => {
-      const context = await resolveSyncContext(flags)
+      const context = await resolveSyncContext(flags, interrupt.signal)
+      const writer = this.writerFor(flags)
       return runSyncApply(context, 'push', {
+        onProgress: (event) => {
+          if (flags.jsonl) writer.event('sync.progress', event)
+          else if (!flags.json)
+            writer.progress(
+              `Source sync: ${event.phase}${event.uploadedBlobs === undefined ? '' : ` (${event.uploadedBlobs} blobs, ${event.uploadedBytes} bytes)`}`,
+            )
+        },
         cliRules: syncCliRules(flags),
         delete: flags.delete === true,
         yes: flags.yes === true,
         interactive: isInteractiveForFlags(flags),
         confirm: confirmSyncDeletion,
       })
-    })
+    }).finally(interrupt.dispose)
   }
 }

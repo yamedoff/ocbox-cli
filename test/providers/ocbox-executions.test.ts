@@ -219,8 +219,8 @@ describe('hosted execution streaming', () => {
         { completedAt: EVENT_AT, startedAt: STARTED_AT },
       ),
     ).toThrowError(expect.objectContaining({ code: 'PROVIDER_UNAVAILABLE' }))
-    expect(() =>
+    expect(
       toExecResult({ kind: 'cancelled' }, { completedAt: EVENT_AT, startedAt: STARTED_AT }),
-    ).toThrowError(expect.objectContaining({ code: 'OPERATION_CANCELLED' }))
+    ).toMatchObject({ cancelled: true, exitCode: 130, timedOut: false })
   })
 })

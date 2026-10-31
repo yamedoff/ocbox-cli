@@ -126,3 +126,54 @@ JSON envelope purity (one envelope on stdout, clean stderr, typed failures),
 recovery-required fail-closed behavior, the target-commit/baseline-persistence
 crash boundary, concurrent-lock refusal, malformed ignore patterns, binary round
 trips, and built-in exclusions.
+
+## Content-addressed hosted push (v2)
+
+For a hosted `sesdo_` Session, `sync push` uses the v2 plan/apply API. The CLI
+resolves that ID through the owned sandbox mapping; local Session IDs do not
+select the protocol. Older hosted Sessions retain their archive transport.
+
+The same scanner, `.gitignore`, `.opencloudboxignore`, `--exclude`/`--include`
+precedence and built-in exclusions apply. `.git`, `node_modules`, caches,
+secret files, the local state subtree and sync bookkeeping never transfer.
+Links and unsafe/colliding paths are refused. Limits are 100,000 entries,
+256 MiB per file and 1 GiB total content. Files retain executable/nonexecutable
+modes (0755/0644); empty files and directories are represented explicitly.
+
+Initial small files share deterministic bundles up to 8 MiB. Larger files use
+parts up to 16 MiB. Later pushes preserve unchanged bundle slices; up to 512
+dirty small files use individual blobs, so three small edits need at most three
+uploads. Manifest pages contain up to 512 entries and 512 KiB, with at most
+512 pages, 4,096 blobs and 32 MiB metadata. Only blobs requested by the plan
+are uploaded, with four concurrent PUTs and at most three attempts each.
+The returned upload URLs are opaque capabilities: the CLI never attaches its
+API bearer, follows redirects, logs them or saves them to disk.
+
+The CLI commits by replaying the same apply request every second until a
+matching terminal receipt, within a 15-minute deadline. Upload attempts have a
+120-second timeout. Control requests use the normal authenticated transport
+and up to three attempts on retryable errors. Success is reported only after
+apply succeeds. A server refusal emits a safe typed error and exits 1; an
+interrupt emits `OPERATION_CANCELLED` and exits 1. Rerun the same push to resume.
+
+Unsigned metadata and cached source blobs live under
+`<state-dir>/sync/<project>/<local-session>/cas/<scope>/`. The scope binds the
+API, hosted Session and absolute local root without storing that root in
+metadata. Files are hashed again on every push; cached bytes are verified before
+reuse or upload. An interrupted manifest keeps its identity only if current
+pages match and its local checkpoint is less than 45 minutes old. Changed source
+gets a fresh identity. Terminal plan failures discard the pending identity.
+State contains relative paths, sizes, modes and hashes; the blob cache contains
+source content and should be protected like the workspace itself.
+
+The v2 contract mirrors paths owned by the previous sync and keeps other
+workspace files. Removal of paths recorded in this workspace's last successful
+state requires `--delete` and confirmation, or `--delete --yes` in noninteractive
+use. The local state is not a proof of remote tree contents or a cross-machine
+conflict detector. Hosted `pull`, `diff` and `recover` remain unsupported.
+
+Human TTY output shows phase/upload progress. `--json` keeps one result envelope;
+`--jsonl` adds `sync.progress` events (`phase`, optional file/page counts and
+uploaded blob/byte counts) followed by `sync.pushed`. The v2 result adds
+`protocolVersion: 2`, `uploadedBlobs`, `uploadedBytes` and the applied plan ID
+in `operationId`. Counts describe this invocation, including when resuming.

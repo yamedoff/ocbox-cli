@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { z } from 'zod'
 import type {
   ApplySourceRequest,
   ApplySourceResult,
@@ -52,11 +53,26 @@ import { OcboxError } from '../../errors/index.js'
 import { FakeProviderExecution } from '../../execution/fake-provider-execution.js'
 import { AtomicJsonStore } from '../../lifecycle/atomic-json-store.js'
 import {
+  type CancellationResult,
+  executionError,
+  waitForCancellation,
+} from '../../lifecycle/cancellation.js'
+import type { LifecycleStore } from '../../lifecycle/store.js'
+import {
   EMPTY_FAKE_PROVIDER_STATE,
-  FakeProviderStateSchema,
   type FakeProviderResource,
   type FakeProviderState,
+  FakeProviderStateSchema,
 } from './schema.js'
+
+const FakeExecutionsSchema = z.record(
+  z.string(),
+  z.strictObject({
+    sandboxId: SandboxIdSchema,
+    state: z.enum(['running', 'completed', 'failed', 'cancelled']),
+    cancelRequested: z.boolean(),
+  }),
+)
 
 const FAKE_CAPABILITIES: ProviderCapabilities = {
   runtimeClasses: ['container'],
@@ -136,8 +152,14 @@ export class FakeSandboxProvider implements SandboxProvider {
   readonly #signal: AbortSignal | undefined
   readonly #capabilities: ProviderCapabilities
   readonly #execution: FakeProviderExecution
+  readonly #executionStore: AtomicJsonStore<z.infer<typeof FakeExecutionsSchema>>
+  #lifecycleStore: LifecycleStore | undefined
 
   constructor(stateDirectory: string, options: FakeProviderOptions = {}) {
+    this.#executionStore = new AtomicJsonStore(
+      join(stateDirectory, 'providers', 'fake-executions.json'),
+      FakeExecutionsSchema,
+    )
     this.#store = new AtomicJsonStore(
       join(stateDirectory, 'providers', 'fake.json'),
       FakeProviderStateSchema,
@@ -159,9 +181,124 @@ export class FakeSandboxProvider implements SandboxProvider {
 
   readonly exec = {
     execute: (context: OperationContext, request: ExecRequest): Promise<ExecHandle> =>
-      this.#execution.execute(context, request),
+      this.#execute(context, request),
     cancel: (context: OperationContext, request: CancelExecutionRequest): Promise<Operation> =>
       this.#execution.cancel(context, request),
+  }
+
+  bindLifecycleStore(store: LifecycleStore): void {
+    this.#lifecycleStore = store
+  }
+
+  async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
+    const handle = await this.#execution.execute(context, request)
+    const id = handle.execution.id
+    void handle.result.catch(() => undefined)
+    try {
+      await this.#executionStore.update(
+        () => ({}),
+        (state) => {
+          state[id] = { sandboxId: request.sandboxId, state: 'running', cancelRequested: false }
+          return state
+        },
+      )
+      await this.#lifecycleStore?.update((state) => {
+        state.lastFakeExecutions[request.sandboxId] = id
+        return state
+      })
+    } catch (error) {
+      await this.#execution.cancel(context, { executionId: id }).catch(() => undefined)
+      throw error
+    }
+    let finished = false
+    const finish = async (terminal: CancellationResult['state']): Promise<void> => {
+      finished = true
+      await this.#executionStore.update(
+        () => ({}),
+        (state) => {
+          if (state[id] !== undefined) state[id].state = terminal
+          return state
+        },
+      )
+      await this.#lifecycleStore?.update((state) => {
+        if (state.lastFakeExecutions[request.sandboxId] === id)
+          delete state.lastFakeExecutions[request.sandboxId]
+        return state
+      })
+    }
+    const result = handle.result.then(
+      async (value) => {
+        await finish(value.cancelled ? 'cancelled' : 'completed')
+        return value
+      },
+      async (error: unknown) => {
+        await finish('failed')
+        throw error
+      },
+    )
+    void result.catch(() => undefined)
+    void (async () => {
+      while (!finished) {
+        await delay(100)
+        if (finished) return
+        const state = await this.#executionStore.load()
+        if (state?.[id]?.cancelRequested) {
+          await this.#execution.cancel(context, { executionId: id })
+          return
+        }
+      }
+    })().catch(async () => {
+      if (!finished)
+        await this.#execution.cancel(context, { executionId: id }).catch(() => undefined)
+    })
+    return { ...handle, result }
+  }
+
+  async cancelSandboxExecution(
+    sandboxId: Sandbox['id'],
+    executionId: string | undefined,
+    waitMilliseconds: number,
+    signal?: AbortSignal,
+  ): Promise<CancellationResult> {
+    const requestId = RequestIdSchema.parse(this.#createId())
+    await this.#sessionIdForSandbox(sandboxId)
+    const id = executionId ?? (await this.#lifecycleStore?.load())?.lastFakeExecutions[sandboxId]
+    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    return waitForCancellation(
+      requestId,
+      waitMilliseconds,
+      signal,
+      async (boundedSignal, pause) => {
+        for (;;) {
+          boundedSignal.throwIfAborted()
+          const entry = (await this.#executionStore.load(boundedSignal))?.[id]
+          if (entry === undefined)
+            throw executionError(requestId, `Unknown execution ID: ${id}`, 'SANDBOX_NOT_FOUND')
+          if (entry.sandboxId !== sandboxId)
+            throw executionError(
+              requestId,
+              'Execution does not belong to the selected Sandbox in the current scope',
+            )
+          if (entry.state !== 'running') {
+            await this.#lifecycleStore?.update((state) => {
+              if (state.lastFakeExecutions[sandboxId] === id)
+                delete state.lastFakeExecutions[sandboxId]
+              return state
+            }, boundedSignal)
+            return { executionId: id, sandboxId, state: entry.state }
+          }
+          await this.#executionStore.update(
+            () => ({}),
+            (state) => {
+              if (state[id]?.state === 'running') state[id].cancelRequested = true
+              return state
+            },
+            boundedSignal,
+          )
+          await pause()
+        }
+      },
+    )
   }
 
   async #sessionIdForSandbox(sandboxId: Sandbox['id']) {
