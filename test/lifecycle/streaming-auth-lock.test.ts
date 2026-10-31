@@ -209,7 +209,7 @@ describe('streaming requests release the authentication gate before response wai
       expect(error).toBeInstanceOf(OcboxError)
       expect(error).toMatchObject({
         code: 'PROVIDER_UNAVAILABLE',
-        message: 'The hosted service could not be reached',
+        message: 'The hosted service could not be reached (connection failed, 3 attempts)',
       })
       await delay(0)
       expect(unhandled).not.toHaveBeenCalled()
