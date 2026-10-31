@@ -38,16 +38,21 @@ describe('hosted operation waiter', () => {
     let elapsed = 0
     const sleeps: number[] = []
     const store = new MemoryOperationCheckpointStore()
+    // A network failure reaches the waiter only after the client's own two retries.
+    const clientRetries = failure === 'network' ? 2 : 0
     const { api } = await seededApi(async () => {
-      if (++calls === 2) {
-        if (failure === 'network') throw new TypeError('Connection interrupted')
+      calls += 1
+      if (failure === 'network' && calls >= 2 && calls <= 2 + clientRetries) {
+        throw new TypeError('Connection interrupted')
+      }
+      if (calls === 2) {
         if (failure === '429') return errorResponse('RATE_LIMITED', 429, REQUEST_ID, 2)
         if (failure === '503') return errorResponse('SERVICE_UNAVAILABLE', 503, REQUEST_ID)
         return jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'running',
           error: { code: 'RETRY_LATER', message: 'Try later', retryAfterSeconds: 3 } }))
       }
       return jsonResponse(hostedOperationFixture({ kind: 'source.apply',
-        state: calls === 4 ? 'succeeded' : 'running' }))
+        state: calls === 4 + clientRetries ? 'succeeded' : 'running' }))
     })
     await waitForHostedOperation(api, 'op_hosted_1', {
       healthyPollMilliseconds: 1000, now: () => elapsed, random: () => 0, store,
