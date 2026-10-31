@@ -549,7 +549,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.create",
-      "lines": "507-616",
+      "lines": "506-615",
       "summary": "Hosted create: sends createSession (only the requested resources, with the idempotency key), turns admission denials into plain errors, waits for the operation and for a running primary binding, and saves the local-to-hosted mapping.",
       "calls": [
         "api-generated-client",
@@ -564,7 +564,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#execute",
-      "lines": "1096-1223",
+      "lines": "1095-1222",
       "summary": "Calls createExecution with an idempotency key. A 404 marks the local mapping stale. Then polls events until the command finishes or the deadline passes.",
       "calls": [
         "api-client"
@@ -775,7 +775,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#mutate",
-      "lines": "822-925",
+      "lines": "821-924",
       "summary": "Sends start/pause/stop/destroy against the public API and reconciles the resulting hosted Session under a lifecycle deadline."
     },
     {
@@ -786,7 +786,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.cancelSandboxExecution",
-      "lines": "1033-1094",
+      "lines": "1032-1093",
       "summary": "Finds the active hosted Execution, requests cancellation and waits for a terminal result instead of assuming cancellation succeeded."
     },
     {
@@ -3024,7 +3024,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.uploadSource",
-      "lines": "449-470",
+      "lines": "448-469",
       "summary": "Source upload entry: the mapped hosted Session must still exist and its primary binding must match the stored sandbox and be running, else INVALID_STATE \"run ocbox start\". Then uploadPreparedSource runs with deduplication."
     },
     {
@@ -3046,7 +3046,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#createPreview",
-      "lines": "1302-1359",
+      "lines": "1301-1358",
       "summary": "Creates an authenticated preview: ttl clamped to 60–86400 s, and the returned URL must match the requested protocol and carry no credentials (else PREVIEW_UNAVAILABLE). A provider capability; no ocbox command calls it."
     },
     {
@@ -3440,7 +3440,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.get",
-      "lines": "618-634",
+      "lines": "617-633",
       "summary": "Loads the current scoped mapping and owned hosted Session; a changed primary binding fails INVALID_STATE. Returns the observed Sandbox without persisting its refreshed state."
     },
     {
@@ -3451,7 +3451,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.list",
-      "lines": "636-669",
+      "lines": "635-668",
       "summary": "Reads one listSessions page, retains project-owned active primary bindings with existing local mappings and optional local Session/project filters. CLI ls reads local state instead."
     },
     {
@@ -3473,7 +3473,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#cancelExecution",
-      "lines": "1225-1269",
+      "lines": "1224-1268",
       "summary": "Aborts the tracked event collector, posts cancelExecution and, for durable mappings, waits up to 30 seconds for terminal execution observation before removing the in-process handle."
     },
     {
@@ -3484,7 +3484,7 @@
       "kind": "function",
       "path": "src/providers/ocbox/provider.ts",
       "symbol": "OcboxSandboxProvider.#revokePreview",
-      "lines": "1361-1395",
+      "lines": "1360-1394",
       "summary": "Resolves a preview URL from the in-process map, calls deletePreview with the mutation key and removes the local URL mapping after HTTP 200/202. No CLI command invokes this port."
     },
     {
