@@ -748,3 +748,28 @@ describe('hosted create request and admission', () => {
     },
   )
 })
+
+describe('OcboxSandboxProvider source sync', () => {
+  it('uses source sync v2 for a box whatever its Session ID looks like', async () => {
+    const hostedSessionId = 'ses_2a08186210f9c89b7879e6d6d1c90d'
+    const { api } = await seededApi((input: unknown) =>
+      Promise.resolve(
+        String(input).includes(`/sessions/${hostedSessionId}`)
+          ? jsonResponse(hostedSessionFixture({ id: hostedSessionId }))
+          : jsonResponse({}),
+      ),
+    )
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    await expect(provider.sourceCasTransport(LOCAL_IDS.sandbox)).resolves.toMatchObject({
+      sessionId: hostedSessionId,
+    })
+  })
+})

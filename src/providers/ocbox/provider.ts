@@ -423,12 +423,11 @@ export class OcboxSandboxProvider implements SandboxProvider {
     })
   }
 
-  /** Resolve v2 through the owned running mapping; legacy Sessions retain their transport. */
+  /** Resolve source sync v2 through the owned running mapping. */
   async sourceCasTransport(sandboxId: string, signal?: AbortSignal) {
     const requestId = toRequestId(null)
     const record = await this.#record(sandboxId, requestId)
     if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
-    if (!record.hostedSessionId.startsWith('sesdo_')) return undefined
     const owned = await this.#mappedSession(record)
     const primary = resolvePrimaryBinding(owned)
     if (
