@@ -141,7 +141,7 @@ try {
   assert.equal(pushHelp.code, 0)
   assert.match(
     pushHelp.stdout.toString('utf8').replace(/\s+/g, ' '),
-    /Fake provider only; hosted commands run in \/home\/daytona\/workspace/,
+    /Fake provider only; hosted commands run in the workspace folder of the box/,
   )
 
   // 2. Session target resolution: missing selection fails typed.

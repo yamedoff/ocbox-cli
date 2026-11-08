@@ -18,7 +18,7 @@ export default class SyncPush extends OcboxCommand {
       description: 'Local source root; defaults to the current directory',
     }),
     'remote-dir': Flags.string({
-      description: 'Fake provider only; hosted commands run in the box's workspace folder (run pwd in the box to see it)',
+      description: 'Fake provider only; hosted commands run in the workspace folder of the box (run pwd in the box to see it)',
     }),
     exclude: Flags.string({ multiple: true, description: 'Repeatable exclude pattern' }),
     include: Flags.string({ multiple: true, description: 'Repeatable re-include pattern' }),
