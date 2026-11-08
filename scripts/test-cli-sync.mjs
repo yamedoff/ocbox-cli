@@ -132,6 +132,12 @@ try {
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
+  const pushHelp = await run(['sync', 'push', '--help'])
+  assert.equal(pushHelp.code, 0)
+  assert.match(
+    pushHelp.stdout.toString('utf8'),
+    /Fake provider only; hosted source uses the project/,
+  )
 
   // 2. Session target resolution: missing selection fails typed.
   const empty = await workspace('empty')
