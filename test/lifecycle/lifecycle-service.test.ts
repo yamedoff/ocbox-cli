@@ -499,6 +499,7 @@ describe('LifecycleService', () => {
 
     const destroyed = await createService(directory, { provider }).destroy(sessionId)
     expect(destroyed.session.state).toBe('destroyed')
+    expect(destroyed.destroyOutcome).toBe('hosted')
     expect(provider.destroyCalls).toEqual([MAPPING_SANDBOX])
   })
 
@@ -522,6 +523,7 @@ describe('LifecycleService', () => {
 
     const destroyed = await createService(directory, { provider }).destroy(sessionId)
     expect(destroyed.session.state).toBe('destroyed')
+    expect(destroyed.destroyOutcome).toBe('hosted')
     expect(provider.destroyCalls).toEqual([MAPPING_SANDBOX])
   })
 
@@ -542,6 +544,7 @@ describe('LifecycleService', () => {
 
     const destroyed = await createService(directory, { provider }).destroy(sessionId)
     expect(destroyed.session.state).toBe('destroyed')
+    expect(destroyed.destroyOutcome).toBe('local')
     expect(destroy).not.toHaveBeenCalled()
   })
 })

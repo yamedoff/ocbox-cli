@@ -42,6 +42,8 @@ export interface SessionView {
   readonly sandbox: Sandbox | null
   readonly operation: Operation | null
   readonly capabilities: Awaited<ReturnType<SandboxProvider['capabilities']>>
+  /** Set by destroy: a hosted resource was deleted, or only local state was removed. */
+  readonly destroyOutcome?: 'hosted' | 'local'
 }
 
 export interface LifecycleServiceOptions {
@@ -131,8 +133,12 @@ export class LifecycleService {
       if (latest === undefined) throw this.#notFound(session.id)
       if (latest.state === 'destroyed') return this.#view(session.id)
       const sandboxId = this.#destroyTarget(state, latest)
-      if (sandboxId === undefined) return this.#completeLocalDestroy(session.id)
-      return this.#runMutation(session.id, 'destroy', sandboxId)
+      if (sandboxId === undefined) {
+        const view = await this.#completeLocalDestroy(session.id)
+        return { ...view, destroyOutcome: 'local' }
+      }
+      const view = await this.#runMutation(session.id, 'destroy', sandboxId)
+      return { ...view, destroyOutcome: 'hosted' }
     })
   }
 
