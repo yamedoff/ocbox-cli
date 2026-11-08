@@ -33,4 +33,4 @@ Hosted recover is refused when its capability is absent; a hosted server without
 ## Code evidence
 Transport selection: `src/sync/command.ts:31–88`, `src/providers/ocbox/provider.ts:427–470`, `src/sync/service.ts:690–930`. V2 push: `src/sync/cas-contract.ts:5–190`, `cas-push.ts:20–151`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:22–176`, `src/providers/ocbox/cas.ts:16–180`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
 
-Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
+Verified against ocbox-cli @ d984e85
