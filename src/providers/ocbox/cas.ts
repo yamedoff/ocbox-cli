@@ -3,6 +3,9 @@ import type { OcboxApiClient } from '../../api/client/client.js'
 import { OcboxError } from '../../errors/index.js'
 import {
   CAS_LIMITS,
+  CasCheckResultSchema,
+  type CasFastApplyRequest,
+  CasFastApplyResultSchema,
   CasPullResultSchema,
   CasResultSchema,
   CasSnapshotPageResultSchema,
@@ -105,9 +108,83 @@ export function createCasTransport(
       }
     }
   }
+  async function fastCall<Result>(
+    invoke: () => Promise<{ status: number; body: unknown }>,
+    schema: z.ZodType<Result>,
+  ): Promise<Result> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await invoke()
+        if (response.status !== 200) {
+          const error = z
+            .object({ error: z.object({ reason: z.string().max(128).optional() }) })
+            .safeParse(response.body)
+          const refused = casRefusal(
+            response.status,
+            error.success ? error.data.error.reason : undefined,
+          )
+          if ([409, 410, 422].includes(response.status)) throw new CasPlanRefused(refused)
+          throw refused
+        }
+        const parsed = schema.safeParse(response.body)
+        if (!parsed.success)
+          throw casError('SYNC_INTEGRITY', 'Source sync returned an invalid receipt')
+        return parsed.data
+      } catch (error) {
+        if (signal?.aborted)
+          throw casError('OPERATION_CANCELLED', 'Source sync was cancelled; rerun push to resume')
+        if (!(error instanceof OcboxError))
+          throw casError('SYNC_FAILED', 'Source sync control request failed')
+        if (
+          error instanceof CasPlanRefused ||
+          !error.retryable ||
+          attempt >= CAS_LIMITS.attempts ||
+          error.code === 'SYNC_INTEGRITY'
+        )
+          throw error
+        await sleepWithSignal(CAS_LIMITS.retryMs * 2 ** (attempt - 1), signal)
+      }
+    }
+  }
   return {
     sessionId,
     scope: JSON.stringify([api.issuer, sessionId]),
+    check(fingerprint, changedPaths, idempotencyKey) {
+      return fastCall(
+        () =>
+          api.generated.checkSourceCas({
+            path: { sessionId },
+            body: {
+              version: 3,
+              fingerprint,
+              ...(changedPaths === undefined ? {} : { changedPaths: [...changedPaths] }),
+            },
+            idempotencyKey,
+            ...(signal ? { signal } : {}),
+          }),
+        CasCheckResultSchema,
+      )
+    },
+    fastApply(request: CasFastApplyRequest, idempotencyKey) {
+      return fastCall(
+        () =>
+          api.generated.fastApplySourceCas({
+            path: { sessionId },
+            body: {
+              version: 3,
+              fingerprint: request.fingerprint,
+              files: [...request.files],
+              blobs: [...request.blobs],
+              ...(request.deletedPaths === undefined
+                ? {}
+                : { deletedPaths: [...request.deletedPaths] }),
+            },
+            idempotencyKey,
+            ...(signal ? { signal } : {}),
+          }),
+        CasFastApplyResultSchema,
+      )
+    },
     snapshot(refresh, idempotencyKey) {
       return readCall(
         'snapshot',

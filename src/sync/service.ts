@@ -41,14 +41,14 @@ import {
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
-import type { CasReadTransport, CasTransport } from './cas-contract.js'
+import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
 import type { CasProgress } from './cas-transfer.js'
 import { runCasPush } from './cas-push.js'
 import { runHostedDiff, runHostedPull } from './cas-pull.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
-  readonly casTransport?: CasTransport
+  readonly casTransport?: CasTransport & Partial<CasFastTransport>
   readonly casReadTransport?: CasReadTransport
   readonly signal?: AbortSignal | undefined
   readonly providerName: string

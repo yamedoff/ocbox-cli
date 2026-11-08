@@ -725,6 +725,82 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/check:
+    post:
+      operationId: checkSourceCas
+      summary: CAS v3 check for object-owned boxes
+      description: Requires a sesdo_ session. Asks whether the box still holds the tree the client has; the answer is terminal in the same request and names the paths an agent edited inside the box.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasCheckRequest'
+      responses:
+        '200':
+          description: The terminal answer: unchanged or changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasCheckResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/fast:
+    post:
+      operationId: fastApplySourceCas
+      summary: CAS v3 fast apply for object-owned boxes
+      description: Requires a sesdo_ session. Applies the changed files of the client's tree without the v2 cycle; the answer is terminal in the same request and names the blobs the store still lacks.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasFastApplyRequest'
+      responses:
+        '200':
+          description: The terminal answer: awaiting the blobs to upload, or the apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasFastApplyResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /sessions/{sessionId}/source/cas/snapshot:
     post:
       operationId: createSourceSnapshot
@@ -1691,6 +1767,27 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /auth/me:
+    get:
+      operationId: getAuthMe
+      tags: [Auth]
+      summary: Read the identity of the presented bearer token.
+      description: 'Answers the subject, audience, scopes and expiry of the caller''s own CLI or MCP access credential. It never answers another account''s identity and never echoes the token or any secret.'
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The identity of the presented bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthIdentity'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /auth/cli/authorize:
     post:
       operationId: startCliAuthorization
@@ -2304,6 +2401,159 @@ components:
           schema:
             $ref: '#/components/schemas/PaymentReconciliation'
   schemas:
+    AuthIdentity:
+      type: object
+      additionalProperties: false
+      required: [subject, audience, scopes, expiresAt]
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 128
+        audience:
+          type: string
+          enum: [cli, mcp]
+        scopes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        expiresAt:
+          type: string
+          format: date-time
+    CasCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the client's source tree.
+        changedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+          description: The paths the client's tree changed since the tree it last pushed.
+    CasCheckResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, changedPaths, changedCount, editedPaths, editedCount, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [unchanged, changed]
+        changedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+        changedCount:
+          type: integer
+          minimum: 0
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+        editedCount:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+    CasFastApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint, files, blobs]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        files:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The delta is validated with the v2 page rules.'
+            additionalProperties: true
+        blobs:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+                maximum: 16777216
+        deletedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+    CasFastApplyResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, fingerprint, missing, writtenFiles, linkedFiles, removedFiles, fetchedBlobs, fetchedBytes, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [awaiting_blobs, applied]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        missing:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+              url:
+                type: string
+                description: Short-lived PUT capability; never log or persist it.
+        writtenFiles:
+          type: integer
+          minimum: 0
+        linkedFiles:
+          type: integer
+          minimum: 0
+        removedFiles:
+          type: integer
+          minimum: 0
+        fetchedBlobs:
+          type: integer
+          minimum: 0
+        fetchedBytes:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
     CasPlanRequest:
       type: object
       additionalProperties: false

@@ -46,6 +46,27 @@ export const CasManifestSchema = z.strictObject({
   fileCount: size.max(100_000),
   totalBytes: size.max(1_073_741_824),
 })
+export const CasCheckResultSchema = z.strictObject({
+  version: z.literal(3),
+  state: z.enum(['unchanged', 'changed']),
+  changedPaths: z.array(z.string().max(4096)).max(100),
+  changedCount: size,
+  editedPaths: z.array(z.string().max(4096)).max(100),
+  editedCount: size,
+  replayed: z.boolean(),
+})
+export const CasFastApplyResultSchema = z.strictObject({
+  version: z.literal(3),
+  state: z.enum(['awaiting_blobs', 'applied']),
+  fingerprint: hash,
+  missing: z.array(CasBlobSchema.extend({ url: z.string().max(16_384) })).max(CAS_LIMITS.maxBlobs),
+  writtenFiles: size,
+  linkedFiles: size,
+  removedFiles: size,
+  fetchedBlobs: size,
+  fetchedBytes: size,
+  replayed: z.boolean(),
+})
 export const CasResultSchema = z.strictObject({
   version: z.literal(2),
   planId: z.string().regex(/^casdo_[a-f0-9]{30}$/),
@@ -111,13 +132,30 @@ export type CasResult = z.infer<typeof CasResultSchema>
 export type CasSnapshotResult = z.infer<typeof CasSnapshotResultSchema>
 export type CasSnapshotPageResult = z.infer<typeof CasSnapshotPageResultSchema>
 export type CasPullResult = z.infer<typeof CasPullResultSchema>
+export type CasCheckResult = z.infer<typeof CasCheckResultSchema>
+export type CasFastApplyResult = z.infer<typeof CasFastApplyResultSchema>
 export type CasRequest =
   | { operation: 'plan'; manifest: CasManifest; page: CasPage; idempotencyKey: string }
   | { operation: 'apply'; planId: string; idempotencyKey: string }
+export interface CasFastApplyRequest {
+  readonly fingerprint: string
+  readonly files: readonly CasFile[]
+  readonly blobs: readonly CasBlob[]
+  readonly deletedPaths?: readonly string[]
+}
 export interface CasTransport {
   readonly sessionId: string
   readonly scope: string
   call(request: CasRequest): Promise<CasResult>
+}
+/** The v3 check and fast apply; an older server answers the routes with 404. */
+export interface CasFastTransport {
+  check(
+    fingerprint: string,
+    changedPaths: readonly string[] | undefined,
+    idempotencyKey: string,
+  ): Promise<CasCheckResult>
+  fastApply(request: CasFastApplyRequest, idempotencyKey: string): Promise<CasFastApplyResult>
 }
 /** Hosted read-back control calls; the server owns snapshot and pull identity. */
 export interface CasReadTransport {
@@ -136,7 +174,26 @@ export interface CasReadTransport {
     cursor?: string,
   ): Promise<CasPullResult>
 }
-export interface CasSourceTransport extends CasTransport, CasReadTransport {}
+export interface CasSourceTransport extends CasTransport, CasReadTransport, CasFastTransport {}
+
+/**
+ * The content fingerprint of a source tree, identical to the server's
+ * `casTreeFingerprint`: SHA-256 over path-ordered entries, files as
+ * (path, hash, size, mode) and directories as (path).
+ */
+export function casTreeFingerprint(files: Iterable<CasFile>): string {
+  const entries = [...files].map((file) =>
+    file.type === 'directory' ? [file.path] : [file.path, file.hash, file.size, file.mode],
+  )
+  entries.sort(([a], [b]) => Buffer.compare(Buffer.from(String(a)), Buffer.from(String(b))))
+  for (let index = 1; index < entries.length; index += 1)
+    if (entries[index]?.[0] === entries[index - 1]?.[0])
+      throw new TypeError('CAS fingerprint path repeats')
+  return createHash('sha256')
+    .update('ocb-cas-tree-1\n')
+    .update(JSON.stringify(entries))
+    .digest('hex')
+}
 
 /** Canonical object-key ordering is part of the v2 page identity. */
 export function casHash(value: unknown): string {
