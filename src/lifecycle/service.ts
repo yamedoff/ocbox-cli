@@ -42,6 +42,8 @@ export interface SessionView {
   readonly sandbox: Sandbox | null
   readonly operation: Operation | null
   readonly capabilities: Awaited<ReturnType<SandboxProvider['capabilities']>>
+  /** The hosted project ID users see in the API and opencloudbox.toml, when configured. */
+  readonly hostedProjectId?: string | undefined
   /** Set by destroy: a hosted resource was deleted, or only local state was removed. */
   readonly destroyOutcome?: 'hosted' | 'local'
 }
@@ -765,6 +767,7 @@ export class LifecycleService {
       sandbox,
       operation,
       capabilities,
+      ...(this.#config.projectId === undefined ? {} : { hostedProjectId: this.#config.projectId }),
     }
   }
 
