@@ -42,6 +42,8 @@ export interface SessionView {
   readonly sandbox: Sandbox | null
   readonly operation: Operation | null
   readonly capabilities: Awaited<ReturnType<SandboxProvider['capabilities']>>
+  /** Set by destroy: a hosted resource was deleted, or only local state was removed. */
+  readonly destroyOutcome?: 'hosted' | 'local'
 }
 
 export interface LifecycleServiceOptions {
@@ -120,11 +122,104 @@ export class LifecycleService {
   }
 
   destroy(sessionId?: string): Promise<SessionView> {
-    return this.#withResolvedSession(sessionId, (session) =>
-      session.state === 'destroyed'
-        ? this.#view(session.id)
-        : this.#runMutation(session.id, 'destroy'),
-    )
+    return this.#withResolvedSession(sessionId, async (session) => {
+      if (session.state === 'destroyed') return this.#view(session.id)
+      // A failed start can leave its create Operation current (ambiguous) or a
+      // Session with no binding (definite). Give the current Operation one
+      // bounded chance to finish before destroying what the provider owns.
+      await this.#reconcileForDestroy(session.id)
+      const state = await this.#store.load()
+      const latest = state.sessions[session.id]
+      if (latest === undefined) throw this.#notFound(session.id)
+      if (latest.state === 'destroyed') return this.#view(session.id)
+      const sandboxId = this.#destroyTarget(state, latest)
+      if (sandboxId === undefined) {
+        const view = await this.#completeLocalDestroy(session.id)
+        return { ...view, destroyOutcome: 'local' }
+      }
+      const view = await this.#runMutation(session.id, 'destroy', sandboxId)
+      return { ...view, destroyOutcome: 'hosted' }
+    })
+  }
+
+  async #reconcileForDestroy(sessionId: Session['id']): Promise<void> {
+    const state = await this.#store.load()
+    const session = state.sessions[sessionId]
+    if (session === undefined || session.currentOperationId === null) return
+    const operation = state.operations[session.currentOperationId]
+    if (operation === undefined || operation.action === 'destroy') return
+    try {
+      switch (operation.action) {
+        case 'create':
+          await this.#continueCreate(session)
+          break
+        case 'start':
+        case 'pause':
+        case 'stop':
+        case 'resume':
+          await this.#runMutation(session.id, operation.action)
+          break
+        default:
+          break
+      }
+    } catch {
+      // One bounded reconcile attempt. Destroy still removes whatever the
+      // provider owns, even when the Operation cannot reach a terminal state.
+    }
+  }
+
+  /**
+   * The local Sandbox to destroy: the active binding when it is still known,
+   * otherwise the hosted mapping the provider persisted before a binding was
+   * created. A Session with neither has no hosted resource and is removed locally.
+   */
+  #destroyTarget(state: LifecycleProjectState, session: Session): Sandbox['id'] | undefined {
+    const binding = session.bindings.find((candidate) => candidate.releasedAt === null)
+    const mapped = Object.values(state.hostedMappings)
+      .flatMap((records) => Object.values(records))
+      .filter((record) => record.localSessionId === session.id && !record.deleted)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    if (binding !== undefined) {
+      const known =
+        state.sandboxes[binding.sandboxId] !== undefined ||
+        mapped.some((record) => record.localId === binding.sandboxId)
+      if (known) return binding.sandboxId
+    }
+    return mapped[0]?.localId
+  }
+
+  async #completeLocalDestroy(sessionId: Session['id']): Promise<SessionView> {
+    const now = this.#timestamp()
+    await this.#update((current) => {
+      const next = copyState(current)
+      const session = next.sessions[sessionId]
+      if (session === undefined) throw this.#notFound(sessionId)
+      if (session.state === 'destroyed') return next
+      if (session.currentOperationId !== null) {
+        const existing = next.operations[session.currentOperationId]
+        if (existing !== undefined && existing.status === 'running') {
+          next.operations[existing.id] = OperationSchema.parse({
+            ...existing,
+            status: 'failed',
+            completedAt: now,
+          })
+          delete next.pendingCreateSpecs[existing.id]
+        }
+      }
+      next.sessions[sessionId] = SessionSchema.parse({
+        ...session,
+        state: 'destroyed',
+        bindings: session.bindings.map((binding) =>
+          binding.releasedAt === null ? { ...binding, releasedAt: now } : binding,
+        ),
+        currentOperationId: null,
+        providerVerifiedAt: now,
+        sandboxDeletionVerifiedAt: now,
+        updatedAt: now,
+      })
+      return next
+    })
+    return this.#view(sessionId)
   }
 
   async use(sessionId: string): Promise<SessionView> {
@@ -415,6 +510,7 @@ export class LifecycleService {
   async #runMutation(
     sessionId: Session['id'],
     requestedAction: Exclude<LifecycleAction, 'create'>,
+    destroySandboxId?: Sandbox['id'],
   ) {
     const initial = await this.#store.load()
     const initialSession = initial.sessions[sessionId]
@@ -431,20 +527,34 @@ export class LifecycleService {
       assertCapabilitySupported(capabilities, 'filesystem_stop', requestId)
 
     let operation: Operation | undefined
-    let sandbox: Sandbox | undefined
+    let sandboxId: Sandbox['id'] | undefined
     let attempt = 1
     await this.#update((current) => {
       const next = copyState(current)
       const session = next.sessions[sessionId]
       if (session === undefined) throw this.#notFound(sessionId)
-      sandbox = this.#sandboxFor(next, session)
+      sandboxId =
+        requestedAction === 'destroy' ? destroySandboxId : this.#sandboxFor(next, session).id
       if (session.currentOperationId !== null) {
         const existing = next.operations[session.currentOperationId]
-        if (existing?.action !== requestedAction) throw this.#conflict(session, requestedAction)
-        operation = existing
-        attempt = (next.operationAttempts[existing.id] ?? 1) + 1
-        next.operationAttempts[existing.id] = attempt
-        return next
+        if (existing?.action === requestedAction) {
+          operation = existing
+          attempt = (next.operationAttempts[existing.id] ?? 1) + 1
+          next.operationAttempts[existing.id] = attempt
+          return next
+        }
+        if (requestedAction !== 'destroy') throw this.#conflict(session, requestedAction)
+        // The bounded reconcile could not finish this Operation; destroy still
+        // supersedes it so the provider resource is not leaked.
+        if (existing !== undefined) {
+          const completedAt = this.#timestamp()
+          next.operations[existing.id] = OperationSchema.parse({
+            ...existing,
+            status: 'failed',
+            completedAt,
+          })
+          delete next.pendingCreateSpecs[existing.id]
+        }
       }
 
       const allowed = this.#allowedStates(requestedAction)
@@ -466,7 +576,7 @@ export class LifecycleService {
         id: operationId,
         requestId,
         sessionId,
-        sandboxId: sandbox.id,
+        sandboxId: sandboxId ?? null,
         action: requestedAction,
         status: 'running',
         idempotencyKey: IdempotencyKeySchema.parse(
@@ -488,7 +598,7 @@ export class LifecycleService {
       })
       return next
     })
-    if (operation === undefined || sandbox === undefined) return this.#view(sessionId)
+    if (operation === undefined || sandboxId === undefined) return this.#view(sessionId)
 
     const context: OperationContext = {
       requestId: operation.requestId,
@@ -499,13 +609,13 @@ export class LifecycleService {
     }
     try {
       const result = await this.#abortable(
-        this.#invoke(provider, requestedAction, context, sandbox.id),
+        this.#invoke(provider, requestedAction, context, sandboxId),
         operation.requestId,
       )
       if (requestedAction === 'destroy') {
         const verification = await provider.get(
           { requestId: operation.requestId, issuedAt: this.#timestamp() },
-          { sandboxId: sandbox.id },
+          { sandboxId },
         )
         if (verification !== null && verification.lifecycle.normalizedState !== 'deleted') {
           throw new OcboxError({
@@ -709,7 +819,16 @@ export class LifecycleService {
       case 'stop':
         return ['active', 'paused', 'stopped']
       case 'destroy':
-        return ['active', 'paused', 'stopped', 'error']
+        return [
+          'active',
+          'paused',
+          'stopped',
+          'error',
+          'creating',
+          'pausing',
+          'stopping',
+          'resuming',
+        ]
       case 'resume':
         return ['paused']
       case 'start':

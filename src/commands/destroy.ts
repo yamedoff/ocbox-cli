@@ -34,28 +34,36 @@ export default class Destroy extends OcboxCommand {
     const interrupt = this.abortOnInterrupt()
     let spinning = false
     try {
-      await this.emitResult(flags, 'session.destroyed', sessionViewLine, async () => {
-        if (flags.yes !== true && !(await confirmDestroy())) {
-          throw new OcboxError({
-            code: 'INVALID_STATE',
-            message: 'Destroy requires confirmation; rerun with --yes',
-            requestId: RequestIdSchema.parse(randomUUID()),
-          })
-        }
-        if (
-          !flags.json &&
-          !flags.jsonl &&
-          (await loadProjectConfig(flags)).provider.name === 'ocbox'
-        ) {
-          if (process.stderr.isTTY) {
-            ux.action.start('Waiting for hosted sandbox deletion')
-            spinning = true
-          } else {
-            process.stderr.write('Waiting for hosted sandbox deletion...\n')
+      await this.emitResult(
+        flags,
+        'session.destroyed',
+        (view) =>
+          view.destroyOutcome === 'local'
+            ? `${sessionViewLine(view)} (removed locally; no hosted Session)`
+            : sessionViewLine(view),
+        async () => {
+          if (flags.yes !== true && !(await confirmDestroy())) {
+            throw new OcboxError({
+              code: 'INVALID_STATE',
+              message: 'Destroy requires confirmation; rerun with --yes',
+              requestId: RequestIdSchema.parse(randomUUID()),
+            })
           }
-        }
-        return (await createLifecycleService(flags, interrupt.signal)).destroy(flags.session)
-      })
+          if (
+            !flags.json &&
+            !flags.jsonl &&
+            (await loadProjectConfig(flags)).provider.name === 'ocbox'
+          ) {
+            if (process.stderr.isTTY) {
+              ux.action.start('Waiting for hosted sandbox deletion')
+              spinning = true
+            } else {
+              process.stderr.write('Waiting for hosted sandbox deletion...\n')
+            }
+          }
+          return (await createLifecycleService(flags, interrupt.signal)).destroy(flags.session)
+        },
+      )
     } finally {
       if (spinning) ux.action.stop()
       interrupt.dispose()

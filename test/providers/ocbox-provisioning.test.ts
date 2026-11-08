@@ -173,6 +173,68 @@ describe('hosted asynchronous lifecycle', () => {
     expect(wait.sleeps.reduce((sum, value) => sum + value, 0)).toBe(1000)
   })
 
+  it('persists the hosted Session before a binding so a timed-out create is destroyable', async () => {
+    const directory = await mkdtemp(`${tmpdir()}/ocbox-provisioning-`)
+    directories.push(directory)
+    const store = new LifecycleStore(directory, ProjectIdSchema.parse(LOCAL_IDS.project))
+    let destroyRequested = false
+    const { api } = await seededApi(async (input, init) => {
+      const url = String(input)
+      if (init?.method === 'POST' && url.endsWith('/destroy')) {
+        destroyRequested = true
+        return jsonResponse(hostedOperationFixture({ kind: 'session_destroy' }), 202)
+      }
+      if (init?.method === 'POST')
+        return jsonResponse(
+          hostedOperationFixture({
+            session: hostedSessionFixture({ primarySandboxId: null, sandboxes: [] }),
+          }),
+          202,
+        )
+      if (url.includes('/operations/')) return jsonResponse(hostedOperationFixture())
+      if (url.includes('/sessions/'))
+        return jsonResponse(
+          destroyRequested
+            ? hostedSessionFixture({
+                normalizedState: 'destroyed',
+                rawState: 'destroyed',
+                primarySandboxId: null,
+                sandboxes: [],
+              })
+            : hostedSessionFixture({
+                normalizedState: 'provisioning',
+                rawState: 'provisioning',
+                primarySandboxId: null,
+                sandboxes: [],
+              }),
+        )
+      return jsonResponse({ id: HOSTED_PROJECT })
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      mappingScope: async () => 'scope',
+      createId: () => LOCAL_IDS.sandbox,
+      waitOptions: fakeWait(50).options,
+    })
+    provider.bindLifecycleStore(store)
+    await expect(
+      provider.create(operationContext() as never, createRequest as never),
+    ).rejects.toMatchObject({ code: 'OPERATION_TIMEOUT' })
+
+    const mapping = (await store.load()).hostedMappings[scope]?.[
+      SandboxIdSchema.parse(LOCAL_IDS.sandbox)
+    ]
+    expect(mapping).toMatchObject({ hostedSessionId: HOSTED_SESSION })
+    expect(mapping?.hostedSandboxId).toBeUndefined()
+
+    const destroyed = await provider.destroy(
+      operationContext() as never,
+      { sandboxId: LOCAL_IDS.sandbox } as never,
+    )
+    expect(destroyed.sandbox.lifecycle.normalizedState).toBe('deleted')
+  })
+
   it('surfaces a header-only create rate limit with Retry-After', async () => {
     const { api } = await seededApi(async (_input, init) =>
       init?.method === 'POST'

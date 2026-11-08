@@ -547,29 +547,38 @@ export class OcboxSandboxProvider implements SandboxProvider {
       assertOwnedSession(session, this.#hostedProjectId)
       const primary = resolvePrimaryBinding(session)
       const sandboxId = primary?.sandboxId ?? session.primarySandboxId
-      if (sandboxId === null) return
-      if (record !== undefined && record.hostedSandboxId !== sandboxId) {
-        throw new OcboxError({
-          code: 'INVALID_STATE',
-          message: 'The hosted primary binding changed during provisioning',
-          providerCode: 'PRIMARY_BINDING_CHANGED',
-          requestId: context.requestId,
-        })
-      }
       const now = this.#now()
-      record = record ?? {
-        deleted: false,
-        stale: false,
-        createdAt: now,
-        hostedSandboxId: sandboxId,
-        hostedSessionId: session.id,
-        localId: SandboxIdSchema.parse(this.#createId()),
-        localProjectId: request.projectId,
-        localSessionId: request.sessionId,
-        spec: request.specification,
-        updatedAt: now,
+      let next: SandboxRecord
+      if (record === undefined) {
+        // Persist the hosted Session as soon as its ID is known: a create that
+        // times out before a primary binding exists must still be destroyable.
+        next = {
+          deleted: false,
+          stale: false,
+          createdAt: now,
+          hostedSessionId: session.id,
+          ...(sandboxId === null ? {} : { hostedSandboxId: sandboxId }),
+          localId: SandboxIdSchema.parse(this.#createId()),
+          localProjectId: request.projectId,
+          localSessionId: request.sessionId,
+          spec: request.specification,
+          updatedAt: now,
+        }
+      } else if (sandboxId !== null) {
+        if (record.hostedSandboxId !== undefined && record.hostedSandboxId !== sandboxId) {
+          throw new OcboxError({
+            code: 'INVALID_STATE',
+            message: 'The hosted primary binding changed during provisioning',
+            providerCode: 'PRIMARY_BINDING_CHANGED',
+            requestId: context.requestId,
+          })
+        }
+        next = { ...record, hostedSandboxId: sandboxId, updatedAt: now }
+      } else {
+        next = { ...record, updatedAt: now }
       }
-      await this.#saveRecord(record)
+      record = next
+      await this.#saveRecord(next)
     }
     if (hostedOp.session !== undefined) await remember(hostedOp.session)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
@@ -1009,7 +1018,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
       lifecycle: observation,
       projectId: record.localProjectId,
       provider: 'ocbox',
-      providerSandboxId: ProviderSandboxIdSchema.parse(record.hostedSandboxId),
+      providerSandboxId: ProviderSandboxIdSchema.parse(
+        record.hostedSandboxId ?? record.hostedSessionId,
+      ),
       specification: hostedSpecification(spec, hostedSession?.effectiveSpec ?? null, observedAt),
       updatedAt: observedAt,
     })
