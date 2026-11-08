@@ -129,14 +129,19 @@ try {
   assert.match(help.stdout.toString('utf8'), /sync diff/)
   assert.match(help.stdout.toString('utf8'), /sync push/)
   assert.match(help.stdout.toString('utf8'), /sync pull/)
+  assert.match(help.stdout.toString('utf8'), /sync recover/)
+  assert.match(
+    help.stdout.toString('utf8'),
+    /Hosted boxes support sync push only; sync pull and sync diff are being added/,
+  )
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
   const pushHelp = await run(['sync', 'push', '--help'])
   assert.equal(pushHelp.code, 0)
   assert.match(
-    pushHelp.stdout.toString('utf8'),
-    /Fake provider only; hosted source uses the project/,
+    pushHelp.stdout.toString('utf8').replace(/\s+/g, ' '),
+    /Fake provider only; hosted commands run in \/home\/daytona\/workspace/,
   )
 
   // 2. Session target resolution: missing selection fails typed.
