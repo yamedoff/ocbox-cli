@@ -182,7 +182,9 @@ describe('init command', () => {
     })
 
     expect(process.exitCode ?? 0).toBe(0)
-    expect(output(stdoutSpy)).toBe('Using existing project prj_reused\n')
+    expect(output(stdoutSpy)).toBe(
+      `Using existing project prj_reused ("${basename(process.cwd())}"), matched by name; run ocbox project create to make a new one\n`,
+    )
     expect(calls).toEqual(['GET /v1/projects'])
   })
 

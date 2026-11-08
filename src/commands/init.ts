@@ -11,6 +11,10 @@ function initializationMessage(result: ProjectInitialization): string {
     const name = result.projectName === undefined ? '' : ` ("${result.projectName}")`
     return `Created project ${result.projectId}${name} and wrote opencloudbox.toml`
   }
+  if (result.projectMatchedByName === true) {
+    const name = result.projectName === undefined ? '' : ` ("${result.projectName}")`
+    return `Using existing project ${result.projectId}${name}, matched by name; run ocbox project create to make a new one`
+  }
   return `Using existing project ${result.projectId}`
 }
 

@@ -242,6 +242,8 @@ export interface ProjectInitialization {
   readonly projectId?: string | undefined
   readonly projectName?: string | undefined
   readonly projectCreated?: boolean | undefined
+  /** True when an existing hosted project was found by its workspace name. */
+  readonly projectMatchedByName?: boolean | undefined
 }
 
 /** Creates the starter config exclusively, or validates and completes onboarding. */
@@ -275,6 +277,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
   let projectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? existing.projectId
   let projectName: string | undefined
   let projectCreated = false
+  let projectMatchedByName = false
   if (provider === 'ocbox' && !projectId) {
     const api = createMetadataClient(flags)
     const name = basename(process.cwd())
@@ -286,6 +289,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
       const match = page.data.find((project) => project.name === name)
       projectId = match?.id
       projectName = match?.name
+      projectMatchedByName = match !== undefined
       cursor = page.nextCursor ?? undefined
       if (cursor && seen.has(cursor)) throw new Error('Hosted project pagination repeated a cursor')
       if (cursor) seen.add(cursor)
@@ -351,6 +355,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
     projectId,
     ...(projectName === undefined ? {} : { projectName }),
     projectCreated,
+    ...(projectMatchedByName ? { projectMatchedByName } : {}),
   }
 }
 
