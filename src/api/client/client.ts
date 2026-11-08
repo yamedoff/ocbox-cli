@@ -103,6 +103,7 @@ export class OcboxApiClient {
       retryAfterSeconds: envelope.retryAfterSeconds ?? null,
       serverCode: envelope.code,
       serverMessage: envelope.message,
+      nextStep: envelope.nextStep,
       status: result.status,
     })
   }

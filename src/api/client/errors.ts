@@ -1,12 +1,17 @@
 import { newRequestId } from '../../auth/errors.js'
 import { RequestIdSchema, type RequestId } from '../../domain/ids.js'
-import { OcboxError, type OcboxErrorCode } from '../../errors/index.js'
+import {
+  OcboxError,
+  type OcboxErrorCode,
+  RedactedDetailsSchema,
+} from '../../errors/index.js'
 import { OcboxErrorCodeSchema } from '../../errors/codes.js'
 
 export interface ApiFailureInput {
   readonly status: number
   readonly serverCode?: string | undefined
   readonly serverMessage?: string | undefined
+  readonly nextStep?: string | undefined
   readonly requestId?: string | null | undefined
   readonly responseRequestId?: string | null | undefined
   readonly retryAfterSeconds?: number | null | undefined
@@ -87,6 +92,13 @@ export function mapApiFailureToOcboxError(input: ApiFailureInput): OcboxError {
   if (retryAfter !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['retryAfterSeconds'] = retryAfter
+  }
+  if (
+    typeof input.nextStep === 'string' &&
+    RedactedDetailsSchema.safeParse({ nextStep: input.nextStep }).success
+  ) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['nextStep'] = input.nextStep
   }
   if (
     serverRequestId !== null &&
@@ -260,6 +272,7 @@ export interface ErrorEnvelopeLike {
     | {
         readonly code?: unknown
         readonly message?: unknown
+        readonly nextStep?: unknown
         readonly retryAfterSeconds?: unknown
       }
     | undefined
@@ -278,15 +291,21 @@ export function isErrorEnvelopeLike(value: unknown): value is ErrorEnvelopeLike 
   return typeof (error as Record<string, unknown>)['code'] === 'string'
 }
 
-/** Extracts the server code/message/requestId/retry hint from a generated body. */
+/** Extracts the server code/message/next step/requestId/retry hint from a generated body. */
 export function envelopeOf(body: unknown): {
   code?: string | undefined
   message?: string | undefined
+  nextStep?: string | undefined
   requestId?: string | undefined
   retryAfterSeconds?: number | undefined
 } {
   if (!isErrorEnvelopeLike(body)) return {}
-  const error = body.error as { code?: unknown; message?: unknown; retryAfterSeconds?: unknown }
+  const error = body.error as {
+    code?: unknown
+    message?: unknown
+    nextStep?: unknown
+    retryAfterSeconds?: unknown
+  }
   const retryAfter =
     typeof error.retryAfterSeconds === 'number' &&
     Number.isInteger(error.retryAfterSeconds) &&
@@ -296,6 +315,7 @@ export function envelopeOf(body: unknown): {
   return {
     ...(typeof error.code === 'string' ? { code: error.code } : {}),
     ...(typeof error.message === 'string' ? { message: error.message } : {}),
+    ...(typeof error.nextStep === 'string' ? { nextStep: error.nextStep } : {}),
     ...(typeof body.requestId === 'string' ? { requestId: body.requestId } : {}),
     ...(retryAfter === undefined ? {} : { retryAfterSeconds: retryAfter }),
   }

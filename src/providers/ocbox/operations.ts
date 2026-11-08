@@ -309,6 +309,7 @@ export async function waitForHostedOperation(
           retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: result.status,
       })
       if (pollFailureRetryable(mapped, result.status)) {
@@ -444,6 +445,7 @@ export async function cancelHostedOperation(
           retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: result.status,
       })
       if (!mapped.retryable) throw mapped

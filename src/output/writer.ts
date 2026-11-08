@@ -106,7 +106,12 @@ export class OutputWriter {
         typeof reason === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(reason)
           ? ` Reason ${reason}. Reference ${error instanceof OcboxError ? error.requestId : ''}.`
           : ''
-      const rendered = message + suffix
+      const nextStep = error instanceof OcboxError ? error.details?.['nextStep'] : undefined
+      const nextLine =
+        typeof nextStep === 'string' && !message.includes(nextStep)
+          ? `\nNext: ${safeHumanMessage(nextStep, nextStep)}`
+          : ''
+      const rendered = message + suffix + nextLine
       const line = this.#useColor ? `\u001B[31m${rendered}\u001B[0m` : rendered
       this.#stderr.write(`${line}\n`)
     } else {
