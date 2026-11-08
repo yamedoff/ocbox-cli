@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto'
 import { open, readFile, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { Flags } from '@oclif/core'
 import { parse, stringify } from 'smol-toml'
 import { newRequestId } from '../auth/errors.js'
+import { readHostedIdentity } from '../auth/identity.js'
 import { AuthMetadataStore } from '../auth/metadata.js'
 import { createCredentialStore } from '../auth/runtime.js'
 import {
@@ -165,17 +167,57 @@ export function createRegistry(
     .register('ocbox', () => createOcboxProvider({ environment, stateDirectory, ...hostedOptions }))
 }
 
+function accountDirectory(stateDirectory: string, subject: string): string {
+  const key = createHash('sha256').update(subject).digest('hex').slice(0, 32)
+  return join(stateDirectory, 'accounts', key)
+}
+
+/**
+ * Local session state is per account, keyed by the token's subject. The auth
+ * metadata and credential stay at the shared state root so login is unchanged.
+ * A server without `/auth/me`, or an offline token, keeps the legacy shared
+ * directory instead of failing local commands.
+ */
+export async function resolveAccountStateDirectory(
+  flags: RuntimeFlags,
+  stateDirectory: string,
+  hosted: boolean,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!hosted) return stateDirectory
+  const metadataStore = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+  try {
+    const metadata = await metadataStore.load(signal)
+    if (metadata?.subject !== undefined) return accountDirectory(stateDirectory, metadata.subject)
+    const identity = await readHostedIdentity(flags, process.env, signal)
+    if (metadata !== null)
+      await metadataStore.save({ ...metadata, subject: identity.subject }, signal).catch(() => {})
+    return accountDirectory(stateDirectory, identity.subject)
+  } catch {
+    return stateDirectory
+  }
+}
+
 export async function createLifecycleService(
   flags: RuntimeFlags,
   signal?: AbortSignal,
+  lifecycleStateDirectory?: string,
 ): Promise<LifecycleService> {
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
   const projectId = projectIdForPath(resolve(process.cwd()))
+  const lifecycleStateRoot =
+    lifecycleStateDirectory ??
+    (await resolveAccountStateDirectory(
+      flags,
+      stateDirectory,
+      config.provider.name === 'ocbox',
+      signal,
+    ))
   return new LifecycleService({
     config,
     projectId,
-    store: new LifecycleStore(stateDirectory, projectId),
+    store: new LifecycleStore(lifecycleStateRoot, projectId),
     registry: createRegistry(stateDirectory, signal, process.env, {
       apiUrl: flags['api-url'],
       projectId: flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId,
