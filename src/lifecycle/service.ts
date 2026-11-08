@@ -46,6 +46,8 @@ export interface SessionView {
   readonly hostedProjectId?: string | undefined
   /** Set by destroy: a hosted resource was deleted, or only local state was removed. */
   readonly destroyOutcome?: 'hosted' | 'local'
+  /** Set by start: the previously selected Session was destroyed, so a new one was created. */
+  readonly startedNewAfterDestroy?: boolean
 }
 
 export interface LifecycleServiceOptions {
@@ -91,6 +93,10 @@ export class LifecycleService {
     const selected =
       state.activeSessionId === null ? undefined : state.sessions[state.activeSessionId]
     if (createNew || selected === undefined) return this.#createSession(createNew)
+    if (selected.state === 'destroyed') {
+      const view = await this.#createSession(true)
+      return { ...view, startedNewAfterDestroy: true }
+    }
     if (selected.state === 'creating') return this.#continueCreate(selected)
     if (selected.state === 'active') return this.#refreshActive(selected)
     if (selected.state === 'paused') return this.#runMutation(selected.id, 'resume')
@@ -219,6 +225,7 @@ export class LifecycleService {
         sandboxDeletionVerifiedAt: now,
         updatedAt: now,
       })
+      if (next.activeSessionId === sessionId) next.activeSessionId = null
       return next
     })
     return this.#view(sessionId)
@@ -713,6 +720,7 @@ export class LifecycleService {
         sandboxDeletionVerifiedAt: destroyed ? sandbox.lifecycle.observedAt : null,
         updatedAt: sandbox.lifecycle.observedAt,
       })
+      if (destroyed && next.activeSessionId === sessionId) next.activeSessionId = null
       return next
     })
     return this.#view(sessionId)

@@ -132,11 +132,19 @@ try {
   assert.match(help.stdout.toString('utf8'), /sync recover/)
   assert.match(
     help.stdout.toString('utf8'),
+    /On hosted boxes, push uploads local files, pull downloads changed box files, and diff compares local files with the box/,
+  )
+  assert.doesNotMatch(
+    help.stdout.toString('utf8'),
     /Hosted boxes support sync push only; sync pull and sync diff are being added/,
   )
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
+  assert.match(
+    diffHelp.stdout.toString('utf8'),
+    /on hosted boxes, compares local files with the box/,
+  )
   const pushHelp = await run(['sync', 'push', '--help'])
   assert.equal(pushHelp.code, 0)
   assert.match(

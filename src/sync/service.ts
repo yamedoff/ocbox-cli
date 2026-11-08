@@ -963,6 +963,7 @@ export function renderSyncPlan(view: SyncPlanView): string {
   ) {
     lines.push('No changes.')
   }
+  lines.push('+ added  ~ modified  - deleted (remote = in the box)')
   return lines.join('\n')
 }
 
@@ -974,14 +975,15 @@ export function renderSyncApplied(view: SyncApplyView): string {
       const skipped =
         view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
       if (changed.length === 0 && deleted.length === 0 && !skipped) return 'Source unchanged.'
-      const shown = [...changed, ...deleted].slice(0, 10)
-      const remaining = changed.length + deleted.length - shown.length
+      const changedPaths = [...view.additions, ...view.modifications].map((entry) => entry.path)
+      const shown = [...changedPaths, ...deleted].slice(0, 10)
+      const remaining = changedPaths.length + deleted.length - shown.length
       const skippedNote = skipped
         ? ` ${String(view.deletions.length)} local deletion(s) skipped; rerun with --delete to remove them.`
         : ''
       return [
         `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
-        ...shown.map((path) => path),
+        ...shown,
         ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
       ].join('\n')
     }

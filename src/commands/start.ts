@@ -20,10 +20,14 @@ export default class Start extends OcboxCommand {
       await this.emitResult(
         flags,
         'session.started',
-        (view) =>
-          nextStep === undefined
-            ? sessionViewLine(view)
-            : `${sessionViewLine(view)}\nNext: ${nextStep}`,
+        (view) => {
+          const line = sessionViewLine(view)
+          const notice =
+            view.startedNewAfterDestroy === true
+              ? 'The selected box was destroyed; started a new one\n'
+              : ''
+          return nextStep === undefined ? `${notice}${line}` : `${notice}${line}\nNext: ${nextStep}`
+        },
         async () => {
           if (
             !flags.json &&

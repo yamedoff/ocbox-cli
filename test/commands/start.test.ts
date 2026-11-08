@@ -1,10 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
+import Destroy from '../../src/commands/destroy.js'
 import Start from '../../src/commands/start.js'
+import Status from '../../src/commands/status.js'
 import SyncPush from '../../src/commands/sync/push.js'
+import type { Session } from '../../src/contracts.js'
+import { LifecycleStore, projectIdForPath } from '../../src/lifecycle/index.js'
 
 const originalExitCode = process.exitCode
 const originalEnvironment = { ...process.env }
@@ -67,5 +71,61 @@ describe('start command next step', () => {
     await Start.run(runtime, { root: process.cwd() })
     expect(process.exitCode ?? 0).toBe(0)
     expect(output(stdoutSpy)).not.toContain('Next: ocbox sync push')
+  })
+})
+
+describe('destroyed Session selection', () => {
+  async function startedProject(): Promise<{
+    readonly runtime: string[]
+    readonly state: string
+    readonly store: LifecycleStore
+    readonly sessionId: Session['id']
+  }> {
+    const config = join(root, 'opencloudbox.toml')
+    const state = join(root, 'state')
+    await writeFile(config, DEFAULT_PROJECT_CONFIG)
+    const runtime = ['--config', config, '--state-dir', state]
+    await Start.run(runtime, { root: process.cwd() })
+    expect(process.exitCode ?? 0).toBe(0)
+    const store = new LifecycleStore(state, projectIdForPath(resolve(process.cwd())))
+    const current = await store.load()
+    if (current.activeSessionId === null) throw new Error('Expected a selected Session')
+    return { runtime, state, store, sessionId: current.activeSessionId }
+  }
+
+  it('clears the selection when destroy removes the selected box', async () => {
+    const { runtime, store, sessionId } = await startedProject()
+
+    await Destroy.run([...runtime, '--yes'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const state = await store.load()
+    expect(state.activeSessionId).toBeNull()
+    expect(state.sessions[sessionId]?.state).toBe('destroyed')
+
+    stdoutSpy.mockClear()
+    stderrSpy.mockClear()
+    await Status.run(runtime, { root: process.cwd() })
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('No Session is selected')
+  })
+
+  it('starts a new box and says so when the selected box is already destroyed', async () => {
+    const { runtime, store, sessionId } = await startedProject()
+    await Destroy.run([...runtime, '--yes'], { root: process.cwd() })
+    expect(process.exitCode ?? 0).toBe(0)
+    // Older state can still point at a destroyed Session; start must recover.
+    await store.update((current) => ({ ...current, activeSessionId: sessionId }))
+
+    stdoutSpy.mockClear()
+    await Start.run(runtime, { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain('The selected box was destroyed; started a new one')
+    const state = await store.load()
+    expect(state.activeSessionId).not.toBe(sessionId)
+    const selected =
+      state.activeSessionId === null ? undefined : state.sessions[state.activeSessionId]
+    expect(selected?.state).toBe('active')
   })
 })

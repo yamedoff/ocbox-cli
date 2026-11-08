@@ -124,12 +124,14 @@ describe('LifecycleService execution target', () => {
     const created = await createService(directory).start()
     await createService(directory).destroy()
 
-    await expect(createService(directory).executionTarget()).rejects.toMatchObject({
+    await expect(
+      createService(directory).executionTarget(created.session.id),
+    ).rejects.toMatchObject({
       code: 'INVALID_STATE',
     })
     const state = await new LifecycleStore(directory, PROJECT_ID).load()
     expect(state.sessions[created.session.id]?.state).toBe('destroyed')
-    expect(state.activeSessionId).toBe(created.session.id)
+    expect(state.activeSessionId).toBeNull()
   })
 
   it('rejects providers that cannot stream cancellable execution', async () => {

@@ -45,7 +45,8 @@ export function executionTokens(argv: readonly string[]): string[] {
  */
 export default class Exec extends OcboxCommand {
   static override description =
-    'Execute a program in the selected Session Sandbox\n\nTokens after `--` are passed to the remote program verbatim as a structured argv array; they are never evaluated by any shell. Use `--shell COMMAND` for an explicit Bash command string.'
+    "Execute a program in the selected Session Sandbox; for example: ocbox exec -- npm test\n\nBy default commands run in the box's workspace folder, where `ocbox sync push` puts the files.\n\nTokens after `--` are passed to the remote program verbatim as a structured argv array; they are never evaluated by any shell. Use `--shell COMMAND` for an explicit Bash command string."
+  static override usage = 'exec [flags] -- <command> [args...]'
   static override strict = false
   static override flags = {
     ...runtimeFlags,
