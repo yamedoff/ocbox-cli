@@ -141,7 +141,10 @@ try {
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
-  assert.match(diffHelp.stdout.toString('utf8'), /on hosted boxes, compares local files with the box/)
+  assert.match(
+    diffHelp.stdout.toString('utf8'),
+    /on hosted boxes, compares local files with the box/,
+  )
   const pushHelp = await run(['sync', 'push', '--help'])
   assert.equal(pushHelp.code, 0)
   assert.match(
