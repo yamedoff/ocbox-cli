@@ -959,8 +959,17 @@ export function renderSyncPlan(view: SyncPlanView): string {
 }
 
 export function renderSyncApplied(view: SyncApplyView): string {
-  if (view.protocolVersion === 2)
-    return `Source synced: uploaded ${view.uploadedBlobs} blob(s), ${view.uploadedBytes} bytes.`
+  if (view.protocolVersion === 2) {
+    const changed = [...view.additions, ...view.modifications, ...view.deletions]
+    if (changed.length === 0) return 'Source unchanged.'
+    const shown = changed.slice(0, 10)
+    const remaining = changed.length - shown.length
+    return [
+      `Source synced: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s), ${String(view.deletions.length)} deletion(s); uploaded ${String(view.uploadedBlobs ?? 0)} blob(s), ${String(view.uploadedBytes ?? 0)} bytes.`,
+      ...shown.map((entry) => entry.path),
+      ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+    ].join('\n')
+  }
   if (view.uploadedFiles !== undefined)
     return view.applied
       ? `Uploaded ${view.uploadedFiles.length} file(s), ${view.uploadedBytes} bytes (${view.archiveBytes} archive bytes) to the hosted sandbox:\n${view.uploadedFiles.join('\n')}`
