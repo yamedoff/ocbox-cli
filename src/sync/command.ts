@@ -4,14 +4,15 @@ import { createInterface } from 'node:readline/promises'
 import {
   createLifecycleService,
   loadProjectConfig,
-  resolveStateDirectory,
   type RuntimeFlags,
+  resolveAccountStateDirectory,
+  resolveStateDirectory,
 } from '../cli/runtime.js'
-import { LifecycleStore } from '../lifecycle/index.js'
-import { createOcboxProvider } from '../providers/ocbox/factory.js'
 import { RequestIdSchema } from '../domain/ids.js'
 import { OcboxError } from '../errors/index.js'
-import { InvalidIgnoreRuleError, type IgnoreRule } from './exclusions.js'
+import { LifecycleStore } from '../lifecycle/index.js'
+import { createOcboxProvider } from '../providers/ocbox/factory.js'
+import { type IgnoreRule, InvalidIgnoreRuleError } from './exclusions.js'
 import { cliRules } from './ignore-rules.js'
 import type { SyncContext } from './service.js'
 
@@ -34,7 +35,15 @@ export async function resolveSyncContext(
 ): Promise<SyncContext> {
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
-  const view = await (await createLifecycleService(flags)).status(flags.session)
+  const lifecycleStateDirectory = await resolveAccountStateDirectory(
+    flags,
+    stateDirectory,
+    config.provider.name === 'ocbox',
+    signal,
+  )
+  const view = await (await createLifecycleService(flags, signal, lifecycleStateDirectory)).status(
+    flags.session,
+  )
   const sessionId = view.session.id
   const projectId = view.session.projectId
   const localRoot = resolve(process.cwd(), flags['local-dir'] ?? '.')
@@ -65,7 +74,7 @@ export async function resolveSyncContext(
       apiUrl: flags['api-url'],
       projectId: flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId,
     })
-    provider.bindLifecycleStore(new LifecycleStore(stateDirectory, projectId))
+    provider.bindLifecycleStore(new LifecycleStore(lifecycleStateDirectory, projectId))
     const sandboxId = view.sandbox.id
     const sourceTransport = await provider.sourceCasTransport(sandboxId, signal)
     casTransport = sourceTransport

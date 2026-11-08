@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -133,6 +133,13 @@ const server = createServer(async (req, res) => {
     }
     assert.match(req.headers.authorization ?? '', /^Bearer /)
     const body = bytes.length ? JSON.parse(bytes) : undefined
+    if (path === '/v1/auth/me')
+      return send({
+        subject: 'test-subject',
+        audience: 'cli',
+        scopes: infrastructure.DEFAULT_SCOPES,
+        expiresAt: new Date(Date.now() + 900000).toISOString(),
+      })
     if (path === '/v1/projects/test_project')
       return send({ id: 'test_project', name: 'test', createdAt: now, updatedAt: now })
     if (path === '/v1/projects/test_project/sessions' && req.method === 'POST') {
@@ -147,6 +154,9 @@ const server = createServer(async (req, res) => {
       !path.includes('/source/manifests'),
       'fast-path boxes must not call the legacy manifest route',
     )
+    // This harness exercises the v2 cycle; the v3 check/apply fall back to it.
+    if (path.endsWith('/source/cas/check') || path.endsWith('/source/cas/fast'))
+      return send({ error: { code: 'NOT_FOUND', message: 'not found' }, requestId }, 404)
     const action = path.split('/').at(-1)
     assert.equal(req.method, 'POST')
     assert.equal(body.version, 2)
