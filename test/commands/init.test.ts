@@ -15,7 +15,7 @@ let stdoutSpy: ReturnType<typeof vi.spyOn>
 let stderrSpy: ReturnType<typeof vi.spyOn>
 
 function output(spy: ReturnType<typeof vi.spyOn>): string {
-  return spy.mock.calls.map((call) => String(call[0])).join('')
+  return spy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
 }
 
 async function temporaryRoot(): Promise<string> {
@@ -66,10 +66,9 @@ describe('init command', () => {
     const root = await temporaryRoot()
     const config = join(root, 'opencloudbox.toml')
 
-    await Init.run(
-      ['--provider', 'fake', '--config', config, '--state-dir', join(root, 'state')],
-      { root: process.cwd() },
-    )
+    await Init.run(['--provider', 'fake', '--config', config, '--state-dir', join(root, 'state')], {
+      root: process.cwd(),
+    })
 
     expect(process.exitCode ?? 0).toBe(0)
     expect(output(stdoutSpy)).toBe('Project configuration created\n')

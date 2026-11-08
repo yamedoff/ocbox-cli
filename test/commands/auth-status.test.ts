@@ -12,7 +12,7 @@ let stdoutSpy: ReturnType<typeof vi.spyOn>
 let stderrSpy: ReturnType<typeof vi.spyOn>
 
 function output(spy: ReturnType<typeof vi.spyOn>): string {
-  return spy.mock.calls.map((call) => String(call[0])).join('')
+  return spy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
 }
 
 beforeEach(async () => {
@@ -38,7 +38,9 @@ afterEach(async () => {
     if (!(name in originalEnvironment)) delete process.env[name]
   }
   Object.assign(process.env, originalEnvironment)
-  await Promise.all(roots.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+  await Promise.all(
+    roots.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+  )
 })
 
 describe('auth status command', () => {

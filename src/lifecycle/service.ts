@@ -199,8 +199,7 @@ export class LifecycleService {
     const session = state.sessions[selected.id]
     if (session === undefined) throw this.#notFound(selected.id)
     if (session.state !== 'active') {
-      const recovery =
-        session.state === 'stopped' ? '; run `ocbox start` to resume it.' : ''
+      const recovery = session.state === 'stopped' ? '; run `ocbox start` to resume it.' : ''
       throw this.#invalidState(
         session,
         `Session ${session.id} is ${session.state}; ocbox exec requires an active Session${recovery}`,

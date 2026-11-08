@@ -8,8 +8,7 @@ import type {
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
 
-const INVALID_SESSION_ID_MESSAGE =
-  'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
+const INVALID_SESSION_ID_MESSAGE = 'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
 import {
   runExecutionCommand,
   runExecutionCommandResult,

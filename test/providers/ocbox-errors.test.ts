@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { assertErrorRedacted } from '../../src/api/client/client.js'
-import {
-  envelopeOf,
-  mapApiFailureToOcboxError,
-  toRequestId,
-} from '../../src/api/client/errors.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../src/api/client/errors.js'
 import { OcboxError } from '../../src/errors/index.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'

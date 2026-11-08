@@ -1,10 +1,6 @@
 import { newRequestId } from '../../auth/errors.js'
 import { RequestIdSchema, type RequestId } from '../../domain/ids.js'
-import {
-  OcboxError,
-  type OcboxErrorCode,
-  RedactedDetailsSchema,
-} from '../../errors/index.js'
+import { OcboxError, type OcboxErrorCode, RedactedDetailsSchema } from '../../errors/index.js'
 import { OcboxErrorCodeSchema } from '../../errors/codes.js'
 
 export interface ApiFailureInput {
