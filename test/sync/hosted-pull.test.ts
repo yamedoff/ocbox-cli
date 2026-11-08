@@ -280,6 +280,7 @@ describe('hosted sync read-back', () => {
     expect(view.pulledFiles).toEqual(['added.txt', 'modified.txt'])
     expect(view.pulledBytes).toBe(8)
     expect(renderSyncApplied(view)).toContain('Source pulled: 1 addition(s), 1 modification(s)')
+    expect(renderSyncApplied(view)).toContain('1 local deletion(s) skipped')
     const pullRequests = requests.filter((entry) => entry.path.endsWith('/source/cas/pull'))
     expect(pullRequests).toHaveLength(2)
     expect(pullRequests[0]?.body['paths']).toEqual(['added.txt', 'modified.txt'])

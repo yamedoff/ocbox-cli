@@ -971,15 +971,16 @@ export function renderSyncApplied(view: SyncApplyView): string {
     if (view.mode === 'pull') {
       const changed = [...view.additions, ...view.modifications]
       const deleted = view.deletedFiles ?? []
-      if (changed.length === 0 && deleted.length === 0) return 'Source unchanged.'
-      const shown = [...changed, ...deleted].slice(0, 10)
-      const remaining = changed.length + deleted.length - shown.length
       const skipped =
         view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
-          ? ` ${String(view.deletions.length)} local deletion(s) skipped; rerun with --delete to remove them.`
-          : ''
+      if (changed.length === 0 && deleted.length === 0 && !skipped) return 'Source unchanged.'
+      const shown = [...changed, ...deleted].slice(0, 10)
+      const remaining = changed.length + deleted.length - shown.length
+      const skippedNote = skipped
+        ? ` ${String(view.deletions.length)} local deletion(s) skipped; rerun with --delete to remove them.`
+        : ''
       return [
-        `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skipped}`,
+        `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
         ...shown.map((path) => path),
         ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
       ].join('\n')

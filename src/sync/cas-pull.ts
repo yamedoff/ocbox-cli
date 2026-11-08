@@ -323,6 +323,8 @@ async function pullBlobs(
         throw casError('OPERATION_CANCELLED', 'Source sync was cancelled; retry the command')
       result = await transport.pull(snapshotId, paths, idempotencyKey, cursor)
     }
+    if (result.snapshotId !== snapshotId)
+      throw integrity('Source pull receipt did not match its snapshot')
     if (pullId !== undefined && pullId !== result.pullId)
       throw integrity('Source pull receipt did not match its pull')
     pullId = result.pullId
@@ -369,37 +371,40 @@ async function stageFile(
   await assertWritableTarget(target)
   await mkdir(dirname(target), { recursive: true, mode: 0o755 })
   const temp = join(dirname(target), `.ocb-pull-${randomUUID()}.tmp`)
-  const handle = await open(temp, 'wx', 0o600)
-  const digest = createHash('sha256')
-  let written = 0
   try {
-    for (const part of file.parts) {
-      const blob = blobs.get(part.hash)
-      const bytes = bytesByHash.get(part.hash)
-      if (blob === undefined || bytes === undefined)
-        throw integrity('Source pull did not return a declared file part')
-      if (part.offset + part.size > bytes.length || bytes.length !== blob.size)
-        throw integrity('A pulled file part did not match its declared size')
-      const slice = bytes.subarray(part.offset, part.offset + part.size)
-      digest.update(slice)
-      written += slice.length
-      let offset = 0
-      while (offset < slice.length) {
-        const result = await handle.write(slice, offset, slice.length - offset)
-        if (result.bytesWritten <= 0) throw integrity('The pulled file could not be written')
-        offset += result.bytesWritten
+    const handle = await open(temp, 'wx', 0o600)
+    const digest = createHash('sha256')
+    let written = 0
+    try {
+      for (const part of file.parts) {
+        const blob = blobs.get(part.hash)
+        const bytes = bytesByHash.get(part.hash)
+        if (blob === undefined || bytes === undefined)
+          throw integrity('Source pull did not return a declared file part')
+        if (part.offset + part.size > bytes.length || bytes.length !== blob.size)
+          throw integrity('A pulled file part did not match its declared size')
+        const slice = bytes.subarray(part.offset, part.offset + part.size)
+        digest.update(slice)
+        written += slice.length
+        let offset = 0
+        while (offset < slice.length) {
+          const result = await handle.write(slice, offset, slice.length - offset)
+          if (result.bytesWritten <= 0) throw integrity('The pulled file could not be written')
+          offset += result.bytesWritten
+        }
       }
+      await handle.sync()
+    } finally {
+      await handle.close()
     }
-    await handle.sync()
-  } finally {
-    await handle.close()
-  }
-  if (written !== file.size || digest.digest('hex') !== file.hash) {
+    if (written !== file.size || digest.digest('hex') !== file.hash)
+      throw integrity('A pulled file failed hash verification; nothing was written')
+    await chmod(temp, file.mode)
+    return { temp, target }
+  } catch (error) {
     await rm(temp, { force: true })
-    throw integrity('A pulled file failed hash verification; nothing was written')
+    throw error
   }
-  await chmod(temp, file.mode)
-  return { temp, target }
 }
 
 async function stageFiles(
@@ -419,7 +424,12 @@ async function stageFiles(
 }
 
 async function commitStaged(staged: readonly StagedFile[]): Promise<void> {
-  for (const entry of staged) await rename(entry.temp, entry.target)
+  try {
+    for (const entry of staged) await rename(entry.temp, entry.target)
+  } catch (error) {
+    await Promise.all(staged.map((entry) => rm(entry.temp, { force: true })))
+    throw error
+  }
 }
 
 function deletionConfirmationError(): OcboxError {
