@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
+import { sessionViewLine } from '../../src/cli/views.js'
 import { parseProjectConfig } from '../../src/config/index.js'
 import {
   ProjectIdSchema,
@@ -271,6 +272,29 @@ describe('LifecycleService', () => {
       throw new Error('Expected a reserved lifecycle Operation')
     }
     expect(finalState.operations[operationId]?.status).toBe('succeeded')
+  })
+
+  it('labels every field on the Session view line', async () => {
+    const directory = await temporaryDirectory()
+    const view = await createService(directory).start()
+
+    expect(sessionViewLine(view)).toBe(
+      `* session=${view.session.id} state=active project=${PROJECT_ID} provider=running raw=fake:RUNNING`,
+    )
+  })
+
+  it('hides destroyed Sessions from list unless they are requested', async () => {
+    const directory = await temporaryDirectory()
+    const first = await createService(directory).start()
+    const second = await createService(directory).start(true)
+    await createService(directory).destroy(first.session.id)
+
+    const visible = await createService(directory).list()
+    expect(visible.map((view) => view.session.id)).toEqual([second.session.id])
+
+    const all = await createService(directory).list(true)
+    expect(all.map((view) => view.session.id)).toEqual([first.session.id, second.session.id])
+    expect(all[0]?.session.state).toBe('destroyed')
   })
 
   it('returns typed registry errors for unknown and unavailable providers', async () => {

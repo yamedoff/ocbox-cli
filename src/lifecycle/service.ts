@@ -263,10 +263,11 @@ export class LifecycleService {
     return { session, sandbox: observed, capabilities, provider }
   }
 
-  async list(): Promise<readonly SessionView[]> {
+  async list(includeDestroyed = false): Promise<readonly SessionView[]> {
     const state = await this.#store.load()
     return Promise.all(
       Object.values(state.sessions)
+        .filter((session) => includeDestroyed || session.state !== 'destroyed')
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .map((session) => this.#viewFromState(state, session.id)),
     )
