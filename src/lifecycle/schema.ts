@@ -16,7 +16,7 @@ export const HostedSandboxMappingSchema = z.strictObject({
   localSessionId: SessionIdSchema,
   localProjectId: ProjectIdSchema,
   hostedSessionId: z.string().min(1),
-  hostedSandboxId: z.string().min(1),
+  hostedSandboxId: z.string().min(1).optional(),
   lastExecutionId: z.string().min(1).optional(),
   spec: SandboxSpecSchema,
   createdAt: z.string().datetime(),
