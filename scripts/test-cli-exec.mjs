@@ -61,6 +61,23 @@ try {
   assert.equal(probe.stdout, '1\n')
   assert.equal(probe.stderr, '')
 
+  // Exec help shows the argv separator and the default workspace location.
+  const execHelp = await run(['exec', '--help'])
+  assert.equal(execHelp.code, 0)
+  const execHelpText = execHelp.stdout.toString('utf8')
+  assert.ok(
+    execHelpText.includes('ocbox exec [flags] -- <command> [args...]'),
+    'exec usage must show the -- <command> [args...] placeholder',
+  )
+  assert.ok(
+    execHelpText.includes('ocbox exec -- npm test'),
+    'exec description must show the npm test example',
+  )
+  assert.ok(
+    execHelpText.includes("box's workspace folder"),
+    'exec description must say commands run in the workspace folder',
+  )
+
   const initialized = parseEnvelope(
     (
       await run(['init', '--provider', 'fake', ...runtimeFlags, '--json'], {
