@@ -1,7 +1,12 @@
 import { Command } from '@oclif/core'
 
+const AVAILABILITY =
+  'Hosted boxes support sync push only; sync pull and sync diff are being added for hosted boxes and currently work with the fake provider.'
+
 const USAGE = [
   'Transfer source between the local workspace and a Session workspace.',
+  '',
+  AVAILABILITY,
   '',
   'USAGE',
   '  $ ocbox sync diff [--session SESSION_ID]',
@@ -18,7 +23,7 @@ const USAGE = [
 
 /** Topic command so `ocbox sync` prints usage instead of an unknown-command error. */
 export default class SyncTopic extends Command {
-  static override description = 'Inspect and transfer source for a Session'
+  static override description = `Inspect and transfer source for a Session. ${AVAILABILITY}`
   static override flags = {}
 
   async run(): Promise<void> {

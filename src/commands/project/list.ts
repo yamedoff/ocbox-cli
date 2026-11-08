@@ -1,3 +1,4 @@
+import { loadProjectIdIfPresent } from '../../cli/runtime.js'
 import { metadataFlags, MetadataCommand, paginationFlags } from '../../metadata/command.js'
 
 /** Hosted project list; uses protected login credentials. */
@@ -10,9 +11,17 @@ export default class ProjectList extends MetadataCommand {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(ProjectList)
-    await this.executeMetadata('project.list', flags, {
-      cursor: flags.cursor,
-      limit: flags.limit,
-    })
+    await this.executeMetadata(
+      'project.list',
+      flags,
+      {
+        cursor: flags.cursor,
+        limit: flags.limit,
+      },
+      {
+        currentProjectId: await loadProjectIdIfPresent(flags),
+        cursorCommand: 'ocbox project list',
+      },
+    )
   }
 }
