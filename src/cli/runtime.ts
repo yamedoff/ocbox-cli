@@ -193,8 +193,17 @@ export async function createLifecycleService(
   })
 }
 
+/** Project onboarding outcome used to explain exactly what `init` did. */
+export interface ProjectInitialization {
+  readonly status: 'created' | 'validated'
+  readonly provider: string
+  readonly projectId?: string | undefined
+  readonly projectName?: string | undefined
+  readonly projectCreated?: boolean | undefined
+}
+
 /** Creates the starter config exclusively, or validates and completes onboarding. */
-export async function initializeProject(flags: RuntimeFlags): Promise<'created' | 'validated'> {
+export async function initializeProject(flags: RuntimeFlags): Promise<ProjectInitialization> {
   const path = resolveConfigPath(flags)
   let source: string
   let exists = true
@@ -222,6 +231,8 @@ export async function initializeProject(flags: RuntimeFlags): Promise<'created' 
   }
   const provider = flags.provider ?? (exists ? existing.provider.name : 'ocbox')
   let projectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? existing.projectId
+  let projectName: string | undefined
+  let projectCreated = false
   if (provider === 'ocbox' && !projectId) {
     const api = createMetadataClient(flags)
     const name = basename(process.cwd())
@@ -230,14 +241,19 @@ export async function initializeProject(flags: RuntimeFlags): Promise<'created' 
     do {
       const result = await runMetadataAction(api, 'project.list', { cursor })
       const page = ProjectPageSchema.parse(result.resource)
-      projectId = page.data.find((project) => project.name === name)?.id
+      const match = page.data.find((project) => project.name === name)
+      projectId = match?.id
+      projectName = match?.name
       cursor = page.nextCursor ?? undefined
       if (cursor && seen.has(cursor)) throw new Error('Hosted project pagination repeated a cursor')
       if (cursor) seen.add(cursor)
     } while (!projectId && cursor)
     if (!projectId) {
       const result = await runMetadataAction(api, 'project.create', { name })
-      projectId = ProjectSchema.parse(result.resource).id
+      const created = ProjectSchema.parse(result.resource)
+      projectId = created.id
+      projectName = created.name
+      projectCreated = true
     }
   }
   if (!exists && provider === 'ocbox') {
@@ -275,7 +291,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<'created' 
   parseProjectConfig(source)
   if (exists) {
     if (source !== (await readFile(path, 'utf8'))) await writeFile(path, source, { mode: 0o600 })
-    return 'validated'
+    return { status: 'validated', provider }
   }
   const handle = await open(path, 'wx', 0o600)
   try {
@@ -284,5 +300,24 @@ export async function initializeProject(flags: RuntimeFlags): Promise<'created' 
   } finally {
     await handle.close()
   }
-  return 'created'
+  if (provider !== 'ocbox') return { status: 'created', provider }
+  if (projectId === undefined)
+    throw new Error('Hosted project initialization did not resolve an ID')
+  return {
+    status: 'created',
+    provider,
+    projectId,
+    ...(projectName === undefined ? {} : { projectName }),
+    projectCreated,
+  }
+}
+
+/** Reads the workspace project ID when a config exists; absence is not an error. */
+export async function loadProjectIdIfPresent(flags: RuntimeFlags): Promise<string | undefined> {
+  try {
+    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')).projectId
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
 }

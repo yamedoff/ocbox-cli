@@ -57,7 +57,8 @@ try {
       .stdout,
   )
   assert.equal(initialized.name, 'project.initialized')
-  assert.equal(initialized.data, 'created')
+  assert.equal(initialized.data.status, 'created')
+  assert.equal(initialized.data.provider, 'fake')
 
   const providersOutput = await invoke(projectDirectory, ['providers', ...runtimeFlags, '--jsonl'])
   assert.equal(providersOutput.stdout.trim().split('\n').length, 1)

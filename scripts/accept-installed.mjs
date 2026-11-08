@@ -1138,11 +1138,9 @@ export async function main(argv, { loginFault } = {}) {
         ['c.txt', 'installed c\n'],
       ])
         await writeFile(join(project, name), content)
-      assert.equal(
-        await structured(['init'], 'project.initialized', evidence),
-        'created',
-        'init_result',
-      )
+      const initialized = await structured(['init'], 'project.initialized', evidence)
+      assert.equal(initialized.status, 'created', 'init_result')
+      assert.equal(initialized.provider, 'ocbox', 'init_result')
       const config = await readFile(join(project, 'opencloudbox.toml'), 'utf8')
       assert.match(config, /name\s*=\s*"ocbox"/, 'project_config')
       assert.match(config, /projectId\s*=/, 'project_config')
