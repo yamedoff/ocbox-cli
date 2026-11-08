@@ -4,7 +4,7 @@
 LifecycleService maintains local Session views and operations. OcboxSandboxProvider maps local IDs to hosted Session IDs and implements the public API contract. ExecutionService validates a provider target and consumes its event/result handle. The hosted adapter calls the API directly; the fake adapter starts the local helper process.
 
 ## Inside
-Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms a deleted hosted Session before marking the local mapping deleted; history remains in the lifecycle file.
+Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms a deleted hosted Session before marking the local mapping deleted; history remains in the lifecycle file. When a failed start leaves a current Operation or no primary binding, destroy first gives that Operation one bounded reconcile and then destroys the hosted Session named by the persisted mapping. A Session with no hosted mapping is removed locally.
 
 Explicit shell mode rejects a known non-Linux effective OS. When the hosted effective specification is incomplete, the adapter keeps it unobserved and the remote executor decides shell compatibility; the requested spec is never promoted to observed metadata.
 
@@ -13,7 +13,7 @@ Execution submits createExecution, retains its handle and observes event/result 
 Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body currently sends command and timeout only, so parsed cwd/environment values are not transmitted by this adapter.
 
 ## Data it keeps
-Local Session state, selection, local-to-hosted mappings, pending operations and operation checkpoints. Hosted Execution and sandbox observations arrive through the public API. No server vendor identity is needed by this adapter.
+Local Session state, selection, local-to-hosted mappings, pending operations and operation checkpoints. A hosted mapping is written as soon as the create response names the hosted Session, before a primary binding exists. Hosted Execution and sandbox observations arrive through the public API. No server vendor identity is needed by this adapter.
 
 ## States
 Local create/mutation intent → dispatched → observed terminal result → reconciled Session view. Execution pending/running → command success/failure or cancellation. An elapsed client deadline does not prove the server effect was undone. Destroy marks the hosted mapping deleted and retains local Session/Operation history with released bindings.
@@ -29,4 +29,4 @@ Execution failures after an accepted start use the same safe typed code/message 
 ## Code evidence
 Selection and transitions: `src/lifecycle/service.ts:84–370,410–627`. Hosted lifecycle/exec/preview: `src/providers/ocbox/provider.ts:507–925,1033–1395`. Output collection: `src/providers/ocbox/executions.ts:104–434`; cancellation helper: `src/providers/ocbox/operations.ts:399–486`.
 
-Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
+Verified against ocbox-cli @ 6e22448
