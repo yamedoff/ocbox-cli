@@ -103,7 +103,7 @@ describe('LifecycleService execution target', () => {
     await createService(directory).start()
     await expect(
       createService(directory).executionTarget('99999999-9999-4999-8999-999999999999'),
-    ).rejects.toMatchObject({ code: 'ENVIRONMENT_NOT_FOUND' })
+    ).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' })
   })
 
   it('rejects a non-active Session and preserves its state', async () => {

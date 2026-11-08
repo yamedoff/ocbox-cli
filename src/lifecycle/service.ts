@@ -199,9 +199,11 @@ export class LifecycleService {
     const session = state.sessions[selected.id]
     if (session === undefined) throw this.#notFound(selected.id)
     if (session.state !== 'active') {
+      const recovery =
+        session.state === 'stopped' ? '; run `ocbox start` to resume it.' : ''
       throw this.#invalidState(
         session,
-        `Session ${session.id} is ${session.state}; ocbox exec requires an active Session`,
+        `Session ${session.id} is ${session.state}; ocbox exec requires an active Session${recovery}`,
       )
     }
 
@@ -762,8 +764,8 @@ export class LifecycleService {
 
   #notFound(sessionId: Session['id']) {
     return new OcboxError({
-      code: 'ENVIRONMENT_NOT_FOUND',
-      message: `Session ${sessionId} was not found`,
+      code: 'SANDBOX_NOT_FOUND',
+      message: `Session ${sessionId} was not found; run \`ocbox ls\` to list Sessions.`,
       requestId: RequestIdSchema.parse(this.#createId()),
       details: { sessionId },
     })

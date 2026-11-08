@@ -327,4 +327,27 @@ describe('LifecycleService', () => {
     await expect(createService(directory).status('ses_nope')).rejects.toMatchObject(expected)
     await expect(createService(directory).stop('ses_nope')).rejects.toMatchObject(expected)
   })
+
+  it('names ocbox start when exec targets a stopped Session', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+    await createService(directory).stop()
+
+    await expect(createService(directory).executionTarget()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+      message: expect.stringContaining('run `ocbox start` to resume it.'),
+    })
+  })
+
+  it('uses SANDBOX_NOT_FOUND and names ocbox ls for a missing Session', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+
+    await expect(
+      createService(directory).executionTarget('99999999-9999-4999-8999-999999999999'),
+    ).rejects.toMatchObject({
+      code: 'SANDBOX_NOT_FOUND',
+      message: expect.stringContaining('run `ocbox ls` to list Sessions.'),
+    })
+  })
 })
