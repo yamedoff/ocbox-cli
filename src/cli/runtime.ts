@@ -11,6 +11,7 @@ import {
   resolveConfigurationValue,
 } from '../config/index.js'
 import { OcboxError } from '../errors/index.js'
+import { NOT_LOGGED_IN_MESSAGE } from '../errors/messages.js'
 import { LifecycleService, LifecycleStore, projectIdForPath } from '../lifecycle/index.js'
 import {
   createMetadataClient,
@@ -205,14 +206,21 @@ export async function initializeProject(flags: RuntimeFlags): Promise<'created' 
     source = DEFAULT_PROJECT_CONFIG
   }
   const existing = parseProjectConfig(source)
-  let loggedIn = false
-  if (!exists && flags.provider === undefined) {
+  if (flags.provider === undefined) {
     const metadata = await new AuthMetadataStore(
       join(resolveStateDirectory(flags), 'auth.json'),
     ).load()
-    loggedIn = metadata !== null && (await createCredentialStore().get(metadata.identity)) !== null
+    const loggedIn =
+      metadata !== null && (await createCredentialStore().get(metadata.identity)) !== null
+    if (!loggedIn) {
+      throw new OcboxError({
+        code: 'AUTH_REQUIRED',
+        message: NOT_LOGGED_IN_MESSAGE,
+        requestId: newRequestId(),
+      })
+    }
   }
-  const provider = flags.provider ?? (exists ? existing.provider.name : loggedIn ? 'ocbox' : 'fake')
+  const provider = flags.provider ?? (exists ? existing.provider.name : 'ocbox')
   let projectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? existing.projectId
   if (provider === 'ocbox' && !projectId) {
     const api = createMetadataClient(flags)
