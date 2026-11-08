@@ -1163,6 +1163,7 @@ export async function main(argv, { loginFault } = {}) {
       for (const file of ['a.txt', 'b.txt', 'c.txt'])
         assert(result.uploadedFiles.includes(file), 'uploaded_file')
       assert(result.uploadedBytes > 0, 'uploaded_bytes')
+      assert.equal(result.protocolVersion, 2, 'sync_protocol_v2')
       evidence.uploadedFiles = result.uploadedFiles.length
       evidence.uploadedBytes = result.uploadedBytes
       evidence.ids = identity
@@ -1346,6 +1347,9 @@ export async function mockHosted({
     executions = new Map()
   const applies = new Map()
   const workspace = new Map()
+  const casBlobs = new Map()
+  const casPages = new Map()
+  const casPlanId = `casdo_${'a'.repeat(30)}`
   const counts = {
     mail: 0,
     consume: 0,
@@ -1382,7 +1386,9 @@ export async function mockHosted({
         assert(bodyBytes <= limits.body)
         chunks.push(chunk)
       }
-      const raw = Buffer.concat(chunks).toString()
+      const rawBytes = Buffer.concat(chunks)
+      const blobUpload = path.startsWith('/blobs/')
+      const raw = blobUpload ? '' : rawBytes.toString()
       const body = raw ? JSON.parse(raw) : undefined
       const send = (value, status = 200, headers = {}) =>
         res
@@ -1575,7 +1581,92 @@ export async function mockHosted({
         counts.revoke++
         return send(undefined, 204)
       }
+      // CAS blob uploads use a loopback capability URL without the API credential.
+      if (path.startsWith('/blobs/')) {
+        assert.equal(req.method, 'PUT')
+        const hash = path.slice('/blobs/'.length)
+        assert(/^[a-f0-9]{64}$/.test(hash), 'blob_hash')
+        assert.equal(sha256(rawBytes), hash, 'blob_checksum')
+        casBlobs.set(hash, rawBytes)
+        return send(undefined, 200)
+      }
       assert.equal(req.headers.authorization, `Bearer ${access}`, 'bearer_required')
+      if (path === '/v1/sessions/hosted_session/source/cas/plan') {
+        assert.equal(req.method, 'POST')
+        assert.equal(body.version, 2)
+        assert.equal(typeof req.headers['idempotency-key'], 'string')
+        assert(body.manifest)
+        assert(body.page)
+        casPages.set(body.page.index, body)
+        const missing = []
+        const seen = new Set()
+        for (const blob of body.page.blobs) {
+          if (seen.has(blob.hash)) continue
+          seen.add(blob.hash)
+          if (!casBlobs.has(blob.hash))
+            missing.push({
+              hash: blob.hash,
+              size: blob.size,
+              url: `${mock.origin}/blobs/${blob.hash}`,
+            })
+        }
+        return send({
+          version: 2,
+          planId: casPlanId,
+          state: 'uploading',
+          expiresAt: Date.now() + 300_000,
+          replayed: false,
+          missing,
+        })
+      }
+      if (path === '/v1/sessions/hosted_session/source/cas/apply') {
+        assert.equal(req.method, 'POST')
+        assert.equal(body.version, 2)
+        assert.equal(body.planId, casPlanId)
+        assert.equal(typeof req.headers['idempotency-key'], 'string')
+        const pages = [...casPages.values()].sort(
+          (left, right) => left.page.index - right.page.index,
+        )
+        assert(pages.length > 0, 'cas_pages')
+        const manifest = pages[0].manifest
+        const nextWorkspace = new Map()
+        let fileCount = 0
+        let totalBytes = 0
+        for (const { page } of pages) {
+          for (const file of page.files) {
+            fileCount++
+            if (file.type === 'directory') continue
+            totalBytes += file.size
+            const parts = file.parts.map((part) => {
+              const bytes = casBlobs.get(part.hash)
+              assert(bytes, 'blob_present')
+              const slice = bytes.subarray(part.offset, part.offset + part.size)
+              assert.equal(slice.length, part.size, 'blob_part_size')
+              return slice
+            })
+            const content = Buffer.concat(parts)
+            assert.equal(content.length, file.size, 'file_size')
+            assert.equal(sha256(content), file.hash, 'file_checksum')
+            nextWorkspace.set(file.path, content.toString())
+          }
+        }
+        assert.equal(fileCount, manifest.fileCount, 'cas_file_count')
+        assert.equal(totalBytes, manifest.totalBytes, 'cas_total_bytes')
+        for (const file of ['a.txt', 'b.txt', 'c.txt']) assert(nextWorkspace.has(file))
+        assert.equal(nextWorkspace.get('a.txt'), expected)
+        workspace.clear()
+        for (const [file, content] of nextWorkspace) workspace.set(file, content)
+        counts.deliver++
+        return send({
+          version: 2,
+          planId: casPlanId,
+          state: 'succeeded',
+          expiresAt: Date.now() + 300_000,
+          replayed: false,
+          fetchedBlobs: casBlobs.size,
+          fetchedBytes: [...casBlobs.values()].reduce((total, bytes) => total + bytes.length, 0),
+        })
+      }
       if (path === '/v1/projects' && req.method === 'GET')
         return send({ data: project ? [project] : [], nextCursor: null })
       if (path === '/v1/projects' && req.method === 'POST') {

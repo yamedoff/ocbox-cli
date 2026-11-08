@@ -1,4 +1,5 @@
 import { posix } from 'node:path'
+import { newRequestId } from '../auth/errors.js'
 import {
   ExecCommandSchema,
   ExecEnvironmentSchema,
@@ -7,6 +8,8 @@ import {
   type ExecEnvironment,
   type SessionId,
 } from '../contracts.js'
+import { OcboxError } from '../errors/index.js'
+import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
 import {
   findSensitiveMaterial,
   isProviderCredentialEnvironmentName,
@@ -123,7 +126,12 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
     if (name === '--session') {
       const value = takeOptionValue(input, index, name, inline)
       const parsed = SessionIdSchema.safeParse(value)
-      if (!parsed.success) throw new ExecArgumentError('--session requires a valid Session ID')
+      if (!parsed.success)
+        throw new OcboxError({
+          code: 'INVALID_SPEC',
+          message: INVALID_SESSION_ID_MESSAGE,
+          requestId: newRequestId(),
+        })
       sessionId = parsed.data
       if (inline === null) index++
     } else if (name === '--cwd') {

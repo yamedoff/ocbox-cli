@@ -21,6 +21,7 @@ import {
   UtcTimestampSchema,
 } from '../contracts.js'
 import { OcboxError } from '../errors/index.js'
+import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
 import type { ExecutionTarget } from '../execution/service.js'
 import { FakeSandboxProvider } from '../providers/fake/provider.js'
 import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
@@ -127,7 +128,9 @@ export class LifecycleService {
   }
 
   async use(sessionId: string): Promise<SessionView> {
-    const parsedId = SessionIdSchema.parse(sessionId)
+    const parsed = SessionIdSchema.safeParse(sessionId)
+    if (!parsed.success) throw this.#invalidSessionId()
+    const parsedId = parsed.data
     await this.#update((current) => {
       if (current.sessions[parsedId] === undefined) throw this.#notFound(parsedId)
       return { ...current, activeSessionId: parsedId }
@@ -196,9 +199,10 @@ export class LifecycleService {
     const session = state.sessions[selected.id]
     if (session === undefined) throw this.#notFound(selected.id)
     if (session.state !== 'active') {
+      const recovery = session.state === 'stopped' ? '; run `ocbox start` to resume it.' : ''
       throw this.#invalidState(
         session,
-        `Session ${session.id} is ${session.state}; ocbox exec requires an active Session`,
+        `Session ${session.id} is ${session.state}; ocbox exec requires an active Session${recovery}`,
       )
     }
 
@@ -263,10 +267,11 @@ export class LifecycleService {
     return { session, sandbox: observed, capabilities, provider }
   }
 
-  async list(): Promise<readonly SessionView[]> {
+  async list(includeDestroyed = false): Promise<readonly SessionView[]> {
     const state = await this.#store.load()
     return Promise.all(
       Object.values(state.sessions)
+        .filter((session) => includeDestroyed || session.state !== 'destroyed')
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .map((session) => this.#viewFromState(state, session.id)),
     )
@@ -655,7 +660,14 @@ export class LifecycleService {
 
   async #resolveSession(sessionId?: string): Promise<Session> {
     const state = await this.#store.load()
-    const id = sessionId === undefined ? state.activeSessionId : SessionIdSchema.parse(sessionId)
+    let id: Session['id'] | null
+    if (sessionId === undefined) {
+      id = state.activeSessionId
+    } else {
+      const parsed = SessionIdSchema.safeParse(sessionId)
+      if (!parsed.success) throw this.#invalidSessionId()
+      id = parsed.data
+    }
     if (id === null) {
       throw new OcboxError({
         code: 'ENVIRONMENT_NOT_FOUND',
@@ -741,10 +753,18 @@ export class LifecycleService {
     })
   }
 
+  #invalidSessionId() {
+    return new OcboxError({
+      code: 'INVALID_SPEC',
+      message: INVALID_SESSION_ID_MESSAGE,
+      requestId: RequestIdSchema.parse(this.#createId()),
+    })
+  }
+
   #notFound(sessionId: Session['id']) {
     return new OcboxError({
-      code: 'ENVIRONMENT_NOT_FOUND',
-      message: `Session ${sessionId} was not found`,
+      code: 'SANDBOX_NOT_FOUND',
+      message: `Session ${sessionId} was not found; run \`ocbox ls\` to list Sessions.`,
       requestId: RequestIdSchema.parse(this.#createId()),
       details: { sessionId },
     })

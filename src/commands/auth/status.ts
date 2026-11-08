@@ -10,6 +10,10 @@ export default class AuthStatus extends OcboxCommand {
   async run(): Promise<void> {
     const { flags } = await this.parse(AuthStatus)
     const session = createAuthSessionService({ endpoints: null, flags })
-    await this.emitResult(flags, 'auth.status', authStatusLine, () => session.status())
+    await this.emitResult(flags, 'auth.status', authStatusLine, async () => {
+      const status = await session.status()
+      if (!status.loggedIn) process.exitCode = 1
+      return status
+    })
   }
 }

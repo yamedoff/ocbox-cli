@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
+import { sessionViewLine } from '../../src/cli/views.js'
 import { parseProjectConfig } from '../../src/config/index.js'
 import {
   ProjectIdSchema,
@@ -12,6 +13,8 @@ import {
   UtcTimestampSchema,
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
+
+const INVALID_SESSION_ID_MESSAGE = 'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
 import { LifecycleService, LifecycleStore } from '../../src/lifecycle/index.js'
 import {
   FAKE_CAPABILITIES,
@@ -273,6 +276,29 @@ describe('LifecycleService', () => {
     expect(finalState.operations[operationId]?.status).toBe('succeeded')
   })
 
+  it('labels every field on the Session view line', async () => {
+    const directory = await temporaryDirectory()
+    const view = await createService(directory).start()
+
+    expect(sessionViewLine(view)).toBe(
+      `* session=${view.session.id} state=active project=${PROJECT_ID} provider=running raw=fake:RUNNING`,
+    )
+  })
+
+  it('hides destroyed Sessions from list unless they are requested', async () => {
+    const directory = await temporaryDirectory()
+    const first = await createService(directory).start()
+    const second = await createService(directory).start(true)
+    await createService(directory).destroy(first.session.id)
+
+    const visible = await createService(directory).list()
+    expect(visible.map((view) => view.session.id)).toEqual([second.session.id])
+
+    const all = await createService(directory).list(true)
+    expect(all.map((view) => view.session.id)).toEqual([first.session.id, second.session.id])
+    expect(all[0]?.session.state).toBe('destroyed')
+  })
+
   it('returns typed registry errors for unknown and unavailable providers', async () => {
     const registry = new ProviderRegistry()
     expect(() => registry.resolve('missing')).toThrowError(OcboxError)
@@ -286,5 +312,41 @@ describe('LifecycleService', () => {
     expect(() => registry.resolve('offline')).toThrow(
       expect.objectContaining({ code: 'PROVIDER_UNAVAILABLE' }),
     )
+  })
+
+  it('answers a malformed Session ID with INVALID_SPEC in use, status, and stop', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+    const expected = {
+      code: 'INVALID_SPEC',
+      message: INVALID_SESSION_ID_MESSAGE,
+    }
+
+    await expect(createService(directory).use('ses_nope')).rejects.toMatchObject(expected)
+    await expect(createService(directory).status('ses_nope')).rejects.toMatchObject(expected)
+    await expect(createService(directory).stop('ses_nope')).rejects.toMatchObject(expected)
+  })
+
+  it('names ocbox start when exec targets a stopped Session', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+    await createService(directory).stop()
+
+    await expect(createService(directory).executionTarget()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+      message: expect.stringContaining('run `ocbox start` to resume it.'),
+    })
+  })
+
+  it('uses SANDBOX_NOT_FOUND and names ocbox ls for a missing Session', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+
+    await expect(
+      createService(directory).executionTarget('99999999-9999-4999-8999-999999999999'),
+    ).rejects.toMatchObject({
+      code: 'SANDBOX_NOT_FOUND',
+      message: expect.stringContaining('run `ocbox ls` to list Sessions.'),
+    })
   })
 })

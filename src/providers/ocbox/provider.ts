@@ -707,10 +707,17 @@ export class OcboxSandboxProvider implements SandboxProvider {
       path: { projectId: this.#hostedProjectId },
     })
     if (result.status === 404) {
-      throw new OcboxError({
-        code: 'PROJECT_NOT_FOUND',
-        message: 'The configured hosted project was not found',
-        requestId: toRequestId(result.requestId ?? requestId),
+      const envelope = envelopeOf(result.body)
+      throw mapApiFailureToOcboxError({
+        operation: 'getProject',
+        notFoundCode: 'PROJECT_NOT_FOUND',
+        requestId: result.requestId ?? envelope.requestId ?? requestId,
+        responseRequestId: envelope.requestId ?? result.requestId ?? null,
+        retryAfterSeconds: envelope.retryAfterSeconds ?? null,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
+        status: result.status,
       })
     }
     this.#api.assertSuccess('getProject', result, [200])
@@ -720,10 +727,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const result = await this.#api.generated.getSession({ path: { sessionId: hostedSessionId } })
     if (result.status === 404) {
       const envelope = envelopeOf(result.body)
-      throw new OcboxError({
-        code: 'SANDBOX_NOT_FOUND',
-        message: 'The hosted session was not found',
-        requestId: toRequestId(result.requestId ?? envelope.requestId),
+      throw mapApiFailureToOcboxError({
+        operation: 'getSession',
+        notFoundCode: 'SANDBOX_NOT_FOUND',
+        requestId: result.requestId ?? envelope.requestId ?? null,
+        responseRequestId: envelope.requestId ?? result.requestId ?? null,
+        retryAfterSeconds: envelope.retryAfterSeconds ?? null,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
+        status: result.status,
       })
     }
     const { body } = this.#assertSuccess('getSession', result, [200])
@@ -743,6 +756,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         retryAfterSeconds,
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: result.status,
       })
       if (result.status === 429) {

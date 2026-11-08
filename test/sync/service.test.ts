@@ -9,8 +9,10 @@ import { createVerifiedBaseline } from '../../src/sync/baseline.js'
 import { cliRules } from '../../src/sync/ignore-rules.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
 import {
+  type SyncApplyView,
   type SyncContext,
   type SyncApplyOptions,
+  renderSyncApplied,
   runSyncApply,
   runSyncDiff,
   runSyncRecover,
@@ -426,5 +428,82 @@ describe('sync service', () => {
       )
       expect(error.code).toBe('OPERATION_CONFLICT')
     })
+  })
+})
+
+function applyView(overrides: Partial<SyncApplyView> = {}): SyncApplyView {
+  return {
+    schemaVersion: 1,
+    mode: 'push',
+    sessionId: SESSION_ID,
+    firstSync: false,
+    additions: [],
+    modifications: [],
+    deletions: [],
+    renames: [],
+    conflicts: [],
+    operations: [],
+    requiresDeletionApproval: false,
+    blocked: [],
+    collisions: [],
+    excluded: [],
+    applied: true,
+    baselineUpdated: false,
+    operationId: 'casdo_000000000000000000000000000000',
+    protocolVersion: 2,
+    uploadedBlobs: 0,
+    uploadedBytes: 0,
+    ...overrides,
+  }
+}
+
+function change(path: string) {
+  return { side: 'local', kind: 'file', path }
+}
+
+describe('renderSyncApplied (protocol v2)', () => {
+  it('reports file counts and the changed paths, not only blobs', () => {
+    const rendered = renderSyncApplied(
+      applyView({
+        additions: [change('package.json'), change('test.mjs')],
+        modifications: [change('src.txt')],
+        deletions: [change('old.txt')],
+        uploadedBlobs: 2,
+        uploadedBytes: 681,
+      }),
+    )
+
+    expect(rendered).toBe(
+      [
+        'Source synced: 2 addition(s), 1 modification(s), 1 deletion(s); uploaded 2 blob(s), 681 bytes.',
+        'package.json',
+        'test.mjs',
+        'src.txt',
+        'old.txt',
+      ].join('\n'),
+    )
+  })
+
+  it('bounds the changed paths to ten and says how many more there are', () => {
+    const additions = Array.from({ length: 11 }, (_, index) => change(`add-${index}.txt`))
+    const rendered = renderSyncApplied(
+      applyView({
+        additions,
+        modifications: [change('modified.txt')],
+        deletions: [change('deleted.txt')],
+      }),
+    )
+    const lines = rendered.split('\n')
+
+    expect(lines[0]).toBe(
+      'Source synced: 11 addition(s), 1 modification(s), 1 deletion(s); uploaded 0 blob(s), 0 bytes.',
+    )
+    expect(lines.slice(1, 11)).toEqual(additions.slice(0, 10).map((entry) => entry.path))
+    expect(lines[11]).toBe('… and 3 more')
+    expect(lines).toHaveLength(12)
+  })
+
+  it('says the source is unchanged when no file changed', () => {
+    expect(renderSyncApplied(applyView())).toBe('Source unchanged.')
   })
 })

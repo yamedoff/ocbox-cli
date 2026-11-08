@@ -7,6 +7,8 @@ import type {
   SandboxProvider,
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
+
+const INVALID_SESSION_ID_MESSAGE = 'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
 import {
   runExecutionCommand,
   runExecutionCommandResult,
@@ -271,6 +273,21 @@ describe('execution command runner', () => {
     )
     expect(humanExit).toBe(125)
     expect(humanOutput.stderr.text()).toContain('Unknown exec option')
+  })
+
+  it('answers a malformed Session ID with INVALID_SPEC and exit 1', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--session', 'ses_nope', '--', 'tool'],
+      () => target(),
+      output,
+    )
+
+    expect(exitCode).toBe(1)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'infrastructure_error',
+      error: { code: 'INVALID_SPEC', message: INVALID_SESSION_ID_MESSAGE },
+    })
   })
 
   it('keeps the generic unexplained envelope for an untyped resolution failure', async () => {

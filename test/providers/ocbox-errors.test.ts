@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { assertErrorRedacted } from '../../src/api/client/client.js'
-import { mapApiFailureToOcboxError, toRequestId } from '../../src/api/client/errors.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../src/api/client/errors.js'
 import { OcboxError } from '../../src/errors/index.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
@@ -78,6 +78,37 @@ describe('hosted error mapping', () => {
     const mapped = mapApiFailureToOcboxError({ requestId: 'srv_123', status: 503 })
     expect(String(mapped.requestId)).not.toBe('srv_123')
     expect(String(toRequestId(REQUEST_ID))).toBe(REQUEST_ID)
+  })
+
+  it('carries the API next step and keeps a REST 404 code and message', () => {
+    const envelope = envelopeOf({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'Resource was not found',
+        nextStep: 'Run `ocbox project list` to find your project.',
+      },
+      requestId: REQUEST_ID,
+    })
+    expect(envelope).toEqual({
+      code: 'NOT_FOUND',
+      message: 'Resource was not found',
+      nextStep: 'Run `ocbox project list` to find your project.',
+      requestId: REQUEST_ID,
+    })
+
+    const mapped = mapApiFailureToOcboxError({
+      requestId: envelope.requestId,
+      serverCode: envelope.code,
+      serverMessage: envelope.message,
+      nextStep: envelope.nextStep,
+      status: 404,
+    })
+    expect(mapped).toMatchObject({
+      code: 'PROJECT_NOT_FOUND',
+      providerCode: 'NOT_FOUND',
+      message: 'Resource was not found',
+      details: { nextStep: 'Run `ocbox project list` to find your project.' },
+    })
   })
 
   it('keeps diagnostics free of credential-like material', () => {

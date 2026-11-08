@@ -311,6 +311,31 @@ describe('hosted ocbox provider lifecycle', () => {
     ).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
   })
 
+  it('keeps a REST 404 code and message instead of a generic lookup text', async () => {
+    const { api } = await seededApi(routeFetch('missing-project'))
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    const context = operationContext()
+
+    await expect(
+      provider.create(
+        context as never,
+        {
+          adoption: {
+            metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+            strategy: 'serialize_then_reconcile',
+          },
+          projectId: LOCAL_IDS.project,
+          sessionId: LOCAL_IDS.session,
+          specification: testSpec() as never,
+        } as never,
+      ),
+    ).rejects.toMatchObject({
+      code: 'PROJECT_NOT_FOUND',
+      providerCode: 'NOT_FOUND',
+      message: 'no',
+    })
+  })
+
   it('keeps bearer material out of errors and diagnostics', async () => {
     const seen: string[] = []
     const { api } = await seededApi((input, init) => {

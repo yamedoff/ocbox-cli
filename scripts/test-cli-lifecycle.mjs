@@ -96,7 +96,9 @@ try {
   const status = await invoke(projectDirectory, ['status', ...runtimeFlags])
   assert.match(
     status.stdout,
-    new RegExp(`^\\* ${firstSessionId} active provider=running raw=fake:RUNNING`),
+    new RegExp(
+      `^\\* session=${firstSessionId} state=active project=[0-9a-f-]+ provider=running raw=fake:RUNNING`,
+    ),
   )
 
   const paused = parseEnvelope(

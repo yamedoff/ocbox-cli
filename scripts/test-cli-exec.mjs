@@ -62,10 +62,16 @@ try {
   assert.equal(probe.stderr, '')
 
   const initialized = parseEnvelope(
-    (await run(['init', ...runtimeFlags, '--json'], { cwd: projectDirectory })).stdout,
+    (
+      await run(['init', '--provider', 'fake', ...runtimeFlags, '--json'], {
+        cwd: projectDirectory,
+      })
+    ).stdout,
   )
   assert.equal(initialized.data, 'created')
-  await run(['init', ...emptyRuntimeFlags, '--json'], { cwd: projectDirectory })
+  await run(['init', '--provider', 'fake', ...emptyRuntimeFlags, '--json'], {
+    cwd: projectDirectory,
+  })
 
   const started = parseEnvelope(
     (await run(['start', ...runtimeFlags, '--json'], { cwd: projectDirectory })).stdout,

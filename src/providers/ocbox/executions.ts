@@ -171,6 +171,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(execution.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: execution.status,
       })
       if (!mapped.retryable) throw mapped
@@ -231,6 +232,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(finalResult.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: finalResult.status,
       })
       if (!mapped.retryable) throw mapped
@@ -275,6 +277,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: result.status,
       })
     }

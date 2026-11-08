@@ -6,5 +6,5 @@ export function sessionViewLine(view: SessionView): string {
   const providerState = view.sandbox?.lifecycle.normalizedState ?? 'unbound'
   const rawState = view.sandbox?.lifecycle.rawState ?? 'unbound'
   const operation = view.operation === null ? '' : ` operation=${view.operation.action}`
-  return `${marker}${view.session.id} ${view.session.state} provider=${providerState} raw=${rawState}${operation}`
+  return `${marker}session=${view.session.id} state=${view.session.state} project=${view.session.projectId} provider=${providerState} raw=${rawState}${operation}`
 }

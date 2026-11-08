@@ -112,7 +112,7 @@ async function workspace(name) {
 }
 
 async function initAndStart(space) {
-  await run(['init', ...space.runtime, '--json'], { cwd: space.project })
+  await run(['init', '--provider', 'fake', ...space.runtime, '--json'], { cwd: space.project })
   const started = await run(['start', ...space.runtime, '--json'], { cwd: space.project })
   assert.equal(started.code, 0, 'start must succeed')
   return parseEnvelope(started.stdout).data.session.id
@@ -132,10 +132,16 @@ try {
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
+  const pushHelp = await run(['sync', 'push', '--help'])
+  assert.equal(pushHelp.code, 0)
+  assert.match(
+    pushHelp.stdout.toString('utf8'),
+    /Fake provider only; hosted source uses the project/,
+  )
 
   // 2. Session target resolution: missing selection fails typed.
   const empty = await workspace('empty')
-  await run(['init', ...empty.runtime, '--json'], { cwd: empty.project })
+  await run(['init', '--provider', 'fake', ...empty.runtime, '--json'], { cwd: empty.project })
   const missing = await run(['sync', 'diff', ...empty.runtime, ...empty.sync, '--json'], {
     cwd: empty.project,
   })
