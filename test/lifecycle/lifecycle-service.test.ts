@@ -13,6 +13,9 @@ import {
   UtcTimestampSchema,
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
+
+const INVALID_SESSION_ID_MESSAGE =
+  'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
 import { LifecycleService, LifecycleStore } from '../../src/lifecycle/index.js'
 import {
   FAKE_CAPABILITIES,
@@ -310,5 +313,18 @@ describe('LifecycleService', () => {
     expect(() => registry.resolve('offline')).toThrow(
       expect.objectContaining({ code: 'PROVIDER_UNAVAILABLE' }),
     )
+  })
+
+  it('answers a malformed Session ID with INVALID_SPEC in use, status, and stop', async () => {
+    const directory = await temporaryDirectory()
+    await createService(directory).start()
+    const expected = {
+      code: 'INVALID_SPEC',
+      message: INVALID_SESSION_ID_MESSAGE,
+    }
+
+    await expect(createService(directory).use('ses_nope')).rejects.toMatchObject(expected)
+    await expect(createService(directory).status('ses_nope')).rejects.toMatchObject(expected)
+    await expect(createService(directory).stop('ses_nope')).rejects.toMatchObject(expected)
   })
 })

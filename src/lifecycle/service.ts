@@ -21,6 +21,7 @@ import {
   UtcTimestampSchema,
 } from '../contracts.js'
 import { OcboxError } from '../errors/index.js'
+import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
 import type { ExecutionTarget } from '../execution/service.js'
 import { FakeSandboxProvider } from '../providers/fake/provider.js'
 import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
@@ -127,7 +128,9 @@ export class LifecycleService {
   }
 
   async use(sessionId: string): Promise<SessionView> {
-    const parsedId = SessionIdSchema.parse(sessionId)
+    const parsed = SessionIdSchema.safeParse(sessionId)
+    if (!parsed.success) throw this.#invalidSessionId()
+    const parsedId = parsed.data
     await this.#update((current) => {
       if (current.sessions[parsedId] === undefined) throw this.#notFound(parsedId)
       return { ...current, activeSessionId: parsedId }
@@ -656,7 +659,14 @@ export class LifecycleService {
 
   async #resolveSession(sessionId?: string): Promise<Session> {
     const state = await this.#store.load()
-    const id = sessionId === undefined ? state.activeSessionId : SessionIdSchema.parse(sessionId)
+    let id: Session['id'] | null
+    if (sessionId === undefined) {
+      id = state.activeSessionId
+    } else {
+      const parsed = SessionIdSchema.safeParse(sessionId)
+      if (!parsed.success) throw this.#invalidSessionId()
+      id = parsed.data
+    }
     if (id === null) {
       throw new OcboxError({
         code: 'ENVIRONMENT_NOT_FOUND',
@@ -739,6 +749,14 @@ export class LifecycleService {
       code: 'OPERATION_CANCELLED',
       message: 'Lifecycle operation was cancelled; rerun the same command to reconcile it',
       requestId,
+    })
+  }
+
+  #invalidSessionId() {
+    return new OcboxError({
+      code: 'INVALID_SPEC',
+      message: INVALID_SESSION_ID_MESSAGE,
+      requestId: RequestIdSchema.parse(this.#createId()),
     })
   }
 

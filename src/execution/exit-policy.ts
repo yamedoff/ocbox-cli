@@ -53,7 +53,9 @@ export function exitCodeForExecution(outcome: ExecutionOutcome): number {
     case 'timeout':
       return 124
     case 'infrastructure_error':
-      return 125
+      // An invalid Session ID is a user-correctable argument error, not an
+      // infrastructure failure: every command answers it with exit 1.
+      return outcome.detail?.code === 'INVALID_SPEC' ? 1 : 125
     case 'cancelled':
       return 130
   }
