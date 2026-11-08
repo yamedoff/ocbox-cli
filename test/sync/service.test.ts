@@ -13,6 +13,7 @@ import {
   type SyncContext,
   type SyncApplyOptions,
   renderSyncApplied,
+  renderSyncPlan,
   runSyncApply,
   runSyncDiff,
   runSyncRecover,
@@ -505,5 +506,40 @@ describe('renderSyncApplied (protocol v2)', () => {
 
   it('says the source is unchanged when no file changed', () => {
     expect(renderSyncApplied(applyView())).toBe('Source unchanged.')
+  })
+
+  it('renders pulled paths as text instead of printing an object', () => {
+    const rendered = renderSyncApplied(
+      applyView({
+        mode: 'pull',
+        additions: [change('src/added.js')],
+        modifications: [change('src/calc.js')],
+        pulledFiles: ['src/added.js', 'src/calc.js'],
+        pulledBytes: 77,
+        deletedFiles: [],
+      }),
+    )
+
+    expect(rendered).toBe(
+      [
+        'Source pulled: 1 addition(s), 1 modification(s); wrote 2 file(s), 77 bytes, removed 0 path(s).',
+        'src/added.js',
+        'src/calc.js',
+      ].join('\n'),
+    )
+    expect(rendered).not.toContain('[object Object]')
+  })
+
+  it('ends the diff list with one legend line', () => {
+    const rendered = renderSyncPlan(
+      applyView({
+        mode: 'diff',
+        additions: [change('added.txt')],
+        modifications: [change('modified.txt')],
+        deletions: [change('deleted.txt')],
+      }),
+    )
+
+    expect(rendered.split('\n').at(-1)).toBe('+ added  ~ modified  - deleted (remote = in the box)')
   })
 })
