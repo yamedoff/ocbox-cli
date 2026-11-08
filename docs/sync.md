@@ -170,7 +170,19 @@ The v2 contract mirrors paths owned by the previous sync and keeps other
 workspace files. Removal of paths recorded in this workspace's last successful
 state requires `--delete` and confirmation, or `--delete --yes` in noninteractive
 use. The local state is not a proof of remote tree contents or a cross-machine
-conflict detector. Hosted `pull`, `diff` and `recover` remain unsupported.
+conflict detector.
+
+For a hosted `sesdo_` Session, `sync diff` takes a fresh box snapshot
+(`refresh: true`), waits for it to become terminal, reads every manifest page,
+and compares it with the local tree. Additions and modifications are box paths
+that are missing or different locally; deletions are local paths the box no
+longer has. The output uses the same `+`/`~`/`-` path labels as the fake
+provider. `sync pull` takes the same snapshot, requests the changed files,
+follows the pull receipt's `nextCursor` until null, verifies each part blob and
+reassembled file by SHA-256, and writes each file atomically. Local-only paths
+are never removed without `--delete`; interactive use asks for confirmation and
+noninteractive use requires `--yes`. A server without the pull route answers
+`Server does not support sync pull yet`. Hosted `recover` remains unsupported.
 
 Human TTY output shows phase/upload progress. `--json` keeps one result envelope;
 `--jsonl` adds `sync.progress` events (`phase`, optional file/page counts and

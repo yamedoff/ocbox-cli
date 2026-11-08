@@ -154,14 +154,12 @@ describe('hosted sync', () => {
     expect(result.operations).toEqual([])
   })
 
-  it('rejects hosted readback, deletion and local transfer adapters', async () => {
+  it('requires a hosted read-back transport, deletion approval and a real transfer adapter', async () => {
     const { context, hostedUpload } = await setup()
     await expect(runSyncApply(context, 'pull', options)).rejects.toThrow(
-      'not supported for hosted sandboxes yet',
+      'Source read-back is unavailable',
     )
-    await expect(runSyncDiff(context, options)).rejects.toThrow(
-      'not supported for hosted sandboxes yet',
-    )
+    await expect(runSyncDiff(context, options)).rejects.toThrow('Source read-back is unavailable')
     await expect(runSyncApply(context, 'push', { ...options, delete: true })).rejects.toThrow(
       'cannot delete remote files',
     )
