@@ -40,6 +40,46 @@ export const EnvironmentPageSchema = z.strictObject({
   data: z.array(EnvironmentSchema),
   nextCursor: z.string().nullable(),
 })
+const SafeErrorSchema = z.strictObject({
+  code: z.string().min(1).max(64),
+  message: z.string().min(1).max(1024),
+  retryAfterSeconds: z.number().int().nonnegative().optional(),
+  reason: z
+    .enum([
+      'provider_region_unavailable',
+      'provider_toolbox_unreachable',
+      'provider_timeout',
+      'provider_refused',
+      'provider_error',
+      'user_active_limit',
+      'global_capacity',
+      'admission_closed',
+      'budget_exhausted',
+      'spec_not_allowed',
+      'admission_unavailable',
+      'workspace_busy',
+      'source_apply_revoked',
+    ])
+    .optional(),
+})
+const ResourceLinkSchema = z.strictObject({
+  type: z.enum(['project', 'environment', 'session', 'execution', 'sourceManifest', 'preview']),
+  id,
+})
+/** Asynchronous operation returned by destructive project/environment deletes. */
+export const HostedOperationSchema = z.strictObject({
+  id,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  kind: z.string().min(1).max(64),
+  projectId: id.nullable(),
+  sessionId: id.nullable(),
+  state: z.enum(['pending', 'running', 'succeeded', 'cancelled', 'failed']),
+  progress: z.number().int().min(0).max(100),
+  requestId: z.string().min(1).max(128),
+  error: SafeErrorSchema.nullable(),
+  resource: ResourceLinkSchema.nullable(),
+})
 const querySchema = z.strictObject({
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
@@ -54,6 +94,7 @@ export type MetadataAction =
   | 'project.create'
   | 'project.get'
   | 'project.update'
+  | 'project.delete'
   | 'environment.list'
   | 'environment.create'
   | 'environment.get'
@@ -171,6 +212,14 @@ async function dispatchMetadataAction(
         ...options,
       })
       break
+    case 'project.delete':
+      schema = HostedOperationSchema
+      response = await api.generated.deleteProject({
+        path: { projectId: projectId() },
+        idempotencyKey: key(),
+        ...options,
+      })
+      break
     case 'environment.list':
       schema = EnvironmentPageSchema
       response = await api.generated.listEnvironments({
@@ -214,11 +263,12 @@ async function dispatchMetadataAction(
       break
     }
   }
-  const { body, meta } = api.assertSuccess(
-    action,
-    response,
-    action.endsWith('.create') ? [201] : [200],
-  )
+  const expectedStatus = action.endsWith('.create')
+    ? [201]
+    : action === 'project.delete'
+      ? [202]
+      : [200]
+  const { body, meta } = api.assertSuccess(action, response, expectedStatus)
   const parsed = schema.safeParse(body)
   if (!parsed.success) {
     throw new OcboxError({

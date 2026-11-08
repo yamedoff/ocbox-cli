@@ -14,6 +14,7 @@ export default defineConfig({
     'commands/project/create': 'src/commands/project/create.ts',
     'commands/project/get': 'src/commands/project/get.ts',
     'commands/project/update': 'src/commands/project/update.ts',
+    'commands/project/delete': 'src/commands/project/delete.ts',
     'commands/environment/list': 'src/commands/environment/list.ts',
     'commands/environment/create': 'src/commands/environment/create.ts',
     'commands/environment/get': 'src/commands/environment/get.ts',
