@@ -60,11 +60,57 @@ export const CasResultSchema = z.strictObject({
   fetchedBytes: size.optional(),
   reason: z.string().max(128).optional(),
 })
+const snapshotId = z.string().regex(/^cssnap_[a-f0-9]{30}$/)
+const pullId = z.string().regex(/^caspull_[a-f0-9]{30}$/)
+export const CasSnapshotResultSchema = z.strictObject({
+  version: z.literal(2),
+  snapshotId,
+  state: z.enum(['pending', 'succeeded', 'failed']),
+  expiresAt: size,
+  replayed: z.boolean(),
+  observedAt: size.optional(),
+  stale: z.boolean().optional(),
+  manifest: CasManifestSchema.optional(),
+  page: CasPageSchema.optional(),
+  reason: z.string().max(128).optional(),
+})
+export const CasSnapshotPageResultSchema = z.strictObject({
+  version: z.literal(2),
+  snapshotId,
+  state: z.enum(['pending', 'succeeded', 'failed']),
+  page: CasPageSchema.optional(),
+  reason: z.string().max(128).optional(),
+})
+export const CasPullResultSchema = z.strictObject({
+  version: z.literal(2),
+  pullId,
+  snapshotId,
+  state: z.enum(['pending', 'succeeded', 'failed']),
+  expiresAt: size,
+  replayed: z.boolean(),
+  blobs: z
+    .array(
+      z.strictObject({
+        hash,
+        size: size.max(CAS_LIMITS.partBytes),
+        url: z.string().max(16_384),
+      }),
+    )
+    .max(CAS_LIMITS.maxBlobs)
+    .optional(),
+  nextCursor: z.string().max(256).nullable().optional(),
+  uploadedBlobs: size.optional(),
+  uploadedBytes: size.optional(),
+  reason: z.string().max(128).optional(),
+})
 export type CasFile = z.infer<typeof CasFileSchema>
 export type CasBlob = z.infer<typeof CasBlobSchema>
 export type CasPage = z.infer<typeof CasPageSchema>
 export type CasManifest = z.infer<typeof CasManifestSchema>
 export type CasResult = z.infer<typeof CasResultSchema>
+export type CasSnapshotResult = z.infer<typeof CasSnapshotResultSchema>
+export type CasSnapshotPageResult = z.infer<typeof CasSnapshotPageResultSchema>
+export type CasPullResult = z.infer<typeof CasPullResultSchema>
 export type CasRequest =
   | { operation: 'plan'; manifest: CasManifest; page: CasPage; idempotencyKey: string }
   | { operation: 'apply'; planId: string; idempotencyKey: string }
@@ -73,6 +119,24 @@ export interface CasTransport {
   readonly scope: string
   call(request: CasRequest): Promise<CasResult>
 }
+/** Hosted read-back control calls; the server owns snapshot and pull identity. */
+export interface CasReadTransport {
+  readonly sessionId: string
+  readonly scope: string
+  snapshot(refresh: boolean, idempotencyKey: string): Promise<CasSnapshotResult>
+  snapshotPage(
+    snapshotIdValue: string,
+    index: number,
+    idempotencyKey: string,
+  ): Promise<CasSnapshotPageResult>
+  pull(
+    snapshotIdValue: string,
+    paths: readonly string[],
+    idempotencyKey: string,
+    cursor?: string,
+  ): Promise<CasPullResult>
+}
+export interface CasSourceTransport extends CasTransport, CasReadTransport {}
 
 /** Canonical object-key ordering is part of the v2 page identity. */
 export function casHash(value: unknown): string {

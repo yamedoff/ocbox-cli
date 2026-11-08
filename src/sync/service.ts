@@ -41,13 +41,15 @@ import {
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
-import type { CasTransport } from './cas-contract.js'
+import type { CasReadTransport, CasTransport } from './cas-contract.js'
 import type { CasProgress } from './cas-transfer.js'
 import { runCasPush } from './cas-push.js'
+import { runHostedDiff, runHostedPull } from './cas-pull.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
   readonly casTransport?: CasTransport
+  readonly casReadTransport?: CasReadTransport
   readonly signal?: AbortSignal | undefined
   readonly providerName: string
   readonly projectId: ProjectId
@@ -125,6 +127,9 @@ export interface SyncApplyView extends SyncPlanView {
   readonly uploadedFiles?: readonly string[]
   readonly uploadedBytes?: number
   readonly uploadedBlobs?: number
+  readonly pulledFiles?: readonly string[]
+  readonly pulledBytes?: number
+  readonly deletedFiles?: readonly string[]
   readonly protocolVersion?: 2
   readonly archiveBytes?: number
   readonly manifestId?: string
@@ -152,10 +157,12 @@ export interface SyncApplyOptions extends SyncLockOptions {
   readonly interactive: boolean
   readonly confirm: () => Promise<boolean>
   readonly now?: () => Date
+  readonly pause?: (milliseconds: number) => Promise<void>
 }
 
 export interface SyncDiffOptions {
   readonly cliRules: readonly IgnoreRule[]
+  readonly pause?: (milliseconds: number) => Promise<void>
 }
 
 export interface SyncRecoverOptions extends SyncLockOptions {}
@@ -596,7 +603,7 @@ export async function runSyncDiff(
   context: SyncContext,
   options: SyncDiffOptions,
 ): Promise<SyncPlanView> {
-  if (context.providerName === 'ocbox') throw hostedUnsupported('diff')
+  if (context.providerName === 'ocbox') return runHostedDiff(context, options)
   await assertNoRecovery(context)
   await assertNoPendingBaseline(context)
   const inputs = await buildPlan(context, 'diff', options.cliRules)
@@ -786,7 +793,8 @@ export async function runSyncApply(
   options: SyncApplyOptions,
 ): Promise<SyncApplyView> {
   if (context.providerName === 'ocbox') {
-    if (mode === 'pull') throw hostedUnsupported('pull')
+    if (mode === 'pull')
+      return withSyncLock(context, options, () => runHostedPull(context, options))
     return withSyncLock(context, options, () =>
       context.casTransport ? runCasPush(context, options) : runHostedPush(context, options),
     )
@@ -960,6 +968,23 @@ export function renderSyncPlan(view: SyncPlanView): string {
 
 export function renderSyncApplied(view: SyncApplyView): string {
   if (view.protocolVersion === 2) {
+    if (view.mode === 'pull') {
+      const changed = [...view.additions, ...view.modifications]
+      const deleted = view.deletedFiles ?? []
+      const skipped =
+        view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
+      if (changed.length === 0 && deleted.length === 0 && !skipped) return 'Source unchanged.'
+      const shown = [...changed, ...deleted].slice(0, 10)
+      const remaining = changed.length + deleted.length - shown.length
+      const skippedNote = skipped
+        ? ` ${String(view.deletions.length)} local deletion(s) skipped; rerun with --delete to remove them.`
+        : ''
+      return [
+        `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
+        ...shown.map((path) => path),
+        ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+      ].join('\n')
+    }
     const changed = [...view.additions, ...view.modifications, ...view.deletions]
     if (changed.length === 0) return 'Source unchanged.'
     const shown = changed.slice(0, 10)
