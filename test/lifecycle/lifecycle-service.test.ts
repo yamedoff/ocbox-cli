@@ -7,9 +7,17 @@ import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import { sessionViewLine } from '../../src/cli/views.js'
 import { parseProjectConfig } from '../../src/config/index.js'
 import {
+  type CreateSandboxRequest,
+  type LifecycleMutationRequest,
+  type OperationContext,
   ProjectIdSchema,
   type ProviderCapabilities,
   RequestIdSchema,
+  type Sandbox,
+  SandboxIdSchema,
+  type SandboxMutationResult,
+  SandboxMutationResultSchema,
+  SandboxSchema,
   UtcTimestampSchema,
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
@@ -25,6 +33,8 @@ import { ProviderRegistry } from '../../src/providers/index.js'
 
 const PROJECT_ID = ProjectIdSchema.parse('11111111-1111-4111-8111-111111111111')
 const CONFIG = parseProjectConfig(DEFAULT_PROJECT_CONFIG)
+const MAPPING_SANDBOX = SandboxIdSchema.parse('77777777-7777-4777-8777-777777777777')
+const HOSTED_SANDBOX = 'sbx_review_hosted'
 const temporaryDirectories: string[] = []
 
 async function temporaryDirectory(): Promise<string> {
@@ -75,6 +85,125 @@ async function waitForOperation(stateDirectory: string): Promise<void> {
     await delay(2)
   }
   throw new Error('Timed out waiting for lifecycle operation reservation')
+}
+
+class FailedStartHostedProvider extends FakeSandboxProvider {
+  readonly destroyCalls: string[] = []
+  readonly hostedSessionId = 'sess_review_hosted'
+  readonly #store: LifecycleStore
+  readonly #mode: 'timeout' | 'missing-binding'
+  #sessionId: CreateSandboxRequest['sessionId'] | undefined
+  #spec: CreateSandboxRequest['specification'] | undefined
+
+  constructor(stateDirectory: string, store: LifecycleStore, mode: 'timeout' | 'missing-binding') {
+    super(stateDirectory)
+    this.#store = store
+    this.#mode = mode
+  }
+
+  override async create(
+    context: OperationContext,
+    request: CreateSandboxRequest,
+  ): Promise<SandboxMutationResult> {
+    this.#sessionId = request.sessionId
+    this.#spec = request.specification
+    const now = new Date().toISOString()
+    await this.#store.update((state) => {
+      state.hostedMappings['test-scope'] = {
+        ...state.hostedMappings['test-scope'],
+        [MAPPING_SANDBOX]: {
+          localId: MAPPING_SANDBOX,
+          localSessionId: request.sessionId,
+          localProjectId: request.projectId,
+          hostedSessionId: this.hostedSessionId,
+          hostedSandboxId: HOSTED_SANDBOX,
+          spec: request.specification,
+          createdAt: now,
+          updatedAt: now,
+          stale: false,
+          deleted: false,
+        },
+      }
+      return state
+    })
+    if (this.#mode === 'timeout') {
+      throw new OcboxError({
+        code: 'PROVIDER_TIMEOUT',
+        message: 'The hosted box did not start in time',
+        requestId: context.requestId,
+      })
+    }
+    throw new OcboxError({
+      code: 'INVALID_STATE',
+      message: 'The hosted session has no active primary sandbox binding',
+      providerCode: 'MISSING_PRIMARY_BINDING',
+      requestId: context.requestId,
+    })
+  }
+
+  override async destroy(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    this.destroyCalls.push(request.sandboxId)
+    const now = new Date().toISOString()
+    if (this.#sessionId === undefined || this.#spec === undefined) {
+      throw new TypeError('The test provider has not created a hosted Session')
+    }
+    const sandbox = SandboxSchema.parse({
+      id: request.sandboxId,
+      projectId: PROJECT_ID,
+      providerSandboxId: HOSTED_SANDBOX,
+      provider: 'fake',
+      lifecycle: {
+        normalizedState: 'deleted',
+        rawState: 'deleted',
+        desiredState: 'deleted',
+        reason: null,
+        observedAt: now,
+        lifecycleTimestamps: {
+          creationStartedAt: null,
+          runningAt: null,
+          pauseStartedAt: null,
+          pausedAt: null,
+          stopStartedAt: null,
+          stoppedAt: null,
+          deletionStartedAt: now,
+          deletedAt: now,
+          errorAt: null,
+          lastTransitionAt: now,
+        },
+      },
+      specification: {
+        requested: this.#spec,
+        effective: this.#spec,
+        effectiveObservedAt: now,
+      },
+      createdAt: now,
+      updatedAt: now,
+    })
+    return SandboxMutationResultSchema.parse({
+      operation: {
+        id: context.operationId,
+        requestId: context.requestId,
+        sessionId: this.#sessionId,
+        sandboxId: request.sandboxId,
+        action: 'destroy',
+        status: 'succeeded',
+        idempotencyKey: context.idempotencyKey,
+        idempotencyResolution: { kind: 'created' },
+        providerVerifiedAt: now,
+        createdAt: context.issuedAt,
+        startedAt: context.issuedAt,
+        completedAt: now,
+      },
+      sandbox,
+    })
+  }
+
+  override async get(): Promise<Sandbox | null> {
+    return null
+  }
 }
 
 afterEach(async () => {
@@ -348,5 +477,71 @@ describe('LifecycleService', () => {
       code: 'SANDBOX_NOT_FOUND',
       message: expect.stringContaining('run `ocbox ls` to list Sessions.'),
     })
+  })
+
+  it('destroys the hosted Session after a double PROVIDER_TIMEOUT start', async () => {
+    const directory = await temporaryDirectory()
+    const store = new LifecycleStore(directory, PROJECT_ID)
+    const provider = new FailedStartHostedProvider(directory, store, 'timeout')
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+    })
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+    })
+
+    const failed = await store.load()
+    const sessionId = failed.activeSessionId
+    if (sessionId === null) throw new Error('Expected a selected Session')
+    expect(failed.sessions[sessionId]).toMatchObject({ state: 'creating', bindings: [] })
+    expect(failed.sessions[sessionId]?.currentOperationId).not.toBeNull()
+
+    const destroyed = await createService(directory, { provider }).destroy(sessionId)
+    expect(destroyed.session.state).toBe('destroyed')
+    expect(provider.destroyCalls).toEqual([MAPPING_SANDBOX])
+  })
+
+  it('destroys the hosted Session when start leaves state=error with no binding', async () => {
+    const directory = await temporaryDirectory()
+    const store = new LifecycleStore(directory, PROJECT_ID)
+    const provider = new FailedStartHostedProvider(directory, store, 'missing-binding')
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+    })
+
+    const failed = await store.load()
+    const sessionId = failed.activeSessionId
+    if (sessionId === null) throw new Error('Expected a selected Session')
+    expect(failed.sessions[sessionId]).toMatchObject({
+      state: 'error',
+      bindings: [],
+      currentOperationId: null,
+    })
+
+    const destroyed = await createService(directory, { provider }).destroy(sessionId)
+    expect(destroyed.session.state).toBe('destroyed')
+    expect(provider.destroyCalls).toEqual([MAPPING_SANDBOX])
+  })
+
+  it('removes a Session locally when it has no hosted id', async () => {
+    const directory = await temporaryDirectory()
+    const provider = new FakeSandboxProvider(directory, {
+      faults: { failures: { create: 'INVALID_STATE' } },
+    })
+    const destroy = vi.spyOn(provider, 'destroy')
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+    })
+    const failed = await new LifecycleStore(directory, PROJECT_ID).load()
+    const sessionId = failed.activeSessionId
+    if (sessionId === null) throw new Error('Expected a selected Session')
+    expect(failed.sessions[sessionId]).toMatchObject({ state: 'error', bindings: [] })
+
+    const destroyed = await createService(directory, { provider }).destroy(sessionId)
+    expect(destroyed.session.state).toBe('destroyed')
+    expect(destroy).not.toHaveBeenCalled()
   })
 })
