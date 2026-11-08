@@ -252,8 +252,12 @@ describe('LifecycleService', () => {
     expect(destroyed.session.state).toBe('destroyed')
     expect(destroyed.session.bindings[0]?.releasedAt).not.toBeNull()
     expect(destroyed.sandbox).toBeNull()
-    expect((await createService(directory).destroy()).session.state).toBe('destroyed')
-    await expect(createService(directory).start()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    expect((await createService(directory).destroy(destroyed.session.id)).session.state).toBe(
+      'destroyed',
+    )
+    const startedAgain = await createService(directory).start()
+    expect(startedAgain.session.state).toBe('active')
+    expect(startedAgain.session.id).not.toBe(destroyed.session.id)
   })
 
   it('creates and selects a distinct Session for every explicit start --new', async () => {

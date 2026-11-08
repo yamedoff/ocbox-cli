@@ -132,9 +132,11 @@ try {
   assert.equal(destroyed.data.sandbox, null)
   assert.notEqual(destroyed.data.session.sandboxDeletionVerifiedAt, null)
 
-  const terminalStart = await invokeFailure(projectDirectory, ['start', ...runtimeFlags, '--json'])
-  const terminalEnvelope = parseEnvelope(terminalStart.stderr)
-  assert.equal(terminalEnvelope.data.code, 'INVALID_STATE')
+  const restartedAfterDestroy = parseEnvelope(
+    (await invoke(projectDirectory, ['start', ...runtimeFlags, '--json'])).stdout,
+  )
+  assert.equal(restartedAfterDestroy.data.session.state, 'active')
+  assert.notEqual(restartedAfterDestroy.data.session.id, destroyed.data.session.id)
 
   await hostedLifecycle()
   process.stdout.write('CLI lifecycle E2E passed\n')
@@ -656,9 +658,10 @@ async function hostedLifecycle() {
     assert.equal(chunkUploads, afterModes)
     await success([...pushArgs, '--exclude', 'large.txt'])
     for (const command of ['pull', 'diff']) {
-      const unsupported = await failure(['sync', command, '--local-dir', source, '--json'])
-      assert.equal(unsupported.data.code, 'CAPABILITY_UNSUPPORTED')
-      assert.match(unsupported.data.message, /not supported for hosted sandboxes yet/)
+      // Hosted read-back is attempted now; this mock has no snapshot route.
+      const unavailable = await failure(['sync', command, '--local-dir', source, '--json'])
+      assert.equal(unavailable.data.code, 'CAPABILITY_UNSUPPORTED')
+      assert.match(unavailable.data.message, /Server does not support source snapshots yet/)
     }
     await assert.rejects(
       readFile(
@@ -674,7 +677,7 @@ async function hostedLifecycle() {
       { code: 'ENOENT' },
     )
     process.stdout.write(
-      'CLI hosted sync E2E passed (3 files, project cwd exec, unchanged push, size limit, unsupported pull/diff)\n',
+      'CLI hosted sync E2E passed (3 files, project cwd exec, unchanged push, size limit, read-back unavailable)\n',
     )
     const executed = await success(['exec', '--json', '--', 'echo', 'mock'])
     assert.equal(executed.result.exitCode, 0)
