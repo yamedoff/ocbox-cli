@@ -10,7 +10,8 @@ import { renderSyncApplied, runSyncApply } from '../../sync/service.js'
 
 /** One-way local-to-remote apply; deletions require `--delete` and confirmation. */
 export default class SyncPush extends OcboxCommand {
-  static override description = 'Apply local-only changes to the Session workspace'
+  static override description =
+    'Apply local-only changes to the Session workspace; on hosted boxes, uploads local files to the box workspace'
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),
@@ -18,7 +19,8 @@ export default class SyncPush extends OcboxCommand {
       description: 'Local source root; defaults to the current directory',
     }),
     'remote-dir': Flags.string({
-      description: 'Fake provider only; hosted commands run in the workspace folder of the box (run pwd in the box to see it)',
+      description:
+        'Fake provider only; hosted commands run in the workspace folder of the box (run pwd in the box to see it)',
     }),
     exclude: Flags.string({ multiple: true, description: 'Repeatable exclude pattern' }),
     include: Flags.string({ multiple: true, description: 'Repeatable re-include pattern' }),
