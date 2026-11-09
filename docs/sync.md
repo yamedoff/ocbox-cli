@@ -131,7 +131,8 @@ trips, and built-in exclusions.
 
 For a hosted `sesdo_` Session, `sync push` uses the v2 plan/apply API. The CLI
 resolves that ID through the owned sandbox mapping; local Session IDs do not
-select the protocol. Older hosted Sessions retain their archive transport.
+select the protocol. Every hosted Session uses this transport; the retired
+archive/manifest/chunk upload route is not available.
 
 The same scanner, `.gitignore`, `.opencloudboxignore`, `--exclude`/`--include`
 precedence and built-in exclusions apply. `.git`, `node_modules`, caches,

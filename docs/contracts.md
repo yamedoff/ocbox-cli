@@ -30,11 +30,11 @@ The Session lifecycle and provider lifecycle are intentionally different state m
 with the normalized state, unchanged raw state, desired state, reason, observation time, and
 lifecycle timestamps. An unknown raw state normalizes to `unknown`; it is never discarded.
 
-| Action | Processes | RAM | Filesystem |
-| --- | --- | --- | --- |
-| `pause` | preserved | preserved | preserved |
-| `stop` | terminated | discarded | preserved |
-| `destroy` | terminated | discarded | discarded |
+| Action    | Processes  | RAM       | Filesystem |
+| --------- | ---------- | --------- | ---------- |
+| `pause`   | preserved  | preserved | preserved  |
+| `stop`    | terminated | discarded | preserved  |
+| `destroy` | terminated | discarded | discarded  |
 
 Lifecycle success requires a fresh, structurally valid provider observation whose normalized state
 matches the target Session state. `SessionTransitionEvidence.transitionStartedAt` is the trusted
@@ -48,7 +48,9 @@ a provider mutation is invoked.
 ## Requested and effective specifications
 
 `RequestedEffectiveSpec` never manufactures provider truth. `effective` and
-`effectiveObservedAt` are both `null` until observation, then appear together. CPU is expressed in
+`effectiveObservedAt` are both `null` until observation, then appear together. A provider whose public
+view reports only scalar fields may merge those reported fields over the request to form the full
+effective contract; it must leave `effective` null when the view reports none of them. CPU is expressed in
 millicores; RAM and disk are bytes; every lifecycle timeout is milliseconds. Environment fields
 contain names and constrained non-secret locators only—`ocbox:<opaque-id>` or
 `provider:<provider-name>:<opaque-id>`. Credential-shaped values remain invalid even after a valid
