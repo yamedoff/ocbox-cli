@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: b86b9d428768fb586b75bd34869d18949c00d01a8d642d76d508d5f370f717c2
+ * Pinned source SHA-256: f372a8cfdb9103d8f100cd9e37eb6357d4c550e64ecafb88396772dae8c42425
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:b86b9d428768fb586b75bd34869d18949c00d01a8d642d76d508d5f370f717c2" as const
+export const OPENAPI_CHECKSUM = "sha256:f372a8cfdb9103d8f100cd9e37eb6357d4c550e64ecafb88396772dae8c42425" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -424,6 +424,7 @@ export interface UpdateEnvironmentRequest {
 
 export interface CreateSessionRequest {
   readonly requestedSpec?: { readonly lifetimeSeconds?: number; readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
+  readonly secretReferenceIds?: readonly string[]
 }
 
 export interface CreateExecutionRequest {

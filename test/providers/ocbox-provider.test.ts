@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
+import { parseProjectConfig, toSandboxSpec } from '../../src/config/index.js'
 import { MemoryOperationCheckpointStore } from '../../src/providers/ocbox/operations.js'
 import {
   executionWaitDeadlineMilliseconds,
@@ -679,6 +680,36 @@ describe('hosted create request and admission', () => {
     expect(
       requestedSpecFromConfig(minimal.replace('[provider]', '[provider]\nregion = "eu-west"')),
     ).toEqual({ region: 'eu-west' })
+  })
+
+  it('sends configured secret reference ids in the create body', async () => {
+    const secretReferenceId = 'sec_0123456789abcdef0123456789abcdef'
+    const specification = toSandboxSpec(
+      parseProjectConfig(
+        DEFAULT_PROJECT_CONFIG.replace(
+          '[sandbox]\n',
+          `[sandbox]\nsecretReferenceIds = ["${secretReferenceId}"]\n`,
+        ),
+      ),
+    )
+    let body: unknown
+    const route = routeFetch('happy')
+    const { api } = await seededApi((input, init) => {
+      if (String(input).endsWith('/sessions') && init?.method === 'POST')
+        body = JSON.parse(String(init.body))
+      return route(input, init)
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    await provider.create(
+      operationContext() as never,
+      {
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification,
+      } as never,
+    )
+
+    expect(body).toEqual({ secretReferenceIds: [secretReferenceId] })
   })
 
   it.each([

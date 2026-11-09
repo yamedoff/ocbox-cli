@@ -189,6 +189,19 @@ function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`
 }
 
+const HOSTED_SECRET_REFERENCE_PREFIX = 'ocbox:'
+
+/**
+ * Hosted session create takes the server's raw secret reference ids. The
+ * canonical spec stores them as non-secret `ocbox:` locators, so unwrap only
+ * those references and never forward another namespace as a hosted id.
+ */
+function hostedSecretReferenceIds(specification: SandboxSpec): readonly string[] {
+  return specification.environment.secretReferenceIds
+    .filter((reference) => reference.startsWith(HOSTED_SECRET_REFERENCE_PREFIX))
+    .map((reference) => reference.slice(HOSTED_SECRET_REFERENCE_PREFIX.length))
+}
+
 function commandString(request: ExecRequest): string {
   if (request.command.mode === 'shell') return request.command.shell
   return request.command.argv.map(shellQuote).join(' ')
@@ -509,30 +522,35 @@ export class OcboxSandboxProvider implements SandboxProvider {
   ): Promise<SandboxMutationResult> {
     await this.#records()
     await this.#assertProject(context.requestId)
+    const secretReferenceIds = hostedSecretReferenceIds(request.specification)
+    const requestedSpec =
+      this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
+        ? {}
+        : {
+            requestedSpec: {
+              ...(this.#requestedSpec.cpu === undefined
+                ? {}
+                : { cpu: String(this.#requestedSpec.cpu) }),
+              ...(this.#requestedSpec.memory === undefined
+                ? {}
+                : { memory: String(this.#requestedSpec.memory) }),
+              ...(this.#requestedSpec.image === undefined
+                ? {}
+                : { image: this.#requestedSpec.image }),
+              ...(this.#requestedSpec.region === undefined
+                ? {}
+                : { region: this.#requestedSpec.region }),
+              ...(this.#requestedSpec.runtime === undefined
+                ? {}
+                : { runtime: this.#requestedSpec.runtime }),
+            },
+          }
     const created = await this.#api.generated.createSession({
       path: { projectId: this.#hostedProjectId },
-      body:
-        this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
-          ? {}
-          : {
-              requestedSpec: {
-                ...(this.#requestedSpec.cpu === undefined
-                  ? {}
-                  : { cpu: String(this.#requestedSpec.cpu) }),
-                ...(this.#requestedSpec.memory === undefined
-                  ? {}
-                  : { memory: String(this.#requestedSpec.memory) }),
-                ...(this.#requestedSpec.image === undefined
-                  ? {}
-                  : { image: this.#requestedSpec.image }),
-                ...(this.#requestedSpec.region === undefined
-                  ? {}
-                  : { region: this.#requestedSpec.region }),
-                ...(this.#requestedSpec.runtime === undefined
-                  ? {}
-                  : { runtime: this.#requestedSpec.runtime }),
-              },
-            },
+      body: {
+        ...requestedSpec,
+        ...(secretReferenceIds.length === 0 ? {} : { secretReferenceIds }),
+      },
       idempotencyKey: context.idempotencyKey,
     })
     if (created.status >= 400) {
