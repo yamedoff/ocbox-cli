@@ -85,7 +85,12 @@ it('uses the default API for init and start, saves the project, and honors proje
       if (url.pathname.includes('/sessions/'))
         return jsonResponse(hostedSessionFixture({ projectId: selected }))
       if (url.pathname.startsWith('/v1/projects/'))
-        return jsonResponse({ id: url.pathname.split('/')[3] })
+        return jsonResponse({
+          id: url.pathname.split('/')[3],
+          name: 'mock',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
       throw new Error('Unexpected mock API route')
     }),
   )

@@ -7,6 +7,7 @@ function scopesOf(view: AuthStatusView): string {
 /** Compact human summary; structured output retains the full view. */
 export function authStatusLine(view: AuthStatusView): string {
   if (!view.loggedIn) {
+    if (view.reasonCode !== undefined) return `Not logged in (Reason ${view.reasonCode})`
     return view.expired ? 'Not logged in (stored credential has expired)' : 'Not logged in'
   }
   return `Logged in issuer=${view.issuer} audience=${view.audience} scopes=${scopesOf(view)} expires=${view.expiresAt ?? 'unknown'}`

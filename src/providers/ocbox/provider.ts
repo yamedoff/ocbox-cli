@@ -127,6 +127,20 @@ const HOSTED_CAPABILITIES: ProviderCapabilities = {
   },
 }
 
+/**
+ * The agent adapters route their own calls through `ocbox exec` with these
+ * recursion markers. They are not user options, and the hosted API cannot carry
+ * an execution environment, so they are dropped instead of refusing every
+ * adapter-routed command.
+ */
+const ADAPTER_OWNED_ENVIRONMENT = new Set([
+  'OCBOX_AGENT_ADAPTER',
+  'OCBOX_AGENT_ROUTED',
+  'OCBOX_CODEX_ADAPTER',
+  'OCBOX_CODEX_ADAPTER_ACTIVE',
+  'OCBOX_CODEX_SESSION_ID',
+])
+
 const DEFAULT_EXECUTION_WAIT_MILLISECONDS = 5 * 60_000
 const EXECUTION_DEADLINE_GRACE_MILLISECONDS = 30_000
 
@@ -678,7 +692,24 @@ export class OcboxSandboxProvider implements SandboxProvider {
       record = next
       await this.#saveRecord(next)
     }
+    const rememberId = async (sessionId: string): Promise<void> => {
+      if (record !== undefined) return
+      const now = this.#now()
+      record = {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSessionId: sessionId,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
     if (hostedOp.session !== undefined) await remember(hostedOp.session)
+    else if (typeof hostedOp.sessionId === 'string') await rememberId(hostedOp.sessionId)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
       ...this.#waitOptions,
       deadlineMilliseconds: deadline.remainingMilliseconds(),
@@ -692,6 +723,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(waited.requestId),
       })
     }
+    if (record === undefined) await rememberId(hostedSessionId)
     const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
       await remember(observed)
       return (
@@ -1174,9 +1206,10 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const requestId = RequestIdSchema.parse(this.#createId())
     const record = await this.#record(sandboxId, requestId)
     if (record === undefined) throw notFoundSandbox(requestId)
-    // `exec` prints the CLI-facing ID, while the hosted API uses its own ID.
-    // Accept either from the user and always answer with the CLI-facing ID when
-    // the mapping still knows it, so the two commands cannot name different runs.
+    const id = executionId ?? record.lastExecutionId
+    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    // `exec` prints the CLI execution ID; map it to the hosted ID for the
+    // remote calls and report the same CLI ID back to `cancel`.
     const localId =
       executionId === undefined
         ? record.lastLocalExecutionId
@@ -1185,14 +1218,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
           : executionId === record.lastExecutionId
             ? record.lastLocalExecutionId
             : undefined
-    const id =
-      executionId === undefined
-        ? record.lastExecutionId
-        : executionId === record.lastLocalExecutionId
-          ? record.lastExecutionId
-          : executionId
-    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
-    const reportedId = localId ?? id
+    const hostedId =
+      executionId === undefined ? id : localId === undefined ? id : record.lastExecutionId
+    if (hostedId === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
     return waitForCancellation(
       requestId,
       waitMilliseconds,
@@ -1202,13 +1230,13 @@ export class OcboxSandboxProvider implements SandboxProvider {
         for (;;) {
           boundedSignal.throwIfAborted()
           const response = await this.#api.generated.getExecution({
-            path: { executionId: id },
+            path: { executionId: hostedId },
             signal: boundedSignal,
           })
           if (response.status === 404)
             throw executionError(
               requestId,
-              `Unknown execution ID: ${executionId ?? id}`,
+              `Unknown execution ID: ${executionId ?? hostedId}`,
               'SANDBOX_NOT_FOUND',
             )
           const execution = HostedExecutionSchema.parse(
@@ -1224,16 +1252,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
             )
           }
           if (isTerminalExecutionState(execution.state)) {
-            await this.#lastExecution(record, id, localId, true, boundedSignal)
+            await this.#lastExecution(record, hostedId, localId, true, boundedSignal)
             return {
-              executionId: reportedId,
+              executionId: localId ?? hostedId,
               sandboxId,
               state: execution.state as CancellationResult['state'],
             }
           }
           if (!requested) {
             const cancelled = await this.#api.generated.cancelExecution({
-              path: { executionId: id },
+              path: { executionId: hostedId },
               idempotencyKey: this.#createId(),
               signal: boundedSignal,
             })
@@ -1249,6 +1277,20 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
+    const userEnvironment = Object.keys(request.environment).filter(
+      (name) => !ADAPTER_OWNED_ENVIRONMENT.has(name),
+    )
+    const unsupportedOptions = [
+      ...(request.workingDirectory === null ? [] : ['--cwd']),
+      ...(userEnvironment.length === 0 ? [] : ['--env']),
+    ]
+    if (unsupportedOptions.length > 0) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: `The hosted provider does not support ${unsupportedOptions.join(' or ')} for executions; omit ${unsupportedOptions.length === 1 ? 'it' : 'them'} and use the default workspace.`,
+        requestId: context.requestId,
+      })
+    }
     const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const owned = await this.#mappedSession(record)

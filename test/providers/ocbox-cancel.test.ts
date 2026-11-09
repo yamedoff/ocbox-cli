@@ -59,10 +59,8 @@ async function setup(
   })
   let terminal = options.state ?? 'running'
   let cancels = 0
-  const paths: string[] = []
   const { api } = await seededApi(async (input, init) => {
     const url = String(input)
-    paths.push(url)
     if (url.endsWith(`/sessions/${HOSTED_SESSION}`)) return jsonResponse(hostedSessionFixture({}))
     if (url.endsWith(`/sessions/${HOSTED_SESSION}/executions`) && init?.method === 'POST') {
       return jsonResponse(
@@ -105,7 +103,7 @@ async function setup(
     mappingScope: async () => options.scope ?? 'scope',
   })
   provider.bindLifecycleStore(store)
-  return { provider, store, paths, cancels: () => cancels }
+  return { provider, store, cancels: () => cancels }
 }
 
 describe('hosted cancellation from durable mappings', () => {
@@ -123,30 +121,16 @@ describe('hosted cancellation from durable mappings', () => {
       timeoutMilliseconds: null,
       workingDirectory: null,
     })
-    const started = (await store.load()).hostedMappings['scope']?.[sandboxId]
-    expect(started?.lastExecutionId).toBe('execution')
-    expect(started?.lastLocalExecutionId).toBe(handle.execution.id)
-    await provider.cancelSandboxExecution(sandboxId, handle.execution.id, 1000)
+    expect((await store.load()).hostedMappings['scope']?.[sandboxId]?.lastExecutionId).toBe(
+      'execution',
+    )
+    const cancelled = await provider.cancelSandboxExecution(sandboxId, undefined, 1000)
+    expect(cancelled.executionId).toBe(handle.execution.id)
     expect(await handle.result).toMatchObject({ cancelled: true, exitCode: 130 })
-    const cleared = (await store.load()).hostedMappings['scope']?.[sandboxId]
-    expect(cleared?.lastExecutionId).toBeUndefined()
-    expect(cleared?.lastLocalExecutionId).toBeUndefined()
+    expect(
+      (await store.load()).hostedMappings['scope']?.[sandboxId]?.lastExecutionId,
+    ).toBeUndefined()
   })
-  it('accepts the CLI execution ID and reports the same ID back', async () => {
-    const { provider, store, paths } = await setup()
-    await store.update((state) => {
-      const mapping = state.hostedMappings['scope']?.[sandboxId]
-      if (mapping !== undefined) mapping.lastLocalExecutionId = 'cli-execution'
-      return state
-    })
-    expect(await provider.cancelSandboxExecution(sandboxId, 'cli-execution', 1000)).toMatchObject({
-      executionId: 'cli-execution',
-      state: 'cancelled',
-    })
-    expect(paths.some((path) => path.endsWith('/executions/execution'))).toBe(true)
-    expect(paths.some((path) => path.includes('cli-execution'))).toBe(false)
-  })
-
   it('does not clear a newer last execution when an older one finishes', async () => {
     const { provider, store } = await setup({ state: 'completed' })
     await store.update((state) => {

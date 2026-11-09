@@ -441,12 +441,18 @@ try {
   assert(config.includes('name = "ocbox"') && config.includes(project.id))
   const beforeRepeat = calls.length
   await run(['init'])
-  assert.equal(calls.length, beforeRepeat, 'saved project must avoid redundant API onboarding')
+  assert.equal(
+    calls.length,
+    beforeRepeat + 1,
+    'saved project must be checked against the signed-in account',
+  )
+  assert.equal(calls[beforeRepeat].path, `/v1/projects/${project.id}`)
+  assert.equal(calls[beforeRepeat].method, 'GET')
   await rm(workspacePath)
   await run(['init'])
   assert.equal(
     calls.length,
-    beforeRepeat + 1,
+    beforeRepeat + 2,
     'matching directory project must be reused without POST',
   )
   const started = await run(['start'])
