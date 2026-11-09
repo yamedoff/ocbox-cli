@@ -10,7 +10,7 @@ Explicit shell mode rejects a known non-Linux effective OS. When the hosted effe
 
 Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents polls event pages, orders by sequence, skips duplicates and exposes an optional cursor-checkpoint callback; the provider keeps its cursor in memory. Repeated retryable page failures fall back to Execution/result polling. The fake provider's helper emits framed events. The command's nonzero exit is separate from infrastructure failure.
 
-Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body currently sends command and timeout only, so parsed cwd/environment values are not transmitted by this adapter.
+Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body sends command and timeout only; `--cwd` and `--env` are refused with `CAPABILITY_UNSUPPORTED` before dispatch, while adapter-owned recursion markers are tolerated but not transmitted.
 
 ## Data it keeps
 Local Session state, selection, local-to-hosted mappings, pending operations and operation checkpoints. A hosted mapping is written as soon as the create response names the hosted Session, before a primary binding exists. Hosted Execution and sandbox observations arrive through the public API. No server vendor identity is needed by this adapter.

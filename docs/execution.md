@@ -28,7 +28,11 @@ and maps only to `/bin/bash -lc COMMAND` on a compatible Linux image.
 
 Options include `--session`, normalized absolute sandbox `--cwd`, positive
 millisecond `--timeout`, repeatable non-secret `--env NAME=VALUE`, and mutually
-exclusive `--json`/`--jsonl`. Parsing and target validation finish before the
+exclusive `--json`/`--jsonl`. The hosted `ocbox` provider cannot carry `--cwd`
+or `--env` in its create-execution request, so it refuses either option with
+`CAPABILITY_UNSUPPORTED` before dispatch. The fake provider carries both to its
+local helper. Adapter-owned recursion markers used by routed agent hooks are
+tolerated but not transmitted. Parsing and target validation finish before the
 provider mutation. The target must contain the selected active Session, its
 active primary running Sandbox, and streaming plus cancellation capabilities.
 Explicit Session IDs, provider timeout limits, shell compatibility, environment
