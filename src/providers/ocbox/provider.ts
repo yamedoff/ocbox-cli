@@ -592,7 +592,24 @@ export class OcboxSandboxProvider implements SandboxProvider {
       record = next
       await this.#saveRecord(next)
     }
+    const rememberId = async (sessionId: string): Promise<void> => {
+      if (record !== undefined) return
+      const now = this.#now()
+      record = {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSessionId: sessionId,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
     if (hostedOp.session !== undefined) await remember(hostedOp.session)
+    else if (typeof hostedOp.sessionId === 'string') await rememberId(hostedOp.sessionId)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
       ...this.#waitOptions,
       deadlineMilliseconds: deadline.remainingMilliseconds(),
@@ -606,6 +623,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(waited.requestId),
       })
     }
+    if (record === undefined) await rememberId(hostedSessionId)
     const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
       await remember(observed)
       return (
