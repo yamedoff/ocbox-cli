@@ -130,6 +130,12 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(fetched?.id).toBe(result.sandbox.id)
   })
 
+  it('does not expose the retired hosted source upload route', async () => {
+    const { api } = await seededApi(routeFetch('happy'))
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    expect('uploadSource' in provider).toBe(false)
+  })
+
   it('maps a valid hosted effectiveSpec into the Sandbox specification', async () => {
     const effectiveSpec = { ...testSpec(), cpu: { millicores: 2000 } }
     const { api } = await seededApi((input, init) => {
