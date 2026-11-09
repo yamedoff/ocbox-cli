@@ -62,6 +62,49 @@ describe('project configuration', () => {
     expect(specification.network.allowedHosts).toEqual(['registry.npmjs.org:443'])
   })
 
+  it('carries configured hosted secret reference ids without accepting secret values', () => {
+    const secretReferenceId = 'sec_0123456789abcdef0123456789abcdef'
+    const source = VALID_CONFIG.replace(
+      '[sandbox]\n',
+      `[sandbox]\nsecretReferenceIds = ["${secretReferenceId}"]\n`,
+    )
+    const config = parseProjectConfig(source)
+
+    expect(toSandboxSpec(config).environment.secretReferenceIds).toEqual([
+      `ocbox:${secretReferenceId}`,
+    ])
+
+    const unsafe = source.replace(secretReferenceId, 'sk-1234567890abcdef')
+    expect(() => parseProjectConfig(unsafe)).toThrowError(ConfigValidationError)
+    try {
+      parseProjectConfig(unsafe)
+    } catch (error) {
+      expect(String(error)).not.toContain('sk-1234567890abcdef')
+    }
+  })
+
+  it('rejects duplicate configured secret reference ids', () => {
+    const secretReferenceId = 'sec_0123456789abcdef0123456789abcdef'
+    const source = VALID_CONFIG.replace(
+      '[sandbox]\n',
+      `[sandbox]\nsecretReferenceIds = ["${secretReferenceId}", "${secretReferenceId}"]\n`,
+    )
+
+    try {
+      parseProjectConfig(source)
+      throw new Error('expected parse failure')
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigValidationError)
+      expect((error as ConfigValidationError).diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: 'invalid_value',
+          path: 'sandbox.secretReferenceIds',
+          message: expect.stringContaining('Secret reference ids must be unique'),
+        }),
+      )
+    }
+  })
+
   it('reports unknown fields with their full TOML path and a suggestion', () => {
     const source = VALID_CONFIG.replace('region = "us-east-1"', 'regoin = "us-east-1"')
 

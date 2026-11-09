@@ -8,6 +8,7 @@ import {
   SandboxSourceSpecSchema,
   type SandboxSpec,
   SandboxSpecSchema,
+  SecretReferenceIdSchema,
 } from '../domain/spec.js'
 import {
   findSensitiveMaterial,
@@ -42,11 +43,43 @@ export const ResourceConfigSchema = z.strictObject({
   diskBytes: z.number().int().positive().safe().default(10737418240),
 })
 
+const HOSTED_SECRET_REFERENCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
+/**
+ * A hosted secret reference id is an opaque server id, never a secret value.
+ * The canonical spec carries it in the OpenCloudBox namespace so the domain
+ * contract keeps accepting only non-secret locators.
+ */
+const ConfigSecretReferenceIdSchema = z
+  .string()
+  .regex(
+    HOSTED_SECRET_REFERENCE_ID_PATTERN,
+    'Secret reference ids must be opaque hosted ids, never secret values',
+  )
+  .refine(
+    (id) => SecretReferenceIdSchema.safeParse(`ocbox:${id}`).success,
+    'Secret reference ids must be opaque ids, never secret values',
+  )
+
+const SecretReferenceIdsConfigSchema = z
+  .array(ConfigSecretReferenceIdSchema)
+  .max(32)
+  .default([])
+  .superRefine((references, context) => {
+    if (new Set(references).size !== references.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Secret reference ids must be unique',
+      })
+    }
+  })
+
 export const SandboxConfigSchema = z.strictObject({
   operatingSystem: OperatingSystemSchema,
   architecture: ArchitectureSchema,
   image: ImageReferenceSchema.default({ kind: 'template', reference: 'fake-node-24' }),
   environmentName: z.string().regex(REGION_PATTERN).default('development'),
+  secretReferenceIds: SecretReferenceIdsConfigSchema,
   resources: ResourceConfigSchema.default({
     cpuMillicores: 1000,
     memoryBytes: 2147483648,
@@ -174,7 +207,7 @@ export function toSandboxSpec(config: ProjectConfig): SandboxSpec {
     environment: {
       name: config.sandbox.environmentName,
       variableNames: Object.keys(config.env).sort(),
-      secretReferenceIds: [],
+      secretReferenceIds: config.sandbox.secretReferenceIds.map((id) => `ocbox:${id}`),
     },
     source: config.source,
     providerClass: config.provider.runtimeClass,

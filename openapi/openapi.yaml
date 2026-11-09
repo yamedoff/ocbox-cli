@@ -3616,6 +3616,15 @@ components:
               type: string
               minLength: 1
               maxLength: 64
+        secretReferenceIds:
+          type: array
+          description: Optional workload secret reference ids to attach to the new Session. Ids are opaque; secret values are never accepted or returned.
+          maxItems: 32
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
     CreateExecutionRequest:
       type: object
       additionalProperties: false

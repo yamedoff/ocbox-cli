@@ -2,7 +2,7 @@
 
 Implements [T3](https://app.notion.com/p/c745d7fe772c460d926db52f68d2cfd4) through the side-effect-free `opencloudbox/infrastructure` entry point.
 
-`parseProjectConfig` validates schemaVersion 1 TOML with provider, sandbox, sandbox.resources, network, lifecycle, source and optional non-secret env settings. Resource units are cpuMillicores, memoryBytes and diskBytes. Unknown/deprecated fields fail with paths and typo suggestions. Migration refuses credential material. `resolveConfigurationValue` selects CLI, environment, project, then default; invalid environment input fails without echoing its value.
+`parseProjectConfig` validates schemaVersion 1 TOML with provider, sandbox, sandbox.resources, network, lifecycle, source and optional non-secret env settings. `sandbox.secretReferenceIds` accepts opaque hosted secret reference ids only (never secret values) and attaches them when a hosted box is created. Resource units are cpuMillicores, memoryBytes and diskBytes. Unknown/deprecated fields fail with paths and typo suggestions. Migration refuses credential material. `resolveConfigurationValue` selects CLI, environment, project, then default; invalid environment input fails without echoing its value.
 
 | Host | Config | State | Cache |
 | --- | --- | --- | --- |
