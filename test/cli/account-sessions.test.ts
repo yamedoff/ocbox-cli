@@ -79,11 +79,16 @@ async function seedSession(subject: string, sessionId: string): Promise<void> {
   }))
 }
 
+// Far enough ahead that the stored token never expires while the suite runs.
+const TOKEN_EXPIRES_AT = UtcTimestampSchema.parse(
+  new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+)
+
 async function setToken(token: string): Promise<void> {
   const key = defaultCredentialKey()
   await createCredentialStore().set(key, {
     accessToken: token,
-    expiresAt: UtcTimestampSchema.parse('2026-11-09T12:00:00.000Z'),
+    expiresAt: TOKEN_EXPIRES_AT,
     scopes: [...DEFAULT_SCOPES],
     tokenType: 'Bearer',
   })
@@ -93,7 +98,7 @@ async function setToken(token: string): Promise<void> {
     clientId: 'ocb_cli',
     audience: 'cli',
     scopes: [...DEFAULT_SCOPES],
-    expiresAt: UtcTimestampSchema.parse('2026-11-09T12:00:00.000Z'),
+    expiresAt: TOKEN_EXPIRES_AT,
     identity: key,
     updatedAt: UtcTimestampSchema.parse(new Date().toISOString()),
   })
