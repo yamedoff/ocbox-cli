@@ -302,7 +302,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
       projectCreated = true
     }
   }
-  if (provider === 'ocbox' && projectId !== undefined && !projectCreated) {
+  if (provider === 'ocbox' && projectId !== undefined && !projectCreated && !projectMatchedByName) {
     // A saved project can belong to a different signed-in account; validating
     // only the local file would report success and let `start` fail later.
     try {

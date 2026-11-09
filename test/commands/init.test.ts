@@ -193,7 +193,7 @@ describe('init command', () => {
     expect(output(stdoutSpy)).toBe(
       `Using existing project prj_reused ("${basename(process.cwd())}"), matched by name; run ocbox project create to make a new one\n`,
     )
-    expect(calls).toEqual(['GET /v1/projects', 'GET /v1/projects/prj_reused'])
+    expect(calls).toEqual(['GET /v1/projects'])
   })
 
   it('checks an existing config project against the signed-in account', async () => {
