@@ -10,6 +10,8 @@ The map has one active application building with fourteen areas: commands, auth,
 
 The command runtime builds a LifecycleService, an authenticated generated client and the selected provider. The registry wires the hosted ocbox provider and a fake provider used for local validation. Provider interfaces describe capabilities; having a method in an interface does not prove that staging supports it.
 
+`init` checks a saved hosted project against the signed-in account before reporting the config as validated. A project the account cannot see fails with the reset step instead of letting `start` fail later. New hosted configs omit image, region and resource overrides so the server chooses its free default; the fake placeholders remain for the offline provider and its tests only.
+
 ## Warm session cache
 
 `ocbox exec` may start one optional local daemon on first use. It listens on an owner-only socket in the user's runtime directory (a named pipe on Windows), keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. A cached observation is advisory: the execution start remains authoritative for a state change the daemon has not seen. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
@@ -49,3 +51,7 @@ Verified against ocbox-cli @ 06da359
 Sign-in errors map closed public server reasons to static text and retain the server reference. The five-minute loopback deadline reports when the browser never returned. Local status errors distinguish missing metadata, unreadable state and mismatched identity/generation; the fix is logout then login using the same state directory. Logout returns revocationReason, including missing/unreadable state and invalid endpoint cases. The auth command boundary stores the last 100 failure references (at most seven days) in auth-failures.json through the atomic store; it stores no error text or sign-in material. Look up a local reference in that file; server references belong to the public API support flow.
 
 Verified against ocbox-cli @ cd231a4 plus auth failure reporting changes.
+
+`init` verifies a saved hosted project against the signed-in account, and hosted configs omit the offline image/region placeholders so status shows the server's observed default.
+
+Verified against ocbox-cli @ 872e6f2 plus the init project-check and hosted-default changes.
