@@ -12,7 +12,7 @@ The command runtime builds a LifecycleService, an authenticated generated client
 
 ## Warm session cache
 
-`ocbox exec` may start one optional local daemon on first use. It listens on an owner-only socket in the user's runtime directory (a named pipe on Windows), keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
+`ocbox exec` may start one optional local daemon on first use. It listens on an owner-only socket in the user's runtime directory (a named pipe on Windows), keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. A cached observation is advisory: the execution start remains authoritative for a state change the daemon has not seen. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
 
 ## Data it keeps
 
