@@ -213,6 +213,7 @@ function hostedSpecification(
   requested: SandboxSpec,
   effectiveSpec: Readonly<Record<string, unknown>> | null,
   observedAt: string,
+  requestedSpec: HostedRequestedSpec | undefined,
 ): RequestedEffectiveSpec {
   if (effectiveSpec === null) {
     return { effective: null, effectiveObservedAt: null, requested }
@@ -221,10 +222,21 @@ function hostedSpecification(
   if (!parsed.success) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
+  // An omitted image/region is a server default, not a local placeholder. Show
+  // the observed value in the requested view so status does not report the
+  // fake provider defaults the schema uses for the offline harness.
+  const requestedWithDefaults =
+    requestedSpec === undefined
+      ? requested
+      : {
+          ...requested,
+          ...(requestedSpec.image === undefined ? { image: parsed.data.image } : {}),
+          ...(requestedSpec.region === undefined ? { region: parsed.data.region } : {}),
+        }
   return {
     effective: parsed.data,
     effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
-    requested,
+    requested: requestedWithDefaults,
   }
 }
 
@@ -580,7 +592,24 @@ export class OcboxSandboxProvider implements SandboxProvider {
       record = next
       await this.#saveRecord(next)
     }
+    const rememberId = async (sessionId: string): Promise<void> => {
+      if (record !== undefined) return
+      const now = this.#now()
+      record = {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSessionId: sessionId,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
     if (hostedOp.session !== undefined) await remember(hostedOp.session)
+    else if (typeof hostedOp.sessionId === 'string') await rememberId(hostedOp.sessionId)
     const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
       ...this.#waitOptions,
       deadlineMilliseconds: deadline.remainingMilliseconds(),
@@ -594,6 +623,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: toRequestId(waited.requestId),
       })
     }
+    if (record === undefined) await rememberId(hostedSessionId)
     const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
       await remember(observed)
       return (
@@ -1021,7 +1051,12 @@ export class OcboxSandboxProvider implements SandboxProvider {
       providerSandboxId: ProviderSandboxIdSchema.parse(
         record.hostedSandboxId ?? record.hostedSessionId,
       ),
-      specification: hostedSpecification(spec, hostedSession?.effectiveSpec ?? null, observedAt),
+      specification: hostedSpecification(
+        spec,
+        hostedSession?.effectiveSpec ?? null,
+        observedAt,
+        this.#requestedSpec,
+      ),
       updatedAt: observedAt,
     })
   }
@@ -1029,13 +1064,20 @@ export class OcboxSandboxProvider implements SandboxProvider {
   async #lastExecution(
     record: SandboxRecord,
     executionId: string,
+    localExecutionId: string | undefined,
     clear = false,
     signal?: AbortSignal,
   ): Promise<void> {
     const mutate = (current: SandboxRecord): SandboxRecord => {
-      if (!clear) return { ...current, lastExecutionId: executionId }
+      if (!clear) {
+        return {
+          ...current,
+          lastExecutionId: executionId,
+          ...(localExecutionId === undefined ? {} : { lastLocalExecutionId: localExecutionId }),
+        }
+      }
       if (current.lastExecutionId !== executionId) return current
-      const { lastExecutionId: _last, ...rest } = current
+      const { lastExecutionId: _last, lastLocalExecutionId: _local, ...rest } = current
       return rest
     }
     if (this.#mappingScope === undefined) {
@@ -1066,6 +1108,19 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (record === undefined) throw notFoundSandbox(requestId)
     const id = executionId ?? record.lastExecutionId
     if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    // `exec` prints the CLI execution ID; map it to the hosted ID for the
+    // remote calls and report the same CLI ID back to `cancel`.
+    const localId =
+      executionId === undefined
+        ? record.lastLocalExecutionId
+        : executionId === record.lastLocalExecutionId
+          ? record.lastLocalExecutionId
+          : executionId === record.lastExecutionId
+            ? record.lastLocalExecutionId
+            : undefined
+    const hostedId =
+      executionId === undefined ? id : localId === undefined ? id : record.lastExecutionId
+    if (hostedId === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
     return waitForCancellation(
       requestId,
       waitMilliseconds,
@@ -1075,11 +1130,15 @@ export class OcboxSandboxProvider implements SandboxProvider {
         for (;;) {
           boundedSignal.throwIfAborted()
           const response = await this.#api.generated.getExecution({
-            path: { executionId: id },
+            path: { executionId: hostedId },
             signal: boundedSignal,
           })
           if (response.status === 404)
-            throw executionError(requestId, `Unknown execution ID: ${id}`, 'SANDBOX_NOT_FOUND')
+            throw executionError(
+              requestId,
+              `Unknown execution ID: ${executionId ?? hostedId}`,
+              'SANDBOX_NOT_FOUND',
+            )
           const execution = HostedExecutionSchema.parse(
             this.#api.assertSuccess('getExecution', response, [200]).body,
           )
@@ -1093,16 +1152,16 @@ export class OcboxSandboxProvider implements SandboxProvider {
             )
           }
           if (isTerminalExecutionState(execution.state)) {
-            await this.#lastExecution(record, id, true, boundedSignal)
+            await this.#lastExecution(record, hostedId, localId, true, boundedSignal)
             return {
-              executionId: id,
+              executionId: localId ?? hostedId,
               sandboxId,
               state: execution.state as CancellationResult['state'],
             }
           }
           if (!requested) {
             const cancelled = await this.#api.generated.cancelExecution({
-              path: { executionId: id },
+              path: { executionId: hostedId },
               idempotencyKey: this.#createId(),
               signal: boundedSignal,
             })
@@ -1164,8 +1223,8 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
-    await this.#lastExecution(record, hosted.id)
     const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
+    await this.#lastExecution(record, hosted.id, localExecutionId)
     const controller = new AbortController()
     this.#executions.set(localExecutionId, {
       controller,
@@ -1199,7 +1258,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     }).then(
       async (collected) => {
         try {
-          await this.#lastExecution(record, hosted.id, true)
+          await this.#lastExecution(record, hosted.id, localExecutionId, true)
           this.#executions.delete(localExecutionId)
           const latest = collected.events[collected.events.length - 1]
           const completedAt = latest?.at ?? this.#now()

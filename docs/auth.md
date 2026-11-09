@@ -45,9 +45,11 @@ the T16 `apps/web` builder.
 `login` prints/opens the authorization URL and waits for the loopback callback.
 `--no-browser` forces the manual-open path, which prints the same safe
 authorization URL and keeps the listener active. `status` reports only
-logged-in/expiry/scope/audience facts; `logout` attempts server revocation and
-always clears local material. All three support `--json`/`--jsonl` and never
-emit secret values.
+logged-in/expiry/scope/audience facts; when the access token has expired it
+attempts the stored refresh token before deciding `loggedIn`, and reports
+`accessTokenExpiresAt` plus a reason code if the refresh is rejected. `logout`
+attempts server revocation and always clears local material. All three support
+`--json`/`--jsonl` and never emit secret values.
 
 ## Flow and listener
 
@@ -156,7 +158,7 @@ the generated client can never disagree:
   another audience, is refused before use.
 - **One transport.** `createAuthenticatedTransport` adapts
   `AuthenticatedHttpClient` to the generated client's `ApiTransport` port:
-  bearer-only `Authorization`, origin *and* base-subpath binding, manual
+  bearer-only `Authorization`, origin _and_ base-subpath binding, manual
   redirects, bounded response bodies and timeouts, and the single serialized
   refresh-and-retry for replayable requests (idempotent methods or calls
   carrying an `Idempotency-Key`). Per-operation keys flow through from the generated

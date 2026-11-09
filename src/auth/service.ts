@@ -13,7 +13,7 @@ import {
   normalizeIssuer,
   protocolEndpointsFromIssuer,
 } from './config.js'
-import { newRequestId } from './errors.js'
+import { isLoginRequired, newRequestId } from './errors.js'
 import type { EntropyPort } from './entropy.js'
 import type { LoopbackListener, LoopbackListenerFactory } from './loopback.js'
 import { type AuthMetadata, type AuthMetadataRepository, AuthMetadataSchema } from './metadata.js'
@@ -29,7 +29,11 @@ export interface AuthStatusView {
   readonly audience: 'cli' | null
   readonly scopes: readonly string[]
   readonly expiresAt: string | null
+  /** The access token's own expiry; it never decides `loggedIn` by itself. */
+  readonly accessTokenExpiresAt: string | null
   readonly expired: boolean
+  /** Present when a stored session cannot be used and the user must sign in again. */
+  readonly reasonCode?: string
 }
 
 export interface AuthLoginView extends AuthStatusView {
@@ -79,15 +83,18 @@ function statusFrom(
   metadata: { issuer: string; audience: 'cli'; scopes: readonly string[] } | null,
   credential: { scopes: readonly string[]; expiresAt: string | null } | null,
   now: number,
+  options: { loggedIn?: boolean; reasonCode?: string } = {},
 ): AuthStatusView {
   if (metadata === null || credential === null) {
     return {
       audience: null,
       expired: false,
       expiresAt: null,
+      accessTokenExpiresAt: null,
       issuer: null,
       loggedIn: false,
       scopes: [],
+      ...(options.reasonCode === undefined ? {} : { reasonCode: options.reasonCode }),
     }
   }
   const expiry = credential.expiresAt === null ? null : Date.parse(credential.expiresAt)
@@ -96,10 +103,27 @@ function statusFrom(
     audience: metadata.audience,
     expired,
     expiresAt: credential.expiresAt,
+    accessTokenExpiresAt: credential.expiresAt,
     issuer: metadata.issuer,
-    loggedIn: !expired,
+    loggedIn: options.loggedIn ?? !expired,
     scopes: credential.scopes,
+    ...(options.reasonCode === undefined ? {} : { reasonCode: options.reasonCode }),
   }
+}
+
+function reasonCodeOf(error: unknown): string | undefined {
+  if (!(error instanceof OcboxError)) return undefined
+  // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+  const value = error.details?.['reasonCode']
+  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : undefined
+}
+
+function isRejectedRefresh(error: unknown): boolean {
+  return (
+    isLoginRequired(error) ||
+    (error instanceof OcboxError &&
+      (error.code === 'AUTH_EXPIRED' || error.code === 'AUTH_FORBIDDEN'))
+  )
 }
 
 function staleStateError(message: string, reasonCode: string): OcboxError {
@@ -314,7 +338,47 @@ export class AuthSessionService {
           'cli_auth_generation_mismatch',
         )
       }
-      return statusFrom(metadata, credential, this.#options.clock.now())
+      const now = this.#options.clock.now()
+      const expiry = credential.expiresAt === null ? null : Date.parse(credential.expiresAt)
+      const expired = expiry !== null && (Number.isNaN(expiry) || expiry <= now)
+      if (!expired) return statusFrom(metadata, credential, now)
+      if (credential.refreshToken === undefined) {
+        return statusFrom(metadata, credential, now, {
+          loggedIn: false,
+          reasonCode: 'cli_auth_refresh_missing',
+        })
+      }
+      // The access token has expired but the refresh token can still mint a
+      // new one. Run the same rotation other commands use instead of telling
+      // the user to sign in again.
+      let pair: Awaited<ReturnType<CliOAuthClientPort['refresh']>>
+      try {
+        const endpoints = protocolEndpointsFromIssuer(metadata.issuer, {
+          clientId: metadata.clientId,
+          scopes: metadata.scopes,
+        })
+        pair = await this.#options.oauth(endpoints).refresh({
+          refreshToken: credential.refreshToken,
+        })
+      } catch (error) {
+        if (isRejectedRefresh(error)) {
+          return statusFrom(metadata, credential, now, {
+            loggedIn: false,
+            reasonCode: reasonCodeOf(error) ?? 'cli_auth_refresh_rejected',
+          })
+        }
+        // A transient failure does not prove the session was revoked.
+        return statusFrom(metadata, credential, now, { loggedIn: true })
+      }
+      const next = credentialFromTokenPair(pair, now)
+      const nextMetadata = AuthMetadataSchema.parse({
+        ...metadata,
+        expiresAt: next.expiresAt,
+        scopes: next.scopes,
+        updatedAt: new Date(now).toISOString(),
+      })
+      await this.#commit(next, nextMetadata)
+      return statusFrom(nextMetadata, next, now)
     })
   }
 

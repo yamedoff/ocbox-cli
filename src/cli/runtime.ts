@@ -302,6 +302,25 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
       projectCreated = true
     }
   }
+  if (provider === 'ocbox' && projectId !== undefined && !projectCreated && !projectMatchedByName) {
+    // A saved project can belong to a different signed-in account; validating
+    // only the local file would report success and let `start` fail later.
+    try {
+      await runMetadataAction(createMetadataClient(flags), 'project.get', { projectId })
+    } catch (error) {
+      if (error instanceof OcboxError && error.code === 'PROJECT_NOT_FOUND') {
+        throw new OcboxError({
+          code: 'PROJECT_NOT_FOUND',
+          message:
+            'The configured hosted project is not visible to the signed-in account. ' +
+            'Remove or replace projectId in opencloudbox.toml (or pass --project with a ' +
+            'project this account can see), then rerun ocbox init.',
+          requestId: error.requestId,
+        })
+      }
+      throw error
+    }
+  }
   if (!exists && provider === 'ocbox') {
     // Omit resource/image/location overrides so the server chooses its free default.
     source = DEFAULT_PROJECT_CONFIG.replace(

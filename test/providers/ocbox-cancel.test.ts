@@ -124,7 +124,8 @@ describe('hosted cancellation from durable mappings', () => {
     expect((await store.load()).hostedMappings['scope']?.[sandboxId]?.lastExecutionId).toBe(
       'execution',
     )
-    await provider.cancelSandboxExecution(sandboxId, undefined, 1000)
+    const cancelled = await provider.cancelSandboxExecution(sandboxId, undefined, 1000)
+    expect(cancelled.executionId).toBe(handle.execution.id)
     expect(await handle.result).toMatchObject({ cancelled: true, exitCode: 130 })
     expect(
       (await store.load()).hostedMappings['scope']?.[sandboxId]?.lastExecutionId,

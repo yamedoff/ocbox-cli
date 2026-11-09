@@ -118,6 +118,7 @@ export async function collectExecutionEvents(
   let cursor: string | null = options.checkpoint?.cursor ?? null
   let lastSequence = options.checkpoint?.lastSequence ?? -1
   const seen: HostedEvent[] = []
+  let sawCancelled = false
   let failures = 0
   let attempt = 0
 
@@ -308,6 +309,7 @@ export async function collectExecutionEvents(
       }
       seen.push(event as unknown as HostedEvent)
       options.onEvent?.(event)
+      if (event.kind === 'cancelled') sawCancelled = true
       if (event.kind !== 'started' && event.kind !== 'stdout' && event.kind !== 'stderr') {
         sawTerminal = true
       }
@@ -360,7 +362,14 @@ export async function collectExecutionEvents(
         current.state === 'failed'
       ) {
         await drainRemainingEvents()
-        return { events: seen, executionId, result: await readResult() }
+        return {
+          events: seen,
+          executionId,
+          result:
+            sawCancelled || current.state === 'cancelled'
+              ? ({ kind: 'cancelled' } as unknown as HostedResult)
+              : await readResult(),
+        }
       }
       await pause(pollMs)
     }
@@ -413,7 +422,13 @@ export async function collectExecutionEvents(
     }
     const { sawTerminal } = ingestPage(page)
     if (sawTerminal) {
-      return { events: seen, executionId, result: await readResult() }
+      return {
+        events: seen,
+        executionId,
+        result: sawCancelled
+          ? ({ kind: 'cancelled' } as unknown as HostedResult)
+          : await readResult(),
+      }
     }
     if (page.nextCursor === null) {
       const current = await readExecution()
@@ -422,7 +437,14 @@ export async function collectExecutionEvents(
           current.state as 'completed' | 'cancelled' | 'failed' | 'pending' | 'running',
         )
       ) {
-        return { events: seen, executionId, result: await readResult() }
+        return {
+          events: seen,
+          executionId,
+          result:
+            current.state === 'cancelled'
+              ? ({ kind: 'cancelled' } as unknown as HostedResult)
+              : await readResult(),
+        }
       }
       if (deadline.exceeded()) {
         throw new OcboxError({
