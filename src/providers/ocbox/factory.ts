@@ -14,6 +14,7 @@ import { OcboxError } from '../../errors/index.js'
 import { FileOperationCheckpointStore } from './checkpoints.js'
 import { OcboxSandboxProvider } from './provider.js'
 import type { HostedRequestedSpec } from './requested-spec.js'
+import type { HostedSessionCache } from './session-cache.js'
 
 /**
  * Builds the hosted provider from the protected T3/T15 credential path.
@@ -27,6 +28,7 @@ export function createOcboxProvider(options: {
   apiUrl?: string | undefined
   projectId?: string | undefined
   requestedSpec?: HostedRequestedSpec | undefined
+  sessionCache?: HostedSessionCache | undefined
 }): OcboxSandboxProvider {
   const environment = options.environment ?? process.env
   const hostedProjectId = options.projectId ?? environment['OCBOX_PROJECT_ID']
@@ -101,5 +103,6 @@ export function createOcboxProvider(options: {
     checkpointStore: new FileOperationCheckpointStore(stateDirectory),
     hostedProjectId,
     requestedSpec: options.requestedSpec,
+    ...(options.sessionCache === undefined ? {} : { sessionCache: options.sessionCache }),
   })
 }

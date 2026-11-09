@@ -12,7 +12,6 @@ import { createLifecycleService, DEFAULT_PROJECT_CONFIG } from '../../src/cli/ru
 import { OperationIdSchema, SessionIdSchema } from '../../src/domain/ids.js'
 import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { LifecycleStore, projectIdForPath } from '../../src/lifecycle/index.js'
-import { emptyLifecycleProjectState } from '../../src/lifecycle/schema.js'
 
 const originalEnvironment = { ...process.env }
 const roots: string[] = []
@@ -60,27 +59,36 @@ async function seedSession(subject: string, sessionId: string): Promise<void> {
   const projectId = projectIdForPath(workspace)
   const timestamp = UtcTimestampSchema.parse(new Date().toISOString())
   const id = SessionIdSchema.parse(sessionId)
-  const state = emptyLifecycleProjectState(projectId)
-  state.activeSessionId = id
-  state.sessions[id] = {
-    id,
-    projectId,
-    state: 'creating',
-    bindings: [],
-    currentOperationId: OperationIdSchema.parse('33333333-3333-4333-8333-333333333333'),
-    providerVerifiedAt: null,
-    sandboxDeletionVerifiedAt: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }
-  await new LifecycleStore(accountDirectory(subject), projectId).update(() => state)
+  await new LifecycleStore(accountDirectory(subject), projectId).update((state) => ({
+    ...state,
+    activeSessionId: id,
+    sessions: {
+      ...state.sessions,
+      [id]: {
+        id,
+        projectId,
+        state: 'creating',
+        bindings: [],
+        currentOperationId: OperationIdSchema.parse('33333333-3333-4333-8333-333333333333'),
+        providerVerifiedAt: null,
+        sandboxDeletionVerifiedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    },
+  }))
 }
+
+// Far enough ahead that the stored token never expires while the suite runs.
+const TOKEN_EXPIRES_AT = UtcTimestampSchema.parse(
+  new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+)
 
 async function setToken(token: string): Promise<void> {
   const key = defaultCredentialKey()
   await createCredentialStore().set(key, {
     accessToken: token,
-    expiresAt: UtcTimestampSchema.parse('2026-11-09T12:00:00.000Z'),
+    expiresAt: TOKEN_EXPIRES_AT,
     scopes: [...DEFAULT_SCOPES],
     tokenType: 'Bearer',
   })
@@ -90,7 +98,7 @@ async function setToken(token: string): Promise<void> {
     clientId: 'ocb_cli',
     audience: 'cli',
     scopes: [...DEFAULT_SCOPES],
-    expiresAt: UtcTimestampSchema.parse('2026-11-09T12:00:00.000Z'),
+    expiresAt: TOKEN_EXPIRES_AT,
     identity: key,
     updatedAt: UtcTimestampSchema.parse(new Date().toISOString()),
   })
@@ -149,5 +157,24 @@ describe('account-scoped session state', () => {
     expect(
       (await (await createLifecycleService(flags)).list()).map((view) => view.session.id),
     ).toEqual([sessionA])
+  })
+
+  it('shows the boxes from both logins of the same account in one list', async () => {
+    const flags = { 'state-dir': stateDirectory, 'api-url': origin }
+    const firstLogin = '55555555-5555-4555-8555-555555555555'
+    const secondLogin = '66666666-6666-4666-8666-666666666666'
+    // Both tokens resolve to user-a through /v1/auth/me, as two logins of one
+    // account do. Each login owns one box in the same account directory.
+    await seedSession('user-a', firstLogin)
+    await setToken('token-a-first')
+    expect(
+      (await (await createLifecycleService(flags)).list()).map((view) => view.session.id),
+    ).toEqual([firstLogin])
+
+    await seedSession('user-a', secondLogin)
+    await setToken('token-a-second')
+    expect(
+      (await (await createLifecycleService(flags)).list()).map((view) => view.session.id),
+    ).toEqual([firstLogin, secondLogin])
   })
 })

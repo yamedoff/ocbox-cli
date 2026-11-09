@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -190,18 +189,8 @@ async function hostedLifecycle() {
   let executionCancelled = false
   let executionSessionId
   let executionSandboxId
-  const manifests = new Map()
-  const sourceKeys = new Map()
-  const sourceApplies = new Map()
-  let applyMode = 'async', onSourcePoll, activeChild
-  const workspace = join(root, 'workspace', 'hosted_project')
-  let sourceCreates = 0
-  let chunkUploads = 0
-  let delivered = 0
-  let sourceClock = Date.now()
   let executionStdout = ''
-  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
-  const publicManifest = ({ chunks, ...manifest }) => manifest
+  let activeChild
   const handler = async (request, response) => {
     const bodyChunks = []
     for await (const chunk of request) bodyChunks.push(chunk)
@@ -258,155 +247,7 @@ async function hostedLifecycle() {
       return operation('create', sessionId)
     }
     if (path.startsWith('/v1/operations/')) {
-      const id = path.split('/').at(-1), apply = sourceApplies.get(id)
-      if (apply) {
-        onSourcePoll?.()
-        if (++apply.polls >= 3) {
-          apply.op.state = ['failed', 'cancelled'].includes(applyMode) ? applyMode : 'succeeded'
-          apply.op.progress = 100
-          if (apply.op.state === 'succeeded') await apply.finish()
-          if (apply.op.state !== 'succeeded')
-            apply.op.error = { code: 'SOURCE_APPLY_REVOKED', message: 'Source apply revoked', reason: 'source_apply_revoked' }
-        }
-      }
-      return send(operations.get(id))
-    }
-    const sourceSession = /^\/v1\/sessions\/([^/]+)\/source\/manifests$/.exec(path)
-    if (sourceSession) {
-      const id = sourceSession[1]
-      assert(sessions.has(id))
-      if (request.method === 'GET')
-        return send({
-          data: [...manifests.values()].filter((item) => item.sessionId === id).map(publicManifest),
-          nextCursor: null,
-        })
-      assert.equal(request.method, 'POST')
-      const key = request.headers['idempotency-key']
-      assert.equal(typeof key, 'string')
-      if (sourceKeys.has(key)) {
-        const previous = sourceKeys.get(key)
-        assert.equal(previous.rawBody, rawBody, 'replay keys must retain their payload')
-        return send(previous.body, 201)
-      }
-      sourceCreates += 1
-      const manifest = {
-        ...body,
-        id: `source_${sourceCreates}`,
-        sessionId: id,
-        createdAt: new Date(++sourceClock).toISOString(),
-        updatedAt: new Date(sourceClock).toISOString(),
-        verified: false,
-        uploadedChunks: 0,
-        chunks: new Map(),
-      }
-      manifests.set(manifest.id, manifest)
-      const created = publicManifest(manifest)
-      sourceKeys.set(key, { rawBody, body: created })
-      return send(created, 201)
-    }
-    const sourceRoute = /^\/v1\/source\/manifests\/([^/]+)\/(?:chunks\/(\d+)|(checksum))$/.exec(
-      path,
-    )
-    if (sourceRoute) {
-      const [, id, index, checksum] = sourceRoute
-      const manifest = manifests.get(id)
-      assert(manifest)
-      assert.equal(typeof request.headers['idempotency-key'], 'string')
-      if (!checksum) {
-        assert.equal(request.method, 'PUT')
-        chunkUploads += 1
-        const bytes = Buffer.from(body.data, 'base64')
-        assert.equal(bytes.toString('base64'), body.data)
-        assert(bytes.length <= 1024 * 1024)
-        assert.equal(sha256(bytes), body.checksum)
-        if (manifest.chunks.has(Number(index)))
-          assert.deepEqual(manifest.chunks.get(Number(index)), bytes)
-        manifest.chunks.set(Number(index), bytes)
-        manifest.uploadedChunks = manifest.chunks.size
-        return send({
-          manifestId: id,
-          chunkIndex: Number(index),
-          chunkChecksum: body.checksum,
-          receivedBytes: bytes.length,
-          uploadedChunks: manifest.uploadedChunks,
-        })
-      }
-      assert.equal(request.method, 'POST')
-      const replay = sourceApplies.get(`apply_${id}`)
-      if (applyMode === 'replay' && replay?.op.state === 'succeeded' && replay.replays++ === 0)
-        return send(replay.op, 202)
-      if (!manifest.verified && applyMode !== 'immediate') {
-        const operationId = `apply_${id}`
-        let apply = sourceApplies.get(operationId)
-        if (!apply) {
-          const op = { ...operations.values().next().value, id: operationId,
-            kind: 'source.apply', state: 'pending', progress: 0 }
-          apply = { op, finish, polls: 0, key: request.headers['idempotency-key'], replays: 0 }
-          sourceApplies.set(operationId, apply)
-          operations.set(operationId, op)
-        }
-        assert.equal(request.headers['idempotency-key'], apply.key)
-        if (apply.op.state !== 'succeeded')
-          return send(apply.op, 202)
-      }
-      await finish()
-      return send({
-        manifestId: id, checksum: manifest.checksum, chunkCount: manifest.chunkCount, verified: true,
-      })
-    async function finish() {
-      assert.equal(manifest.chunks.size, manifest.chunkCount)
-      const archive = Buffer.concat(
-        Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
-      )
-      assert.equal(archive.length, manifest.totalBytes)
-      assert(archive.length <= 1024 * 1024)
-      assert.equal(sha256(archive), manifest.checksum)
-      if (!manifest.verified) {
-        // Model managed delivery: decode the frozen OCBOXA1 archive into the
-        // project workspace (the same entries the server converts to tar).
-        assert.equal(archive.subarray(0, 8).toString(), 'OCBOXA1\n')
-        const entries = []
-        let offset = 8
-        let fileBytes = 0
-        let fileCount = 0
-        await mkdir(workspace, { recursive: true })
-        for (;;) {
-          const length = archive.readUInt32BE(offset)
-          offset += 4
-          const header = JSON.parse(archive.subarray(offset, offset + length).toString('utf8'))
-          offset += length
-          if (header.type === 'end') {
-            assert.equal(
-              header.snapshotSha256,
-              sha256(Buffer.from(entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''))),
-            )
-            assert.equal(offset, archive.length)
-            break
-          }
-          const entry = header.entry
-          assert(!entry.path.startsWith('/') && !entry.path.split('/').includes('..'))
-          assert.equal(entry.linkTarget, null)
-          if (entries.length)
-            assert(Buffer.compare(Buffer.from(entries.at(-1).path), Buffer.from(entry.path)) < 0)
-          entries.push(entry)
-          const destination = join(workspace, ...entry.path.split('/'))
-          if (entry.type === 'directory') await mkdir(destination, { recursive: true })
-          else {
-            fileCount += 1
-            fileBytes += entry.size
-            assert(entry.size <= 65536 && fileBytes <= 524288 && fileCount <= 100)
-            const bytes = archive.subarray(offset, offset + entry.size)
-            offset += entry.size
-            assert.equal(sha256(bytes), entry.sha256)
-            await mkdir(dirname(destination), { recursive: true })
-            await writeFile(destination, bytes)
-          }
-        }
-        delivered += 1
-        manifest.verified = true
-        manifest.updatedAt = new Date(++sourceClock).toISOString()
-      }
-    }
+      return send(operations.get(path.split('/').at(-1)))
     }
     const matched = /^\/v1\/sessions\/([^/]+)(?:\/(.*))?$/.exec(path)
     if (matched) {
@@ -418,9 +259,7 @@ async function hostedLifecycle() {
         executionSessionId = id
         executionSandboxId = session.primarySandboxId
         executionCancelled = false
-        // Managed commands resolve paths relative to /workspace/<projectId>.
-        executionStdout =
-          body.command === "'cat' 'a.txt'" ? await readFile(join(workspace, 'a.txt'), 'utf8') : ''
+        executionStdout = ''
         return send(
           {
             id: 'hosted_execution',
@@ -550,21 +389,23 @@ async function hostedLifecycle() {
     try {
       return {
         code: 0,
-        ...(await track(execFileAsync(
-          process.execPath,
-          [
-            cli,
-            ...args.slice(0, args[0] === 'sync' ? 2 : 1),
-            ...flags,
-            ...args.slice(args[0] === 'sync' ? 2 : 1),
-          ],
-          {
-            cwd: root,
-            env: { ...environment, ...overrides },
-            encoding: 'utf8',
-            timeout: 30_000,
-          },
-        ))),
+        ...(await track(
+          execFileAsync(
+            process.execPath,
+            [
+              cli,
+              ...args.slice(0, args[0] === 'sync' ? 2 : 1),
+              ...flags,
+              ...args.slice(args[0] === 'sync' ? 2 : 1),
+            ],
+            {
+              cwd: root,
+              env: { ...environment, ...overrides },
+              encoding: 'utf8',
+              timeout: 30_000,
+            },
+          ),
+        )),
       }
     } catch (error) {
       return error
@@ -591,101 +432,13 @@ async function hostedLifecycle() {
     assert.equal(creates, 1)
     const status = await success(['status', '--json'])
     assert.equal(status.data.sandbox.id, localId)
-    const source = join(root, 'source')
-    await mkdir(source)
-    await writeFile(join(source, 'a.txt'), 'uploaded a\n')
-    await writeFile(join(source, 'b.txt'), 'uploaded b\n')
-    await writeFile(join(source, 'c.txt'), 'uploaded c\n')
-    const pushArgs = ['sync', 'push', '--local-dir', source, '--json']
-    const pushed = await success(pushArgs)
-    assert.deepEqual(pushed.data.uploadedFiles, ['a.txt', 'b.txt', 'c.txt'])
-    assert.equal(pushed.data.uploadedBytes, 33)
-    assert.equal(sourceCreates, 1)
-    assert.equal(delivered, 1)
-    const uploaded = await success(['exec', '--json', '--', 'cat', 'a.txt'])
-    assert.equal(Buffer.from(uploaded.stdout.data, 'base64').toString(), 'uploaded a\n')
-    assert.equal(uploaded.result.exitCode, 0)
-    const humanCat = await run(['exec', '--', 'cat', 'a.txt'])
-    assert.equal(humanCat.code, 0, humanCat.stderr)
-    assert.equal(humanCat.stdout, 'uploaded a\n')
-    const beforeChunks = chunkUploads
-    const repeated = await success(pushArgs)
-    assert.equal(repeated.data.applied, false)
-    assert.deepEqual(repeated.data.uploadedFiles, [])
-    assert.equal(repeated.data.uploadedBytes, 0)
-    assert.equal(chunkUploads, beforeChunks)
-    assert.equal(sourceCreates, 1)
-    assert.equal(delivered, 1)
-    await writeFile(join(source, 'a.txt'), 'changed a\n')
-    await success(pushArgs)
-    assert.equal((await run(['exec', '--', 'cat', 'a.txt'])).stdout, 'changed a\n')
-    await writeFile(join(source, 'a.txt'), 'uploaded a\n')
-    await success(pushArgs)
-    assert.equal((await run(['exec', '--', 'cat', 'a.txt'])).stdout, 'uploaded a\n')
-    assert.equal(delivered, 3, 'returning to an earlier snapshot must deliver again')
-    const afterRevert = chunkUploads
-    assert.equal((await success(pushArgs)).data.uploadedBytes, 0)
-    assert.equal(chunkUploads, afterRevert)
-    for (const mode of ['immediate', 'replay', 'failed', 'cancelled', 'interrupt']) {
-      applyMode = mode
-      await writeFile(join(source, 'a.txt'), `${mode} content\n`)
-      const before = sourceApplies.size
-      onSourcePoll = mode === 'interrupt' ? () => activeChild.kill('SIGINT') : undefined
-      const result = await run(pushArgs)
-      onSourcePoll = undefined
-      if (['failed', 'cancelled', 'interrupt'].includes(mode)) {
-        const error = parseEnvelope(result.stderr).data
-        assert.notEqual(result.code, 0)
-        assert.equal(error.code, mode === 'interrupt' ? 'OPERATION_CANCELLED' : 'SYNC_FAILED')
-        if (mode !== 'interrupt') {
-          assert.equal(error.providerCode, 'SOURCE_APPLY_REVOKED')
-          assert.equal(error.message, 'Source apply revoked')
-          assert.equal(error.requestId, requestId)
-        }
-      } else {
-        assert.equal(result.code, 0, result.stderr)
-        assert.equal(await readFile(join(workspace, 'a.txt'), 'utf8'), `${mode} content\n`)
-        assert.equal(sourceApplies.size - before, mode === 'immediate' ? 0 : 1)
-        if (mode === 'replay') assert.equal([...sourceApplies.values()].at(-1).polls, 4)
-      }
-    }
-    applyMode = 'async'
-    const afterModes = chunkUploads
-    await writeFile(join(source, 'large.txt'), Buffer.alloc(65537))
-    const tooLarge = await failure(pushArgs)
-    assert.equal(tooLarge.data.code, 'SYNC_TOO_LARGE')
-    assert.match(tooLarge.data.message, /large\.txt.*65537.*--exclude/)
-    assert.equal(chunkUploads, afterModes)
-    await success([...pushArgs, '--exclude', 'large.txt'])
-    for (const command of ['pull', 'diff']) {
-      // Hosted read-back is attempted now; this mock has no snapshot route.
-      const unavailable = await failure(['sync', command, '--local-dir', source, '--json'])
-      assert.equal(unavailable.data.code, 'CAPABILITY_UNSUPPORTED')
-      assert.match(unavailable.data.message, /Server does not support source snapshots yet/)
-    }
-    await assert.rejects(
-      readFile(
-        join(
-          state,
-          'sync',
-          started.data.session.projectId,
-          started.data.session.id,
-          'remote',
-          'a.txt',
-        ),
-      ),
-      { code: 'ENOENT' },
-    )
-    process.stdout.write(
-      'CLI hosted sync E2E passed (3 files, project cwd exec, unchanged push, size limit, read-back unavailable)\n',
-    )
     const executed = await success(['exec', '--json', '--', 'echo', 'mock'])
     assert.equal(executed.result.exitCode, 0)
 
     assert.equal((await failure(['cancel', '--json'])).data.code, 'INVALID_STATE')
     longExecution = true
     const firstExecutionCall = calls.length
-    const running = run(['exec', '--json', '--', 'sleep', '600'])
+    const running = run(['exec', '--jsonl', '--', 'sleep', '600'])
     for (let attempt = 0; attempt < 200; attempt += 1) {
       if (
         calls
@@ -698,10 +451,15 @@ async function hostedLifecycle() {
     }
     const cancelled = await success(['cancel', '--sandbox', localId, '--json'])
     assert.equal(cancelled.data.state, 'cancelled')
-    assert.equal(cancelled.data.executionId, 'hosted_execution')
     const ended = await running
     assert.equal(ended.code, 130)
-    assert.equal(JSON.parse(ended.stdout).outcome, 'cancelled')
+    const events = ended.stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const startedEvent = events.find((event) => event.event === 'started')
+    assert.equal(events.at(-1).outcome, 'cancelled')
+    assert.equal(cancelled.data.executionId, startedEvent.executionId)
     const cancelCalls = calls.filter(([, path]) => path.endsWith('/hosted_execution/cancel')).length
     assert.equal((await success(['cancel', 'hosted_execution', '--json'])).data.state, 'cancelled')
     assert.equal(
@@ -723,7 +481,10 @@ async function hostedLifecycle() {
     let before = sessionCalls()
     await metadataStore.save({ ...metadata, updatedAt: new Date(Date.now() + 1000).toISOString() })
     assert.equal((await failure(['status', '--json'])).data.code, 'SANDBOX_NOT_FOUND')
-    assert.equal((await failure(pushArgs)).data.code, 'SANDBOX_NOT_FOUND')
+    assert.equal(
+      (await failure(['sync', 'push', '--local-dir', root, '--json'])).data.code,
+      'SANDBOX_NOT_FOUND',
+    )
     assert.equal(
       (await failure(['cancel', 'hosted_execution', '--json'])).data.code,
       'SANDBOX_NOT_FOUND',

@@ -11,11 +11,6 @@ import {
   RedactedDetailsSchema,
 } from '../errors/index.js'
 import { findSensitiveMaterial } from '../security/redaction.js'
-import {
-  prepareSourceChunks,
-  type PreparedSource,
-  type uploadPreparedSource,
-} from '../providers/ocbox/source.js'
 import { ExclusiveFileLock } from '../state/exclusive-file-lock.js'
 import { encodeSyncArchive, SyncArchiveError } from './archive.js'
 import {
@@ -57,7 +52,6 @@ export interface SyncContext {
   readonly stateDirectory: string
   readonly localRoot: string
   readonly remoteRoot: string
-  readonly hostedUpload?: (prepared: PreparedSource) => ReturnType<typeof uploadPreparedSource>
 }
 
 export interface SyncChangeView {
@@ -667,120 +661,11 @@ async function* openSourceFile(root: string, path: ManifestPath): AsyncIterable<
   }
 }
 
-// These are the managed staging policy, stricter than the OpenAPI schema
-// ceilings (512 MiB archive / 10,000 chunks / 1 MiB decoded chunk).
-export const HOSTED_SOURCE_LIMITS = {
-  archiveBytes: 1024 * 1024,
-  files: 100,
-  fileBytes: 64 * 1024,
-  totalBytes: 512 * 1024,
-} as const
-
 function hostedUnsupported(command: string): OcboxError {
   return syncError(
     'CAPABILITY_UNSUPPORTED',
     `sync ${command} is not supported for hosted sandboxes yet`,
   )
-}
-
-async function runHostedPush(
-  context: SyncContext,
-  options: SyncApplyOptions,
-): Promise<SyncApplyView> {
-  if (options.delete)
-    throw syncError(
-      'CAPABILITY_UNSUPPORTED',
-      'Hosted sync push cannot delete remote files yet; omit --delete to upload files',
-    )
-  if (context.hostedUpload === undefined) throw hostedUnsupported('push')
-  if (!(await isDirectory(context.localRoot)))
-    throw syncError(
-      'CONFIG_INVALID',
-      'The local source root must be an existing directory, without a symlink',
-    )
-  const groups = await loadIgnoreRuleGroups(context.localRoot, options.cliRules)
-  const manifest = await scanSourceManifest(context.localRoot, {
-    ignoreRuleGroups: groups,
-    maxFileBytes: HOSTED_SOURCE_LIMITS.fileBytes,
-    maxFiles: HOSTED_SOURCE_LIMITS.files,
-    maxBytes: HOSTED_SOURCE_LIMITS.totalBytes,
-  })
-  const entries = snapshotEntries(manifest)
-  const files = entries.filter((entry) => entry.type === 'file')
-  // The scan rejects large files before hashing. Stat only rejected candidates
-  // for diagnostics; they are never read into the archive.
-  const rejectedFiles = await Promise.all(
-    manifest.blocked
-      .filter((entry) => entry.reason === 'size-limit' || entry.reason === 'file-limit')
-      .map(async (entry) => ({
-        path: entry.path,
-        size: (await lstat(join(context.localRoot, entry.path))).size,
-      })),
-  )
-  const sourceFiles = [...files, ...rejectedFiles]
-  const oversized = sourceFiles.filter((entry) => entry.size > HOSTED_SOURCE_LIMITS.fileBytes)
-  const hint =
-    'Exclude files with --exclude <path-or-pattern> or add patterns to .opencloudboxignore.'
-  if (oversized.length > 0) {
-    const names = oversized
-      .slice(0, 10)
-      .map((entry) => {
-        const path = findSensitiveMaterial(entry.path).length > 0 ? '(redacted path)' : entry.path
-        return `${path} (${entry.size} bytes)`
-      })
-      .join(', ')
-    const display = names.length > 600 ? `${names.slice(0, 600)}...` : names
-    throw syncError(
-      'SYNC_TOO_LARGE',
-      `Hosted files exceed the 65536-byte (64 KiB) per-file limit: ${display}. ${hint}`,
-      { files: oversized.slice(0, 50).map((entry) => ({ path: entry.path, bytes: entry.size })) },
-    )
-  }
-  if (sourceFiles.length > HOSTED_SOURCE_LIMITS.files)
-    throw syncError(
-      'SYNC_TOO_LARGE',
-      `Hosted source has ${sourceFiles.length} files; the limit is 100 files. ${hint}`,
-    )
-  const totalBytes = sourceFiles.reduce((total, entry) => total + entry.size, 0)
-  if (totalBytes > HOSTED_SOURCE_LIMITS.totalBytes)
-    throw syncError(
-      'SYNC_TOO_LARGE',
-      `Hosted source contains ${totalBytes} bytes; the total file limit is 524288 bytes (512 KiB). ${hint}`,
-    )
-  assertManifestsTransferable([manifest])
-  const canonicalRoot = await realpath(context.localRoot)
-  const archive: Buffer[] = []
-  let archiveBytes = 0
-  try {
-    for await (const chunk of encodeSyncArchive(entries, (path) =>
-      openSourceFile(canonicalRoot, path),
-    )) {
-      archiveBytes += chunk.byteLength
-      if (archiveBytes > HOSTED_SOURCE_LIMITS.archiveBytes)
-        throw syncError(
-          'SYNC_TOO_LARGE',
-          `Hosted source archive exceeds 1048576 bytes (1 MiB), including paths and metadata. ${hint}`,
-        )
-      archive.push(Buffer.from(chunk))
-    }
-  } catch (error) {
-    throw transferFailure(error)
-  }
-  const result = await context.hostedUpload(prepareSourceChunks(Buffer.concat(archive)))
-  const remoteManifest = emptySourceManifest()
-  const plan = planSync({ mode: 'push', local: entries, remote: [], baseline: null })
-  const view = toPlanView(plan, context, { plan, localManifest: manifest, remoteManifest })
-  return {
-    ...view,
-    operations: result.uploaded ? view.operations : [],
-    applied: result.uploaded,
-    baselineUpdated: false,
-    operationId: null,
-    manifestId: result.manifestId,
-    uploadedFiles: result.uploaded ? files.map((entry) => entry.path) : [],
-    uploadedBytes: result.uploaded ? totalBytes : 0,
-    archiveBytes: result.uploaded ? archiveBytes : 0,
-  }
 }
 
 /**
@@ -795,9 +680,10 @@ export async function runSyncApply(
   if (context.providerName === 'ocbox') {
     if (mode === 'pull')
       return withSyncLock(context, options, () => runHostedPull(context, options))
-    return withSyncLock(context, options, () =>
-      context.casTransport ? runCasPush(context, options) : runHostedPush(context, options),
-    )
+    return withSyncLock(context, options, () => {
+      if (context.casTransport === undefined) throw hostedUnsupported('push')
+      return runCasPush(context, options)
+    })
   }
   const now = options.now ?? (() => new Date())
   const roots = rootsFor(mode, context)

@@ -212,6 +212,35 @@ describe('hosted execution streaming', () => {
     )
   })
 
+  it('returns a cancelled result from a terminal event without waiting for the result endpoint', async () => {
+    const { api } = await seededApi((input) => {
+      const url = String(input)
+      if (url.includes('/events')) {
+        return Promise.resolve(
+          jsonResponse({
+            data: [
+              { at: EVENT_AT, kind: 'started', message: '', sequence: 0, stream: null },
+              { at: EVENT_AT, kind: 'cancelled', message: '', sequence: 1, stream: null },
+            ],
+            nextCursor: null,
+          }),
+        )
+      }
+      if (url.includes('/result')) {
+        return Promise.resolve(errorResponse('EXECUTION_NOT_COMPLETE', 409))
+      }
+      return Promise.resolve(jsonResponse(executionFixture('cancelled')))
+    })
+    const collected = await collectExecutionEvents(api, 'exec_hosted_1', {
+      deadlineMilliseconds: 50,
+      sleep: () => Promise.resolve(),
+    })
+    expect(collected.result).toEqual({ kind: 'cancelled' })
+    expect(
+      toExecResult(collected.result, { completedAt: EVENT_AT, startedAt: STARTED_AT }),
+    ).toMatchObject({ cancelled: true, exitCode: 130, timedOut: false })
+  })
+
   it('maps infrastructure and cancelled results distinctly', () => {
     expect(() =>
       toExecResult(

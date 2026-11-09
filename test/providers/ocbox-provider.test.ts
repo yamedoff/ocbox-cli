@@ -131,6 +131,12 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(fetched?.id).toBe(result.sandbox.id)
   })
 
+  it('does not expose the retired hosted source upload route', async () => {
+    const { api } = await seededApi(routeFetch('happy'))
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    expect('uploadSource' in provider).toBe(false)
+  })
+
   it('maps a valid hosted effectiveSpec into the Sandbox specification', async () => {
     const effectiveSpec = { ...testSpec(), cpu: { millicores: 2000 } }
     const { api } = await seededApi((input, init) => {
@@ -176,6 +182,157 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(result.sandbox.providerSandboxId).toBe('sbx_hosted_1')
     expect(result.sandbox.lifecycle.rawState).toBe('running')
     expect(result.sandbox.lifecycle.normalizedState).toBe('running')
+  })
+
+  it('maps the hosted public scalar effective fields onto the full specification', async () => {
+    const effectiveSpec = {
+      cpu: 2,
+      memory: 4096,
+      region: 'eu-west',
+      runtime: 'managed',
+      lifetimeSeconds: 1800,
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    const effective = result.sandbox.specification.effective
+    expect(effective).not.toBeNull()
+    expect(effective?.cpu.millicores).toBe(2000)
+    expect(effective?.memory.bytes).toBe(4096 * 2 ** 20)
+    expect(effective?.region).toBe('eu-west')
+    expect(effective?.image).toEqual(testSpec()['image'])
+    expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
+  })
+
+  it('uses the observed hosted image and region when the local config omitted them', async () => {
+    const effectiveSpec = {
+      cpu: 1,
+      memory: 2048,
+      image: 'opencloudbox/node:24',
+      region: 'eu-west',
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+      requestedSpec: { cpu: 1 },
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.requested.image).toEqual({
+      kind: 'image',
+      reference: 'opencloudbox/node:24',
+    })
+    expect(result.sandbox.specification.requested.region).toBe('eu-west')
+  })
+
+  it('shows the observed image and region when the hosted config omits them', async () => {
+    const effectiveSpec = {
+      ...testSpec(),
+      image: { kind: 'template', reference: 'node-24' },
+      region: 'eu',
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+      requestedSpec: { cpu: 1 },
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.requested.image).toEqual({
+      kind: 'template',
+      reference: 'node-24',
+    })
+    expect(result.sandbox.specification.requested.region).toBe('eu')
   })
 
   it('leaves an absent or unparseable hosted effectiveSpec unobserved and never promotes requested', async () => {
@@ -537,6 +694,40 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(operation.action).toBe('exec_cancel')
     expect(cancelled).toEqual(['cancel'])
     await expect(handle.result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+  })
+
+  it('rejects cwd and environment options the hosted API cannot carry', async () => {
+    let calls = 0
+    const { api } = await seededApi(() => {
+      calls += 1
+      return Promise.reject(new Error('unexpected hosted call'))
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId: HOSTED_SESSION,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    for (const options of [
+      { environment: {}, workingDirectory: '/workspace' },
+      { environment: { FOO: 'bar' }, workingDirectory: null },
+    ]) {
+      await expect(
+        provider.exec.execute(
+          operationContext() as never,
+          {
+            command: { mode: 'argv', argv: ['pwd'] },
+            sandboxId: LOCAL_IDS.sandbox,
+            timeoutMilliseconds: null,
+            ...options,
+          } as never,
+        ),
+      ).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' })
+    }
+    expect(calls).toBe(0)
   })
 
   it('treats a post-deletion getSession 404 as a verified destroy', async () => {
