@@ -135,7 +135,7 @@ export class WarmSessionServer {
     if (await canConnect(this.#socketPath)) {
       throw new Error('A warm session daemon is already listening on this socket')
     }
-    await rm(this.#socketPath, { force: true })
+    if (this.#platform !== 'win32') await rm(this.#socketPath, { force: true })
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
         this.#server.removeListener('listening', onListening)
