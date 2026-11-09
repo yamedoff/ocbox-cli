@@ -64,7 +64,9 @@ export default class Exec extends OcboxCommand {
     const exitCode = await runExecutionCommand(
       executionTokens(this.argv),
       async (arguments_) =>
-        (await createLifecycleService(runtime)).executionTarget(arguments_.sessionId ?? undefined),
+        (
+          await createLifecycleService(runtime, undefined, undefined, { warmSessions: true })
+        ).executionTarget(arguments_.sessionId ?? undefined),
       io,
       { interrupts: processInterrupts },
     )

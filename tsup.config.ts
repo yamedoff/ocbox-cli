@@ -47,6 +47,7 @@ export default defineConfig({
     contracts: 'src/contracts.ts',
     index: 'src/index.ts',
     infrastructure: 'src/infrastructure.ts',
+    'warm-daemon': 'src/warm/daemon-main.ts',
   },
   format: ['esm'],
   // The CLI is copied into the base image without a node_modules tree, so every
