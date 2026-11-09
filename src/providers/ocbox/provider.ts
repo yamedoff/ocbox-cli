@@ -1132,13 +1132,20 @@ export class OcboxSandboxProvider implements SandboxProvider {
   async #lastExecution(
     record: SandboxRecord,
     executionId: string,
+    localExecutionId: string | undefined,
     clear = false,
     signal?: AbortSignal,
   ): Promise<void> {
     const mutate = (current: SandboxRecord): SandboxRecord => {
-      if (!clear) return { ...current, lastExecutionId: executionId }
+      if (!clear) {
+        return {
+          ...current,
+          lastExecutionId: executionId,
+          ...(localExecutionId === undefined ? {} : { lastLocalExecutionId: localExecutionId }),
+        }
+      }
       if (current.lastExecutionId !== executionId) return current
-      const { lastExecutionId: _last, ...rest } = current
+      const { lastExecutionId: _last, lastLocalExecutionId: _local, ...rest } = current
       return rest
     }
     if (this.#mappingScope === undefined) {
@@ -1167,8 +1174,25 @@ export class OcboxSandboxProvider implements SandboxProvider {
     const requestId = RequestIdSchema.parse(this.#createId())
     const record = await this.#record(sandboxId, requestId)
     if (record === undefined) throw notFoundSandbox(requestId)
-    const id = executionId ?? record.lastExecutionId
+    // `exec` prints the CLI-facing ID, while the hosted API uses its own ID.
+    // Accept either from the user and always answer with the CLI-facing ID when
+    // the mapping still knows it, so the two commands cannot name different runs.
+    const localId =
+      executionId === undefined
+        ? record.lastLocalExecutionId
+        : executionId === record.lastLocalExecutionId
+          ? record.lastLocalExecutionId
+          : executionId === record.lastExecutionId
+            ? record.lastLocalExecutionId
+            : undefined
+    const id =
+      executionId === undefined
+        ? record.lastExecutionId
+        : executionId === record.lastLocalExecutionId
+          ? record.lastExecutionId
+          : executionId
     if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    const reportedId = localId ?? id
     return waitForCancellation(
       requestId,
       waitMilliseconds,
@@ -1182,7 +1206,11 @@ export class OcboxSandboxProvider implements SandboxProvider {
             signal: boundedSignal,
           })
           if (response.status === 404)
-            throw executionError(requestId, `Unknown execution ID: ${id}`, 'SANDBOX_NOT_FOUND')
+            throw executionError(
+              requestId,
+              `Unknown execution ID: ${executionId ?? id}`,
+              'SANDBOX_NOT_FOUND',
+            )
           const execution = HostedExecutionSchema.parse(
             this.#api.assertSuccess('getExecution', response, [200]).body,
           )
@@ -1196,9 +1224,9 @@ export class OcboxSandboxProvider implements SandboxProvider {
             )
           }
           if (isTerminalExecutionState(execution.state)) {
-            await this.#lastExecution(record, id, true, boundedSignal)
+            await this.#lastExecution(record, id, localId, true, boundedSignal)
             return {
-              executionId: id,
+              executionId: reportedId,
               sandboxId,
               state: execution.state as CancellationResult['state'],
             }
@@ -1267,8 +1295,8 @@ export class OcboxSandboxProvider implements SandboxProvider {
         requestId: context.requestId,
       })
     }
-    await this.#lastExecution(record, hosted.id)
     const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
+    await this.#lastExecution(record, hosted.id, localExecutionId)
     const controller = new AbortController()
     this.#executions.set(localExecutionId, {
       controller,
@@ -1302,7 +1330,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     }).then(
       async (collected) => {
         try {
-          await this.#lastExecution(record, hosted.id, true)
+          await this.#lastExecution(record, hosted.id, localExecutionId, true)
           this.#executions.delete(localExecutionId)
           const latest = collected.events[collected.events.length - 1]
           const completedAt = latest?.at ?? this.#now()

@@ -225,7 +225,7 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(effective?.cpu.millicores).toBe(2000)
     expect(effective?.memory.bytes).toBe(4096 * 2 ** 20)
     expect(effective?.region).toBe('eu-west')
-    expect(effective?.image).toEqual(testSpec().image)
+    expect(effective?.image).toEqual(testSpec()['image'])
     expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
   })
 
