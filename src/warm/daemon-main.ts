@@ -28,7 +28,7 @@ const server = new WarmSessionServer({
     process.exit(0)
   },
   provider: () => createOcboxProvider({ apiUrl, projectId, stateDirectory }),
-  sessionTtlMilliseconds: milliseconds('OCBOX_WARM_TTL_MS', 5 * 60_000),
+  sessionTtlMilliseconds: milliseconds('OCBOX_WARM_TTL_MS', 10 * 60_000),
   socketPath,
 })
 

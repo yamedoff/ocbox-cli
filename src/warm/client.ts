@@ -16,7 +16,7 @@ import {
 const DEFAULT_CONNECT_TIMEOUT_MILLISECONDS = 200
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 2_000
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 10 * 60_000
-const DEFAULT_SESSION_TTL_MILLISECONDS = 5 * 60_000
+const DEFAULT_SESSION_TTL_MILLISECONDS = 10 * 60_000
 
 /** Minimal child-process shape used to start the optional daemon. */
 export type WarmSpawn = (

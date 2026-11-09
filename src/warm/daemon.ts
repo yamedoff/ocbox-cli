@@ -28,7 +28,7 @@ export interface WarmSessionServerOptions {
 }
 
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 10 * 60_000
-const DEFAULT_SESSION_TTL_MILLISECONDS = 5 * 60_000
+const DEFAULT_SESSION_TTL_MILLISECONDS = 10 * 60_000
 const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024
 
 interface CachedSession {
