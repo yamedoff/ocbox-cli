@@ -44,7 +44,7 @@ Composition and entry points: `src/cli/runtime.ts:117–280`, `src/commands/exec
 
 Warm session cache: `src/warm/paths.ts`, `src/warm/protocol.ts`, `src/warm/daemon.ts`, `src/warm/daemon-main.ts`, `src/warm/client.ts`; measurement: `scripts/measure-cli-latency.mjs`.
 
-Verified against ocbox-cli @ 65178e9
+Verified against ocbox-cli @ 06da359
 
 Sign-in errors map closed public server reasons to static text and retain the server reference. The five-minute loopback deadline reports when the browser never returned. Local status errors distinguish missing metadata, unreadable state and mismatched identity/generation; the fix is logout then login using the same state directory. Logout returns revocationReason, including missing/unreadable state and invalid endpoint cases. The auth command boundary stores the last 100 failure references (at most seven days) in auth-failures.json through the atomic store; it stores no error text or sign-in material. Look up a local reference in that file; server references belong to the public API support flow.
 

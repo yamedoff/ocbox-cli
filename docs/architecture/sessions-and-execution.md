@@ -38,4 +38,4 @@ Execution failures after an accepted start use the same safe typed code/message 
 
 Selection and transitions: `src/lifecycle/service.ts:87–340,510–700`. Hosted lifecycle/exec/preview: `src/providers/ocbox/provider.ts:390–470,660–720,1000–1424`. Output collection: `src/providers/ocbox/executions.ts:104–434`; cancellation helper: `src/providers/ocbox/operations.ts:399–486`. Warm session cache: `src/warm/client.ts`, `src/warm/daemon.ts`.
 
-Verified against ocbox-cli @ 65178e9
+Verified against ocbox-cli @ 06da359
