@@ -4,11 +4,22 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { OcboxSandboxProvider } from '../../src/providers/ocbox/provider.js'
 import { HostedSessionSchema } from '../../src/providers/ocbox/wire.js'
 import { WarmSessionClient } from '../../src/warm/client.js'
 import { WarmSessionServer, type WarmSessionProvider } from '../../src/warm/daemon.js'
 import { warmSocketPath, type WarmSessionScope } from '../../src/warm/paths.js'
-import { HOSTED_PROJECT, HOSTED_SESSION, hostedSessionFixture } from '../providers/doubles.js'
+import {
+  HOSTED_PROJECT,
+  HOSTED_SANDBOX,
+  HOSTED_SESSION,
+  hostedSessionFixture,
+  jsonResponse,
+  LOCAL_IDS,
+  operationContext,
+  seededApi,
+  testSpec,
+} from '../providers/doubles.js'
 
 const directories: string[] = []
 const servers: WarmSessionServer[] = []
@@ -108,6 +119,66 @@ describe('warm session daemon', () => {
     expect(provider.calls).toBe(1)
     expect((await second.get(HOSTED_SESSION))?.id).toBe(HOSTED_SESSION)
     expect(provider.calls).toBe(1)
+  })
+
+  it('serves a later provider command without another session GET', async () => {
+    const { environment, scope, socketPath } = await scopeFor('provider')
+    let sessionGets = 0
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        sessionGets += 1
+        return Promise.resolve(jsonResponse(hostedSessionFixture({})))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const daemonProvider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    daemonProvider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId: HOSTED_SESSION,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    await startServer(socketPath, daemonProvider)
+    const cache = clientFor(scope, environment, socketPath)
+    const seed = (provider: OcboxSandboxProvider): void => {
+      provider.seedForTests({
+        hostedSandboxId: HOSTED_SANDBOX,
+        hostedSessionId: HOSTED_SESSION,
+        localId: LOCAL_IDS.sandbox,
+        localProjectId: LOCAL_IDS.project,
+        localSessionId: LOCAL_IDS.session,
+        spec: testSpec() as never,
+      })
+    }
+    const context = operationContext()
+
+    const first = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      sessionCache: cache,
+    })
+    seed(first)
+    await first.get(context as never, { sandboxId: LOCAL_IDS.sandbox } as never)
+    expect(sessionGets).toBe(1)
+
+    const later = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      sessionCache: cache,
+    })
+    seed(later)
+    const observed = await later.get(
+      context as never,
+      {
+        sandboxId: LOCAL_IDS.sandbox,
+      } as never,
+    )
+    expect(observed?.id).toBe(LOCAL_IDS.sandbox)
+    expect(sessionGets).toBe(1)
   })
 
   it('accepts a direct read so the next command can reuse it', async () => {
