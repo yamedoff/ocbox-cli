@@ -67,6 +67,7 @@ import type {
 import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
+import type { HostedSessionCache } from './session-cache.js'
 import { uploadPreparedSource, type PreparedSource } from './source.js'
 import { createCasTransport } from './cas.js'
 import {
@@ -166,7 +167,21 @@ export interface OcboxProviderOptions {
   readonly checkpointStore?: OperationCheckpointStore | undefined
   readonly checkpointDurability?: OperationCheckpointDurability | undefined
   readonly waitOptions?: WaitOperationOptions | undefined
+  /**
+   * Cross-process warm session cache used only by the execution path. Lifecycle
+   * mutations still read the hosted Session directly so a stop/destroy sees the
+   * server's current state.
+   */
+  readonly sessionCache?: HostedSessionCache | undefined
 }
+
+/**
+ * How long one command may reuse the hosted Session it already read before
+ * `ocbox exec` starts. This removes the second `GET /v1/sessions/{id}` that the
+ * execution target and the execution start used to make back-to-back. The
+ * cross-process daemon has its own, longer lifetime.
+ */
+const EXECUTION_SESSION_CACHE_MILLISECONDS = 30_000
 
 function notFoundSandbox(requestId: RequestId): OcboxError {
   return new OcboxError({
@@ -297,7 +312,13 @@ export class OcboxSandboxProvider implements SandboxProvider {
   #pinnedMappingScope: string | undefined
   #lifecycleStore: LifecycleStore | undefined
   readonly #mappingScope: (() => Promise<string>) | undefined
+  readonly #sessionCache: HostedSessionCache | undefined
   readonly #sandboxes = new Map<string, SandboxRecord>()
+  readonly #executionSessions = new Map<
+    string,
+    { readonly observedAt: number; readonly session: HostedSession }
+  >()
+  readonly #sessionReads = new Map<string, Promise<HostedSession>>()
   readonly #executions = new Map<
     string,
     {
@@ -326,6 +347,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
     this.#createId = options.createId ?? randomUUID
     this.#checkpointStore = options.checkpointStore ?? new MemoryOperationCheckpointStore()
     this.checkpointDurability = checkpointDurability
+    this.#sessionCache = options.sessionCache
   }
 
   /** The lifecycle composition root supplies its existing project repository. */
@@ -397,6 +419,60 @@ export class OcboxSandboxProvider implements SandboxProvider {
       await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
       throw this.#staleMapping(error.requestId)
     }
+  }
+
+  /**
+   * The execution path's owned Session. Within one command the execution
+   * target and the execution start share the first read; across commands an
+   * available warm-session daemon serves the observation without another
+   * request. A cache miss (or an absent/stale daemon) reads the API directly.
+   */
+  async #executionSession(record: SandboxRecord): Promise<HostedSession> {
+    const now = Date.parse(this.#now())
+    const cached = this.#executionSessions.get(record.hostedSessionId)
+    if (cached !== undefined && now - cached.observedAt < EXECUTION_SESSION_CACHE_MILLISECONDS) {
+      return cached.session
+    }
+    if (this.#sessionCache !== undefined) {
+      const warm = await this.#sessionCache.get(record.hostedSessionId).catch(() => null)
+      if (warm !== null) {
+        try {
+          assertOwnedSession(warm, this.#hostedProjectId)
+          this.#executionSessions.set(record.hostedSessionId, { observedAt: now, session: warm })
+          return warm
+        } catch {
+          // A foreign or malformed cached Session is ignored; read directly.
+        }
+      }
+    }
+    const inflight = this.#sessionReads.get(record.hostedSessionId)
+    if (inflight !== undefined) return inflight
+    const read = this.#mappedSession(record)
+      .then((session) => {
+        this.#executionSessions.set(record.hostedSessionId, {
+          observedAt: Date.parse(this.#now()),
+          session,
+        })
+        if (this.#sessionCache !== undefined) {
+          void Promise.resolve(this.#sessionCache.remember(record.hostedSessionId, session)).catch(
+            () => undefined,
+          )
+        }
+        return session
+      })
+      .finally(() => {
+        this.#sessionReads.delete(record.hostedSessionId)
+      })
+    this.#sessionReads.set(record.hostedSessionId, read)
+    return read
+  }
+
+  /**
+   * Reads the owned hosted Session for the warm-session daemon. This bypasses
+   * the execution-path cache so a daemon refresh observes the API directly.
+   */
+  readHostedSession(hostedSessionId: string): Promise<HostedSession> {
+    return this.#getOwnedSession(hostedSessionId)
   }
 
   /** Test seam: seed a sandbox mapping without a network round-trip. */
@@ -626,7 +702,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
   async get(context: RequestContext, request: GetSandboxRequest): Promise<Sandbox | null> {
     const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined || record.deleted) return null
-    const session = await this.#mappedSession(record)
+    const session = await this.#executionSession(record)
     const primary = resolvePrimaryBinding(session)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
@@ -1120,7 +1196,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
     const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
-    const owned = await this.#mappedSession(record)
+    const owned = await this.#executionSession(record)
     const primary = resolvePrimaryBinding(owned)
     if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
       throw new OcboxError({
