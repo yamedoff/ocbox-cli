@@ -56,8 +56,10 @@ const ConfigSecretReferenceIdSchema = z
     HOSTED_SECRET_REFERENCE_ID_PATTERN,
     'Secret reference ids must be opaque hosted ids, never secret values',
   )
-  .transform((id) => `ocbox:${id}`)
-  .pipe(SecretReferenceIdSchema)
+  .refine(
+    (id) => SecretReferenceIdSchema.safeParse(`ocbox:${id}`).success,
+    'Secret reference ids must be opaque ids, never secret values',
+  )
 
 const SecretReferenceIdsConfigSchema = z
   .array(ConfigSecretReferenceIdSchema)
@@ -205,7 +207,7 @@ export function toSandboxSpec(config: ProjectConfig): SandboxSpec {
     environment: {
       name: config.sandbox.environmentName,
       variableNames: Object.keys(config.env).sort(),
-      secretReferenceIds: config.sandbox.secretReferenceIds,
+      secretReferenceIds: config.sandbox.secretReferenceIds.map((id) => `ocbox:${id}`),
     },
     source: config.source,
     providerClass: config.provider.runtimeClass,
