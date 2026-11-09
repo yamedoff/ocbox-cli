@@ -1,4 +1,4 @@
-import { chmod, mkdir, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, rm } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { OcboxError } from '../errors/index.js'
 import { type HostedSession, HostedSessionSchema } from '../providers/ocbox/wire.js'
@@ -130,6 +130,10 @@ export class WarmSessionServer {
     if (this.#platform !== 'win32') {
       const directory = warmSocketDirectory(this.#socketPath)
       await mkdir(directory, { mode: 0o700, recursive: true })
+      const info = await lstat(directory)
+      if (!info.isDirectory() || (process.getuid !== undefined && info.uid !== process.getuid())) {
+        throw new Error('The warm session directory is not owned by the current user')
+      }
       await chmod(directory, 0o700)
     }
     if (await canConnect(this.#socketPath)) {
