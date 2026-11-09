@@ -12,6 +12,10 @@ The command runtime builds a LifecycleService, an authenticated generated client
 
 `init` checks a saved hosted project against the signed-in account before reporting the config as validated. A project the account cannot see fails with the reset step instead of letting `start` fail later. New hosted configs omit image, region and resource overrides so the server chooses its free default; the fake placeholders remain for the offline provider and its tests only.
 
+## Warm session cache
+
+`ocbox exec` may start one optional local daemon on first use. It listens on an owner-only socket in the user's runtime directory (a named pipe on Windows), keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. A cached observation is advisory: the execution start remains authoritative for a state change the daemon has not seen. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
+
 ## Data it keeps
 
 Project configuration is separate from machine metadata, protected OAuth credentials, Session mappings, operation checkpoints, agent ownership manifests and local transfer journals. Remote product records belong to the API. Local files never contain the server's provider credentials or implementation configuration.
@@ -40,7 +44,9 @@ Execution failures after an accepted start use the same safe typed code/message 
 
 Composition and entry points: `src/cli/runtime.ts:117–280`, `src/commands/exec.ts:59–71`, `src/execution/service.ts:58–214`, `src/execution/command-runner.ts:118–230`, `src/providers/ocbox/provider.ts:427–470,507–616,1096–1223`.
 
-Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202
+Warm session cache: `src/warm/paths.ts`, `src/warm/protocol.ts`, `src/warm/daemon.ts`, `src/warm/daemon-main.ts`, `src/warm/client.ts`; measurement: `scripts/measure-cli-latency.mjs`.
+
+Verified against ocbox-cli @ 06da359
 
 Sign-in errors map closed public server reasons to static text and retain the server reference. The five-minute loopback deadline reports when the browser never returned. Local status errors distinguish missing metadata, unreadable state and mismatched identity/generation; the fix is logout then login using the same state directory. Logout returns revocationReason, including missing/unreadable state and invalid endpoint cases. The auth command boundary stores the last 100 failure references (at most seven days) in auth-failures.json through the atomic store; it stores no error text or sign-in material. Look up a local reference in that file; server references belong to the public API support flow.
 

@@ -14,6 +14,8 @@ A create response that names only the hosted Session ID persists that ID before 
 
 Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents polls event pages, orders by sequence, skips duplicates and exposes an optional cursor-checkpoint callback; the provider keeps its cursor in memory. Repeated retryable page failures fall back to Execution/result polling. The fake provider's helper emits framed events. The command's nonzero exit is separate from infrastructure failure. The CLI execution ID printed by `exec` is persisted with the hosted ID; `cancel` maps it back and reports the same ID. A terminal `cancelled` event or cancelled Execution state produces the cancelled outcome without waiting for a result endpoint that may not have caught up.
 
+The execution path reads the owned hosted Session once: `executionTarget` and `ExecutionService.start` share the observation, and an available warm-session daemon can serve it to later commands. A cached observation is advisory; the execution start remains authoritative for state changes the daemon has not seen. Lifecycle mutations still read the hosted Session directly, so a stop or destroy observes the server's current state.
+
 Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body sends command and timeout only; `--cwd` and `--env` are refused with `CAPABILITY_UNSUPPORTED` before dispatch, while adapter-owned recursion markers are tolerated but not transmitted.
 
 ## Data it keeps
@@ -43,3 +45,5 @@ Verified against ocbox-cli @ 6e22448
 A hosted create persists the Session ID from the create operation before the wait; `exec` and `cancel` share the CLI execution ID; a cancelled run is reported as cancelled rather than a timeout.
 
 Verified against ocbox-cli @ 872e6f2 plus the create-ID, execution-ID and cancellation changes.
+
+Warm session cache: `src/warm/client.ts`, `src/warm/daemon.ts`.

@@ -25,8 +25,10 @@ import { type OutputMode, OutputWriter } from '../output/index.js'
 import { resolveCurrentPlatformPaths } from '../platform/index.js'
 import { FakeSandboxProvider } from '../providers/fake/index.js'
 import { ProviderRegistry } from '../providers/index.js'
+import { DEFAULT_API_URL } from '../providers/ocbox/defaults.js'
 import { createOcboxProvider } from '../providers/ocbox/factory.js'
 import { requestedSpecFromConfig } from '../providers/ocbox/requested-spec.js'
+import { createWarmSessionCache, warmSessionsEnabled } from '../warm/client.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
 
@@ -198,14 +200,24 @@ export async function resolveAccountStateDirectory(
   }
 }
 
+export interface CreateLifecycleServiceOptions {
+  /**
+   * Opt this command into the optional warm-session daemon. The daemon only
+   * serves the execution path; lifecycle mutations always read the API.
+   */
+  readonly warmSessions?: boolean | undefined
+}
+
 export async function createLifecycleService(
   flags: RuntimeFlags,
   signal?: AbortSignal,
   lifecycleStateDirectory?: string,
+  options: CreateLifecycleServiceOptions = {},
 ): Promise<LifecycleService> {
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
   const projectId = projectIdForPath(resolve(process.cwd()))
+  const hostedProjectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId
   const lifecycleStateRoot =
     lifecycleStateDirectory ??
     (await resolveAccountStateDirectory(
@@ -214,13 +226,27 @@ export async function createLifecycleService(
       config.provider.name === 'ocbox',
       signal,
     ))
+  const sessionCache =
+    options.warmSessions === true &&
+    config.provider.name === 'ocbox' &&
+    hostedProjectId !== undefined &&
+    warmSessionsEnabled(process.env)
+      ? createWarmSessionCache({
+          // Environment is an index signature; bracket access is required by TypeScript.
+          // biome-ignore lint/complexity/useLiteralKeys: see explanation above
+          apiUrl: flags['api-url'] ?? process.env['OCBOX_API_URL'] ?? DEFAULT_API_URL,
+          environment: process.env,
+          projectId: hostedProjectId,
+          stateDirectory,
+        })
+      : undefined
   return new LifecycleService({
     config,
     projectId,
     store: new LifecycleStore(lifecycleStateRoot, projectId),
     registry: createRegistry(stateDirectory, signal, process.env, {
       apiUrl: flags['api-url'],
-      projectId: flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId,
+      projectId: hostedProjectId,
       requestedSpec: {
         ...requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
         ...Object.fromEntries(
@@ -230,6 +256,7 @@ export async function createLifecycleService(
           }),
         ),
       },
+      ...(sessionCache === undefined ? {} : { sessionCache }),
     }),
     ...(signal === undefined ? {} : { signal }),
   })
