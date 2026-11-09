@@ -18,6 +18,8 @@ export const HostedSandboxMappingSchema = z.strictObject({
   hostedSessionId: z.string().min(1),
   hostedSandboxId: z.string().min(1).optional(),
   lastExecutionId: z.string().min(1).optional(),
+  /** The CLI-facing execution ID `exec` printed for the same hosted execution. */
+  lastLocalExecutionId: z.string().min(1).optional(),
   spec: SandboxSpecSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
