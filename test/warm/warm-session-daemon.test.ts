@@ -24,6 +24,10 @@ function sessionFixture() {
   return HostedSessionSchema.parse(hostedSessionFixture({}))
 }
 
+function envValue(environment: NodeJS.ProcessEnv | undefined, name: string): string | undefined {
+  return environment?.[name]
+}
+
 class FakeProvider implements WarmSessionProvider {
   calls = 0
   readonly #session = sessionFixture()
@@ -177,11 +181,31 @@ describe('warm session daemon', () => {
     expect(call?.args).toEqual(['/tmp/ocbox-warm-daemon.js'])
     expect(call?.options.detached).toBe(true)
     expect(call?.options.stdio).toBe('ignore')
-    expect(call?.options.env?.['OCBOX_WARM_SOCKET']).toBe(socketPath)
-    expect(call?.options.env?.['OCBOX_WARM_API_URL']).toBe(scope.apiUrl)
-    expect(call?.options.env?.['OCBOX_WARM_PROJECT_ID']).toBe(scope.projectId)
-    expect(call?.options.env?.['OCBOX_WARM_STATE_DIR']).toBe(scope.stateDirectory)
-    expect(call?.options.env?.['OCBOX_WARM_IDLE_MS']).toBe('600000')
+    expect(envValue(call?.options.env, 'OCBOX_WARM_SOCKET')).toBe(socketPath)
+    expect(envValue(call?.options.env, 'OCBOX_WARM_API_URL')).toBe(scope.apiUrl)
+    expect(envValue(call?.options.env, 'OCBOX_WARM_PROJECT_ID')).toBe(scope.projectId)
+    expect(envValue(call?.options.env, 'OCBOX_WARM_STATE_DIR')).toBe(scope.stateDirectory)
+    expect(envValue(call?.options.env, 'OCBOX_WARM_IDLE_MS')).toBe('600000')
+  })
+
+  it('does not start a daemon when OCBOX_WARM=0 is set', async () => {
+    const { environment, scope, socketPath } = await scopeFor('disabled')
+    let spawns = 0
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntry: '/tmp/ocbox-warm-daemon.js',
+      daemonEntryExists: () => true,
+      environment: { ...environment, OCBOX_WARM: '0' },
+      platform: process.platform,
+      socketPath,
+      spawn: () => {
+        spawns += 1
+        return { unref: () => undefined }
+      },
+    })
+
+    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
+    expect(spawns).toBe(0)
   })
 
   it('refreshes an expired observation and exits after the idle timeout', async () => {
@@ -204,7 +228,7 @@ describe('warm session daemon', () => {
 
   it('creates the socket in an owner-only directory with owner-only permissions', async () => {
     if (process.platform === 'win32') return
-    const { environment, scope, socketPath } = await scopeFor('mode')
+    const { socketPath } = await scopeFor('mode')
     const provider = new FakeProvider()
     await startServer(socketPath, provider)
 
