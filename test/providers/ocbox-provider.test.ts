@@ -188,7 +188,7 @@ describe('hosted ocbox provider lifecycle', () => {
       cpu: 2,
       memory: 4096,
       region: 'eu-west',
-      runtime: 'daytona',
+      runtime: 'managed',
       lifetimeSeconds: 1800,
     }
     const { api } = await seededApi((input, init) => {
