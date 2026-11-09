@@ -90,7 +90,19 @@ describe('project configuration', () => {
       `[sandbox]\nsecretReferenceIds = ["${secretReferenceId}", "${secretReferenceId}"]\n`,
     )
 
-    expect(() => parseProjectConfig(source)).toThrowError(ConfigValidationError)
+    try {
+      parseProjectConfig(source)
+      throw new Error('expected parse failure')
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigValidationError)
+      expect((error as ConfigValidationError).diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: 'invalid_value',
+          path: 'sandbox.secretReferenceIds',
+          message: expect.stringContaining('Secret reference ids must be unique'),
+        }),
+      )
+    }
   })
 
   it('reports unknown fields with their full TOML path and a suggestion', () => {
