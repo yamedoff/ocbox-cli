@@ -163,6 +163,14 @@ describe('init command', () => {
       vi.fn(async (input: unknown, init?: RequestInit) => {
         const url = new URL(String(input))
         calls.push(`${init?.method ?? 'GET'} ${url.pathname}`)
+        if (url.pathname === '/v1/projects/prj_reused') {
+          return jsonResponse({
+            id: 'prj_reused',
+            name: basename(process.cwd()),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+        }
         return jsonResponse({
           data: [
             {
@@ -185,13 +193,14 @@ describe('init command', () => {
     expect(output(stdoutSpy)).toBe(
       `Using existing project prj_reused ("${basename(process.cwd())}"), matched by name; run ocbox project create to make a new one\n`,
     )
-    expect(calls).toEqual(['GET /v1/projects'])
+    expect(calls).toEqual(['GET /v1/projects', 'GET /v1/projects/prj_reused'])
   })
 
-  it('says it validated an existing config instead of reporting a new project', async () => {
+  it('checks an existing config project against the signed-in account', async () => {
     const root = await temporaryRoot()
     const config = join(root, 'opencloudbox.toml')
     const state = await logIn(root)
+    const timestamp = new Date().toISOString()
     await writeFile(
       config,
       DEFAULT_PROJECT_CONFIG.replace('name = "fake"', 'name = "ocbox"').replace(
@@ -199,10 +208,20 @@ describe('init command', () => {
         'schemaVersion = 1\nprojectId = "prj_existing"',
       ),
     )
-    const fetch = vi.fn(async () => {
-      throw new Error('existing config must not call the API')
-    })
-    vi.stubGlobal('fetch', fetch)
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = new URL(String(input))
+        calls.push(`${init?.method ?? 'GET'} ${url.pathname}`)
+        return jsonResponse({
+          id: 'prj_existing',
+          name: 'existing',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+      }),
+    )
 
     await Init.run(['--config', config, '--state-dir', state, '--api-url', DEFAULT_API_URL], {
       root: process.cwd(),
@@ -210,6 +229,35 @@ describe('init command', () => {
 
     expect(process.exitCode ?? 0).toBe(0)
     expect(output(stdoutSpy)).toBe('Validated opencloudbox.toml\n')
-    expect(fetch).not.toHaveBeenCalled()
+    expect(calls).toEqual(['GET /v1/projects/prj_existing'])
+  })
+
+  it('says clearly when the saved project is not visible to the signed-in account', async () => {
+    const root = await temporaryRoot()
+    const config = join(root, 'opencloudbox.toml')
+    const state = await logIn(root)
+    await writeFile(
+      config,
+      DEFAULT_PROJECT_CONFIG.replace('name = "fake"', 'name = "ocbox"').replace(
+        'schemaVersion = 1',
+        'schemaVersion = 1\nprojectId = "prj_other_account"',
+      ),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found' } }, 404)),
+    )
+
+    await Init.run(['--config', config, '--state-dir', state, '--api-url', DEFAULT_API_URL], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stdoutSpy)).toBe('')
+    expect(output(stderrSpy)).toContain(
+      'The configured hosted project is not visible to the signed-in account',
+    )
+    expect(output(stderrSpy)).toContain('projectId in opencloudbox.toml')
+    expect(output(stderrSpy)).not.toContain('Validated opencloudbox.toml')
   })
 })
