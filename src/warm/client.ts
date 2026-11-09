@@ -1,6 +1,5 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
 import { createConnection, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,12 +46,21 @@ export function warmSessionsEnabled(environment: NodeJS.ProcessEnv = process.env
 }
 
 function defaultDaemonEntry(): string | undefined {
+  const candidates = new Set<string>()
   try {
-    const candidate = join(dirname(fileURLToPath(import.meta.url)), 'warm-daemon.js')
-    return existsSync(candidate) ? candidate : undefined
+    const here = dirname(fileURLToPath(import.meta.url))
+    candidates.add(join(here, 'warm-daemon.js'))
+    // A bundled shared chunk lives one level below the dist root.
+    candidates.add(join(here, '..', 'warm-daemon.js'))
   } catch {
-    return undefined
+    // import.meta.url is always available in the CLI's ESM build; keep going.
   }
+  const script = process.argv[1]
+  if (script !== undefined) candidates.add(join(dirname(script), 'warm-daemon.js'))
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 /**
@@ -118,12 +126,17 @@ export class WarmSessionClient implements HostedSessionCache {
   }
 
   async remember(hostedSessionId: string, session: HostedSession): Promise<void> {
-    await this.#request({
+    const request: WarmRequest = {
       hostedSessionId,
       op: 'remember',
       session,
       v: 1,
-    })
+    }
+    const first = await this.#request(request)
+    if (first !== null || !this.#spawnAttempted) return
+    // The first command may have raced the daemon's startup. It is allowed to
+    // take a few seconds, so wait briefly and seed the cache for the next one.
+    if (await this.#waitForSocket(750)) await this.#request(request)
   }
 
   close(): void {
@@ -166,11 +179,9 @@ export class WarmSessionClient implements HostedSessionCache {
       }
       socket.setTimeout(this.#connectTimeoutMilliseconds, () => done(null))
       socket.once('connect', () => done(socket))
-      socket.once('error', () => {
-        // A leftover socket from a crashed daemon must not block the next one.
-        if (this.#platform !== 'win32') void rm(this.#socketPath, { force: true }).catch(() => {})
-        done(null)
-      })
+      // A leftover socket from a crashed daemon is cleaned up by the daemon's
+      // own listen path; unlinking it here could race a daemon that is starting.
+      socket.once('error', () => done(null))
     })
   }
 
@@ -206,6 +217,19 @@ export class WarmSessionClient implements HostedSessionCache {
       socket.once('close', onClose)
       socket.write(encodeWarmMessage(request))
     })
+  }
+
+  async #waitForSocket(timeoutMilliseconds: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMilliseconds
+    for (;;) {
+      const socket = await this.#connect()
+      if (socket !== null) {
+        socket.destroy()
+        return true
+      }
+      if (Date.now() >= deadline || this.#closed) return false
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
   }
 
   #start(): void {

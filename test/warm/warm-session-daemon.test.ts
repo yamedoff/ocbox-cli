@@ -118,6 +118,30 @@ describe('warm session daemon', () => {
     expect(provider.calls).toBe(0)
   })
 
+  it('seeds a daemon that starts after the first command read', async () => {
+    const { environment, scope, socketPath } = await scopeFor('seed')
+    const provider = new FakeProvider()
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntry: '/tmp/ocbox-warm-daemon.js',
+      daemonEntryExists: () => true,
+      environment,
+      platform: process.platform,
+      socketPath,
+      spawn: () => {
+        setTimeout(() => {
+          void startServer(socketPath, provider).catch(() => undefined)
+        }, 30)
+        return { unref: () => undefined }
+      },
+    })
+
+    await client.remember(HOSTED_SESSION, sessionFixture())
+    const later = clientFor(scope, environment, socketPath)
+    expect((await later.get(HOSTED_SESSION))?.id).toBe(HOSTED_SESSION)
+    expect(provider.calls).toBe(0)
+  })
+
   it('falls back to the direct path when no daemon is listening', async () => {
     const { environment, scope, socketPath } = await scopeFor('fallback')
     const client = clientFor(scope, environment, socketPath)
