@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,6 +38,23 @@ export interface WarmSessionClientOptions extends WarmSessionScope {
   readonly daemonEntryExists?: ((path: string) => boolean) | undefined
 }
 
+/**
+ * True only for a socket in an owner-only directory, both owned by this user.
+ * Another local user could otherwise plant a socket first and answer for the
+ * daemon.
+ */
+function isPrivateSocket(socketPath: string): boolean {
+  try {
+    const directory = lstatSync(dirname(socketPath))
+    const socket = lstatSync(socketPath)
+    const uid = process.getuid?.()
+    if (!directory.isDirectory() || !socket.isSocket()) return false
+    if (uid !== undefined && (directory.uid !== uid || socket.uid !== uid)) return false
+    return (directory.mode & 0o077) === 0
+  } catch {
+    return false
+  }
+}
 /** Opt out with OCBOX_WARM=0 for debugging or hosts that disallow daemons. */
 export function warmSessionsEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
   // Environment is an index signature; bracket access is required by TypeScript.
@@ -160,7 +177,7 @@ export class WarmSessionClient implements HostedSessionCache {
   }
 
   async #connect(): Promise<Socket | null> {
-    if (this.#platform !== 'win32' && !existsSync(this.#socketPath)) return null
+    if (this.#platform !== 'win32' && !isPrivateSocket(this.#socketPath)) return null
     return new Promise((resolve) => {
       const socket = createConnection(this.#socketPath)
       let settled = false

@@ -1,6 +1,6 @@
 import type { SpawnOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -297,6 +297,22 @@ describe('warm session daemon', () => {
     expect(existsSync(socketPath)).toBe(false)
   })
 
+  it('ignores a socket whose directory other users can write', async () => {
+    if (process.platform === 'win32') return
+    const { environment, scope, socketPath } = await scopeFor('shared-dir')
+    const provider = new FakeProvider()
+    await startServer(socketPath, provider)
+    await chmod(dirname(socketPath), 0o777)
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntryExists: () => false,
+      environment,
+      platform: process.platform,
+      socketPath,
+    })
+    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
+    expect(provider.calls).toBe(0)
+  })
   it('creates the socket in an owner-only directory with owner-only permissions', async () => {
     if (process.platform === 'win32') return
     const { socketPath } = await scopeFor('mode')
