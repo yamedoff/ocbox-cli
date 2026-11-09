@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { OcboxError } from '../../src/errors/index.js'
 import { OutputWriter } from '../../src/output/index.js'
-import { redactForOutput, sanitizeTelemetryPayload } from '../../src/security/index.js'
+import {
+  REDACTED_VALUE,
+  redactForOutput,
+  sanitizeTelemetryPayload,
+} from '../../src/security/index.js'
 
 class MemoryStream {
   readonly isTTY: boolean
@@ -111,6 +115,17 @@ describe('OutputWriter', () => {
     expect(stdout.value).not.toContain('abcdefghijklmnop')
     expect(stdout.value).toContain('[REDACTED]')
     expect(stdout.value).toContain('[LOCAL_PATH]')
+  })
+
+  it('keeps public secret metadata readable while redacting secret-shaped values', () => {
+    const redacted = redactForOutput({
+      secretExposureModes: ['unsupported'],
+      secretReferenceIds: ['ocbox:project/reference', 'sk-abcdefghijklmnop'],
+    })
+    expect(redacted).toEqual({
+      secretExposureModes: ['unsupported'],
+      secretReferenceIds: ['ocbox:project/reference', REDACTED_VALUE],
+    })
   })
 
   it('prints the API next step on its own line after the message', () => {
