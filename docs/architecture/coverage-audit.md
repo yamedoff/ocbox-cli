@@ -22,43 +22,43 @@ Merge commit b23b826 concludes the previously unfinished merge after the user au
 
 ## New staging commits
 
-| Commit  | Source change                                                                                                                               |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1d23bb8 | Preserve curated typed errors after accepted remote execution start; human/JSON/JSONL keep safe details and infrastructure exit 125.        |
-| 18e8c54 | Re-stamp execution guides against that implementation.                                                                                      |
-| 8c1d6ce | Reject known non-Linux explicit shell targets; defer absent/partial effective metadata to the remote executor.                              |
-| 724cf90 | Re-stamp shell compatibility guides.                                                                                                        |
+| Commit | Source change |
+| --- | --- |
+| 1d23bb8 | Preserve curated typed errors after accepted remote execution start; human/JSON/JSONL keep safe details and infrastructure exit 125. |
+| 18e8c54 | Re-stamp execution guides against that implementation. |
+| 8c1d6ce | Reject known non-Linux explicit shell targets; defer absent/partial effective metadata to the remote executor. |
+| 724cf90 | Re-stamp shell compatibility guides. |
 | 52e83a7 | CAS source push: contract validation, snapshot/cache/state, transfer, hosted transport, selection/progress and pinned public API additions. |
-| 2097f30 | Re-stamp CAS guides.                                                                                                                        |
-| accecee | Merge PR #33 (execution fixes).                                                                                                             |
-| d949442 | Merge PR #34 (content-addressed sync).                                                                                                      |
+| 2097f30 | Re-stamp CAS guides. |
+| accecee | Merge PR #33 (execution fixes). |
+| d949442 | Merge PR #34 (content-addressed sync). |
 
 ## Coverage census
 
 The numerical census uses tracked files under src, matching the request's 171/191 baseline. It counts file paths, not number of entries. Raw coverage is **171/191 (89.5%) → 176/196 (89.8%)**. The five added source files are src/providers/ocbox/cas.ts and src/sync/cas-{contract,push,snapshot,transfer}.ts. All are mapped. Excluding the 20 internal barrels and the generated client, coverage is **170/170 → 175/175 (100%)**. The generated client remains mapped as well; published package export surfaces remain mapped deliberately.
 
-| src folder  | Before (58c6e62) | After (staging source) |
-| ----------- | ---------------: | ---------------------: |
-| (src root)  |              3/3 |                    3/3 |
-| agents      |            37/40 |                  37/40 |
-| api         |              3/4 |                    3/4 |
-| auth        |            17/18 |                  17/18 |
-| cli         |              3/3 |                    3/3 |
-| commands    |            34/34 |                  34/34 |
-| config      |              4/5 |                    4/5 |
-| credentials |              3/4 |                    3/4 |
-| domain      |              8/9 |                    8/9 |
-| errors      |              2/3 |                    2/3 |
-| execution   |            11/12 |                  11/12 |
-| lifecycle   |              5/6 |                    5/6 |
-| metadata    |              2/2 |                    2/2 |
-| output      |              1/2 |                    1/2 |
-| platform    |              1/2 |                    1/2 |
-| providers   |            19/23 |                  20/24 |
-| security    |              2/3 |                    2/3 |
-| state       |              3/4 |                    3/4 |
-| sync        |            13/14 |                  17/18 |
-| **Total**   |      **171/191** |            **176/196** |
+| src folder | Before (58c6e62) | After (staging source) |
+| --- | ---: | ---: |
+| (src root) | 3/3 | 3/3 |
+| agents | 37/40 | 37/40 |
+| api | 3/4 | 3/4 |
+| auth | 17/18 | 17/18 |
+| cli | 3/3 | 3/3 |
+| commands | 34/34 | 34/34 |
+| config | 4/5 | 4/5 |
+| credentials | 3/4 | 3/4 |
+| domain | 8/9 | 8/9 |
+| errors | 2/3 | 2/3 |
+| execution | 11/12 | 11/12 |
+| lifecycle | 5/6 | 5/6 |
+| metadata | 2/2 | 2/2 |
+| output | 1/2 | 1/2 |
+| platform | 1/2 | 1/2 |
+| providers | 19/23 | 20/24 |
+| security | 2/3 | 2/3 |
+| state | 3/4 | 3/4 |
+| sync | 13/14 | 17/18 |
+| **Total** | **171/191** | **176/196** |
 
 ### Internal barrels excluded from required coverage
 

@@ -1,11 +1,9 @@
 # CLI source delivery and local transfer recovery
 
 ## What it does
-
 Every hosted push uses the content-addressed v2 transport for a mapped `sesdo_` Session. On a v3 box it first asks the terminal check whether the box already holds the local tree: an unchanged answer prints `Source unchanged.` and stops, a small local delta takes the fast apply, and anything else uses the full v2 cycle. A server without the v3 routes falls back to v2. Hosted diff and pull reuse the same CAS v2 box: a fresh snapshot describes the box tree, diff compares it with the local tree, and pull downloads the changed files and writes them atomically. The fake/local validation path also has a two-sided manifest planner and journalled filesystem transfer. These paths have different capabilities and must not be described interchangeably.
 
 ## Inside
-
 scanSourceManifest applies ignore groups, normalizes safe paths and hashes file contents. There is no archive or manifest/chunk upload route in the CLI: the retired hosted source upload was removed, so a hosted Session without a CAS transport refuses the push instead of falling back to an archive.
 
 The local transfer adapter stages files, records a durable intent, moves/replaces the target and updates the verified baseline under a lock. Recovery never promotes staged content and never deletes an ambiguous backup; it restores the original target or its proven absence.
@@ -19,25 +17,20 @@ syncCasSnapshot plans each page, validates every requested blob against that pag
 Hosted read-back uses the same transport for snapshot, snapshot-page and pull control calls. `runSyncDiff` always refreshes, replays a pending snapshot with the same idempotency key, reads the remaining immutable pages, validates them against the snapshot manifest, and compares file size/SHA-256 with the local scan. `runHostedPull` requests the changed files, replays a pending pull until terminal, follows `nextCursor` across GET-capability pages, verifies every part blob and reassembled file hash, and renames verified temporary files into place. It creates added directories and removes local-only paths only after `--delete` approval. Download capabilities are opaque URLs; the CLI rejects redirects, credentials and non-loopback cleartext, and never attaches its API bearer.
 
 ## Data it keeps
-
 Source manifests, verified baselines, local transfer journals and hosted receipt/operation IDs. V2 keeps unsigned pending/success metadata and cached source blobs in an API/Session/root-scoped local state directory; URLs and credentials are never persisted there. The v3 fingerprint is recomputed from the current tree on every push and is never trusted from the local success file. Every invocation rehashes source and verifies cache content. Hosted push does not claim that a local baseline proves the remote workspace is unchanged.
 
 V2 metadata and blobs are written via exclusive 0600 temporary files and rename; directory creation requests 0700. These writers do not fsync or verify Windows ACLs. Source is rehashed on each invocation, and reusable cached slices are checked by size and SHA-256.
 
 ## States
-
 V3: scan/fingerprint → check → (unchanged | fast apply/PUT/replay → save success | v2). V2: scan → pack → save pending → plan/PUT → apply/poll → save success. A retry reuses a pending identity only for matching page hashes younger than 45 minutes; terminal refusals clear it. Local: plan → staged → target-moving → target-moved → committed, with explicit recovery gates. A pending journal blocks another local transfer.
 
 ## Limits and config
-
 V3: one check per push with up to 1,024 changed paths in the request; the fast delta is at most 512 entries, 1,024 deleted paths, 4,096 blobs and one request under 512 KiB plus 32 KiB, replayed until terminal within the same 15-minute apply deadline. V2: 100,000 entries, 1 GiB total, 256 MiB per file, 4,096 blobs; pages have 512 entries/512 KiB, at most 512 pages/32 MiB metadata. PUTs have 3 attempts/120-second timers; apply checks a 15-minute loop deadline before each request and polls pending receipts after up to 1 second. Control calls/body reads have separate authenticated transport timers, so 15 minutes is not a hard end-to-end wall-clock cap. Apply wait defaults to 5 minutes with a 1-second healthy polling interval.
 
 ## When it fails
-
 Hosted recover is refused when its capability is absent; a hosted server without the pull route answers `Server does not support sync pull yet`, and a server without snapshots answers `Server does not support source snapshots yet`. A server without the v3 check or fast route falls back to the v2 push; a fast apply refused for a missing applied record does the same. A failed check or fast apply does not change the v2 error categories. A hosted push without a CAS transport is refused as unsupported. V2 removal of paths from the local success state requires --delete and confirmation/--yes; it is not a cross-machine conflict check. A hosted pull hash mismatch leaves the target file untouched. Server conflicts, invalid receipts and integrity errors fail safely; interruption preserves unsigned resume state. Local deletion requires --delete and explicit confirmation/--yes. Unsafe paths, sensitive material, checksum mismatch, conflicts and incomplete recovery fail without a force/replace bypass.
 
 ## Code evidence
-
 Transport selection: `src/sync/command.ts:41–101`, `src/providers/ocbox/provider.ts:549–571`, `src/sync/service.ts:675–700`. V3 check/fast push: `src/sync/cas-push.ts:87–300`, `src/sync/cas-transfer.ts:192–292`, `src/sync/cas-contract.ts:49–202`, `src/providers/ocbox/cas.ts:111–188`. V2 push: `src/sync/cas-contract.ts:5–262`, `cas-push.ts:27–329`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:71–190`, `src/providers/ocbox/cas.ts:16–284`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
 
 Verified against ocbox-cli @ 928d842

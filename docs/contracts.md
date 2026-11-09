@@ -30,11 +30,11 @@ The Session lifecycle and provider lifecycle are intentionally different state m
 with the normalized state, unchanged raw state, desired state, reason, observation time, and
 lifecycle timestamps. An unknown raw state normalizes to `unknown`; it is never discarded.
 
-| Action    | Processes  | RAM       | Filesystem |
-| --------- | ---------- | --------- | ---------- |
-| `pause`   | preserved  | preserved | preserved  |
-| `stop`    | terminated | discarded | preserved  |
-| `destroy` | terminated | discarded | discarded  |
+| Action | Processes | RAM | Filesystem |
+| --- | --- | --- | --- |
+| `pause` | preserved | preserved | preserved |
+| `stop` | terminated | discarded | preserved |
+| `destroy` | terminated | discarded | discarded |
 
 Lifecycle success requires a fresh, structurally valid provider observation whose normalized state
 matches the target Session state. `SessionTransitionEvidence.transitionStartedAt` is the trusted
