@@ -52,7 +52,6 @@ export async function resolveSyncContext(
     configuredRemote !== undefined && configuredRemote.length > 0
       ? resolve(process.cwd(), configuredRemote)
       : join(stateDirectory, 'sync', projectId, sessionId, 'remote')
-  let hostedUpload: SyncContext['hostedUpload']
   let casTransport: SyncContext['casTransport']
   let casReadTransport: SyncContext['casReadTransport']
   if (config.provider.name === 'ocbox') {
@@ -79,13 +78,11 @@ export async function resolveSyncContext(
     const sourceTransport = await provider.sourceCasTransport(sandboxId, signal)
     casTransport = sourceTransport
     casReadTransport = sourceTransport
-    hostedUpload = (prepared) => provider.uploadSource(sandboxId, prepared, signal)
   }
   return {
     signal,
     ...(casTransport ? { casTransport } : {}),
     ...(casReadTransport ? { casReadTransport } : {}),
-    ...(hostedUpload === undefined ? {} : { hostedUpload }),
     providerName: config.provider.name,
     projectId,
     sessionId,

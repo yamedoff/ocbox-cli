@@ -67,7 +67,6 @@ import type {
 import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
 import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
 import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
-import { uploadPreparedSource, type PreparedSource } from './source.js'
 import { createCasTransport } from './cas.js'
 import {
   MemoryOperationCheckpointStore,
@@ -442,30 +441,6 @@ export class OcboxSandboxProvider implements SandboxProvider {
       })
     }
     return createCasTransport(this.#api, record.hostedSessionId, signal)
-  }
-
-  /** Upload only through the owned, persisted sandbox-to-session mapping. */
-  async uploadSource(sandboxId: string, prepared: PreparedSource, signal?: AbortSignal) {
-    const requestId = toRequestId(null)
-    const record = await this.#record(sandboxId, requestId)
-    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
-    const owned = await this.#mappedSession(record)
-    const primary = resolvePrimaryBinding(owned)
-    if (
-      primary === null ||
-      primary.sandboxId !== record.hostedSandboxId ||
-      primary.state !== 'running'
-    ) {
-      throw new OcboxError({
-        code: 'INVALID_STATE',
-        message: 'Source upload requires the mapped hosted sandbox to be running; run ocbox start',
-        requestId,
-      })
-    }
-    return uploadPreparedSource(this.#api, record.hostedSessionId, prepared, {
-      deduplicate: true,
-      signal,
-    })
   }
 
   readonly exec: ProviderExecution = {
