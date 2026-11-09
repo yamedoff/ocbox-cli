@@ -213,6 +213,7 @@ function hostedSpecification(
   requested: SandboxSpec,
   effectiveSpec: Readonly<Record<string, unknown>> | null,
   observedAt: string,
+  requestedSpec: HostedRequestedSpec | undefined,
 ): RequestedEffectiveSpec {
   if (effectiveSpec === null) {
     return { effective: null, effectiveObservedAt: null, requested }
@@ -221,10 +222,21 @@ function hostedSpecification(
   if (!parsed.success) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
+  // An omitted image/region is a server default, not a local placeholder. Show
+  // the observed value in the requested view so status does not report the
+  // fake provider defaults the schema uses for the offline harness.
+  const requestedWithDefaults =
+    requestedSpec === undefined
+      ? requested
+      : {
+          ...requested,
+          ...(requestedSpec.image === undefined ? { image: parsed.data.image } : {}),
+          ...(requestedSpec.region === undefined ? { region: parsed.data.region } : {}),
+        }
   return {
     effective: parsed.data,
     effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
-    requested,
+    requested: requestedWithDefaults,
   }
 }
 
@@ -1021,7 +1033,12 @@ export class OcboxSandboxProvider implements SandboxProvider {
       providerSandboxId: ProviderSandboxIdSchema.parse(
         record.hostedSandboxId ?? record.hostedSessionId,
       ),
-      specification: hostedSpecification(spec, hostedSession?.effectiveSpec ?? null, observedAt),
+      specification: hostedSpecification(
+        spec,
+        hostedSession?.effectiveSpec ?? null,
+        observedAt,
+        this.#requestedSpec,
+      ),
       updatedAt: observedAt,
     })
   }
