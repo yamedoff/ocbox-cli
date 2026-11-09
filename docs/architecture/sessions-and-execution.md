@@ -14,7 +14,7 @@ A create response that names only the hosted Session ID persists that ID before 
 
 Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents polls event pages, orders by sequence, skips duplicates and exposes an optional cursor-checkpoint callback; the provider keeps its cursor in memory. Repeated retryable page failures fall back to Execution/result polling. The fake provider's helper emits framed events. The command's nonzero exit is separate from infrastructure failure. The CLI execution ID printed by `exec` is persisted with the hosted ID; `cancel` maps it back and reports the same ID. A terminal `cancelled` event or cancelled Execution state produces the cancelled outcome without waiting for a result endpoint that may not have caught up.
 
-Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body currently sends command and timeout only, so parsed cwd/environment values are not transmitted by this adapter.
+Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body sends command and timeout only; `--cwd` and `--env` are refused with `CAPABILITY_UNSUPPORTED` before dispatch, while adapter-owned recursion markers are tolerated but not transmitted.
 
 ## Data it keeps
 

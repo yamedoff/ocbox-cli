@@ -100,7 +100,7 @@ function stableStringify(document: ClaudeSettingsDocument): string {
 }
 
 function sessionIssueMessage(sessionId: string): string {
-  return `Selected Session "${sessionId}" is not a valid Session ID (expected a UUID or ULID); run "ocbox session list" and re-run with a real --session value`
+  return `Selected Session "${sessionId}" is not a valid Session ID (expected a UUID or ULID); run "ocbox ls" and re-run with a real --session value`
 }
 
 /**

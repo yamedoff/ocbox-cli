@@ -127,6 +127,20 @@ const HOSTED_CAPABILITIES: ProviderCapabilities = {
   },
 }
 
+/**
+ * The agent adapters route their own calls through `ocbox exec` with these
+ * recursion markers. They are not user options, and the hosted API cannot carry
+ * an execution environment, so they are dropped instead of refusing every
+ * adapter-routed command.
+ */
+const ADAPTER_OWNED_ENVIRONMENT = new Set([
+  'OCBOX_AGENT_ADAPTER',
+  'OCBOX_AGENT_ROUTED',
+  'OCBOX_CODEX_ADAPTER',
+  'OCBOX_CODEX_ADAPTER_ACTIVE',
+  'OCBOX_CODEX_SESSION_ID',
+])
+
 const DEFAULT_EXECUTION_WAIT_MILLISECONDS = 5 * 60_000
 const EXECUTION_DEADLINE_GRACE_MILLISECONDS = 30_000
 
@@ -1177,6 +1191,20 @@ export class OcboxSandboxProvider implements SandboxProvider {
   }
 
   async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
+    const userEnvironment = Object.keys(request.environment).filter(
+      (name) => !ADAPTER_OWNED_ENVIRONMENT.has(name),
+    )
+    const unsupportedOptions = [
+      ...(request.workingDirectory === null ? [] : ['--cwd']),
+      ...(userEnvironment.length === 0 ? [] : ['--env']),
+    ]
+    if (unsupportedOptions.length > 0) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: `The hosted provider does not support ${unsupportedOptions.join(' or ')} for executions; omit ${unsupportedOptions.length === 1 ? 'it' : 'them'} and use the default workspace.`,
+        requestId: context.requestId,
+      })
+    }
     const record = await this.#record(request.sandboxId, context.requestId)
     if (record === undefined) throw notFoundSandbox(context.requestId)
     const owned = await this.#mappedSession(record)

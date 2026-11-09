@@ -266,10 +266,6 @@ All eight guides carry code evidence ranges and the staging source verification 
 
 These are source-verified gaps, not live reproductions:
 
-- Hosted execution accepts parsed cwd/environment but createExecution sends only command and timeout (src/providers/ocbox/provider.ts:1108–1119). Those options, including agent recursion marker environment settings, do not reach this adapter's request.
-- Codex apply writes the plan's captured before/after content without re-reading current target hashes (src/agents/codex/planner.ts:1227–1272; src/commands/agent/setup.ts:149–157). A concurrent edit between plan and apply can be overwritten; the old guide's claim that apply revalidated fingerprints was removed.
-- Domain/metadata idempotency keys allow 16–200 characters, but authenticated transport accepts at most 128 (src/domain/ids.ts; src/auth/authenticated-client.ts:13,68–71). A 129–200-character supplied key passes the first validator but fails before HTTP dispatch.
-
 CAS state/cache writers request private modes but do not perform the credential store's Windows ACL verification or fsync; the guides describe these durability/protection limits without claiming stronger guarantees. Event polling's fallback tail drain is best-effort (src/providers/ocbox/executions.ts:323–360); terminal result success is not proof that all output was recovered.
 
 Verified against ocbox-cli @ d949442bca48a5e84b7f0a26c51a1f83b07bd202

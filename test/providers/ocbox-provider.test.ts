@@ -587,6 +587,40 @@ describe('hosted ocbox provider lifecycle', () => {
     await expect(handle.result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
   })
 
+  it('rejects cwd and environment options the hosted API cannot carry', async () => {
+    let calls = 0
+    const { api } = await seededApi(() => {
+      calls += 1
+      return Promise.reject(new Error('unexpected hosted call'))
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId: HOSTED_SESSION,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    for (const options of [
+      { environment: {}, workingDirectory: '/workspace' },
+      { environment: { FOO: 'bar' }, workingDirectory: null },
+    ]) {
+      await expect(
+        provider.exec.execute(
+          operationContext() as never,
+          {
+            command: { mode: 'argv', argv: ['pwd'] },
+            sandboxId: LOCAL_IDS.sandbox,
+            timeoutMilliseconds: null,
+            ...options,
+          } as never,
+        ),
+      ).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' })
+    }
+    expect(calls).toBe(0)
+  })
+
   it('treats a post-deletion getSession 404 as a verified destroy', async () => {
     let destroyCalls = 0
     let sessionCalls = 0
