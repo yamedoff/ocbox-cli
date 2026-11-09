@@ -33,6 +33,7 @@ import {
   type RequestContext,
 } from '../../domain/operation.js'
 import {
+  ImageReferenceSchema,
   type RequestedEffectiveSpec,
   type SandboxSpec,
   SandboxSpecSchema,
@@ -193,37 +194,159 @@ function commandString(request: ExecRequest): string {
   return request.command.argv.map(shellQuote).join(' ')
 }
 
+const MIB = 2 ** 20
+const MAX_HOSTED_MEMORY_MIB = 65_536
+const HOSTED_REGION_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/** Parses the hosted vCPU value (cores as a number or a decimal string). */
+function hostedCpuMillicores(value: unknown): number | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    const millicores = Math.round(value * 1000)
+    return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+  }
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  const milli = /^([0-9]+(?:\.[0-9]+)?)m$/.exec(text)
+  if (milli?.[1] !== undefined) {
+    const millicores = Number(milli[1])
+    return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+  }
+  if (!/^[0-9]+(?:\.[0-9]+)?$/.test(text)) return null
+  const millicores = Math.round(Number(text) * 1000)
+  return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+}
+
+/**
+ * Parses the hosted memory value. The V1 public view reports MiB while the
+ * legacy REST view reports bytes; a value at or below the public MiB ceiling is
+ * read as MiB, a larger one as bytes. Explicit units always win.
+ */
+function hostedMemoryBytes(value: unknown): number | null {
+  let amount: number
+  let unit: string | null = null
+  if (typeof value === 'number') {
+    amount = value
+  } else if (typeof value === 'string') {
+    const match = /^([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|KB|MB|GB)?$/i.exec(value.trim())
+    if (match?.[1] === undefined) return null
+    amount = Number(match[1])
+    unit = match[2]?.toLowerCase() ?? null
+  } else {
+    return null
+  }
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  let bytes: number
+  if (unit === 'b') bytes = amount
+  else if (unit === 'kib' || unit === 'kb') bytes = amount * 1024
+  else if (unit === 'mib' || unit === 'mb') bytes = amount * MIB
+  else if (unit === 'gib' || unit === 'gb') bytes = amount * 1024 * MIB
+  else bytes = amount <= MAX_HOSTED_MEMORY_MIB ? amount * MIB : amount
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : null
+}
+
+function hostedImageReference(value: unknown): SandboxSpec['image'] | null {
+  const parsed = ImageReferenceSchema.safeParse(
+    typeof value === 'string' ? { kind: 'image', reference: value } : value,
+  )
+  return parsed.success ? parsed.data : null
+}
+
+function hostedRegion(value: unknown): string | null {
+  return typeof value === 'string' && HOSTED_REGION_PATTERN.test(value) ? value : null
+}
+
+/**
+ * Builds the observed specification from the hosted public view. A complete
+ * domain spec is used unchanged. The V1 object view publishes only the public
+ * scalar fields (cpu, memory, region, image when known), so those fields are
+ * applied over the request to form the full contract; a payload that reports
+ * none of them stays unobserved. Fields the host does not report are not
+ * presented as observed by the host.
+ */
+function hostedEffectiveSpec(
+  requested: SandboxSpec,
+  effectiveSpec: Readonly<Record<string, unknown>>,
+): SandboxSpec | null {
+  const complete = SandboxSpecSchema.safeParse(effectiveSpec)
+  if (complete.success) return complete.data
+  const merged: SandboxSpec = { ...requested }
+  let observed = false
+  if (Object.hasOwn(effectiveSpec, 'cpu')) {
+    const millicores = hostedCpuMillicores(effectiveSpec['cpu'])
+    if (millicores !== null) {
+      merged.cpu = { millicores }
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'memory')) {
+    const bytes = hostedMemoryBytes(effectiveSpec['memory'])
+    if (bytes !== null) {
+      merged.memory = { bytes }
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'image')) {
+    const image = hostedImageReference(effectiveSpec['image'])
+    if (image !== null) {
+      merged.image = image
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'region')) {
+    const region = hostedRegion(effectiveSpec['region'])
+    if (region !== null) {
+      merged.region = region
+      observed = true
+    }
+  }
+  if (!observed) return null
+  const parsed = SandboxSpecSchema.safeParse(merged)
+  return parsed.success ? parsed.data : null
+}
+
 /**
  * Maps the hosted Session's observed specification onto the domain's
  * requested/effective pair.
  *
  * The hosted `effectiveSpec` is the provider's observed reality and is the only
  * source promoted to `effective`; the locally persisted request is never
- * promoted, so requested state is never mistaken for observed state. A hosted
- * payload that is absent or does not fully satisfy the domain `SandboxSpec`
- * stays `effective: null` (unknown/unobserved). Explicit shell execution with
- * an unobserved OS is left to the remote executor; a known non-Linux OS is
- * rejected before dispatch. `effectiveObservedAt`
- * records the host's observation clock (the same clock as the Sandbox lifetime)
- * so the domain timestamp invariant holds without trusting a cross-service
- * clock; provider identity, bindings, and raw/normalized state are untouched.
+ * promoted as observed, though the public scalar fields the host does report
+ * are merged into the full contract. An omitted image or region is a server
+ * default, not a local placeholder, so the observed value also replaces the
+ * local placeholder in the requested view. A payload that reports no public
+ * field stays `effective: null` (unknown/unobserved). Explicit shell execution
+ * with an unobserved OS is left to the remote executor; a known non-Linux OS is
+ * rejected before dispatch. `effectiveObservedAt` records the host's observation
+ * clock (the same clock as the Sandbox lifetime) so the domain timestamp
+ * invariant holds without trusting a cross-service clock; provider identity,
+ * bindings, and raw/normalized state are untouched.
  */
 function hostedSpecification(
   requested: SandboxSpec,
   effectiveSpec: Readonly<Record<string, unknown>> | null,
   observedAt: string,
+  requestedSpec: HostedRequestedSpec | undefined,
 ): RequestedEffectiveSpec {
   if (effectiveSpec === null) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
-  const parsed = SandboxSpecSchema.safeParse(effectiveSpec)
-  if (!parsed.success) {
+  const effective = hostedEffectiveSpec(requested, effectiveSpec)
+  if (effective === null) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
+  const requestedWithDefaults =
+    requestedSpec === undefined
+      ? requested
+      : {
+          ...requested,
+          ...(requestedSpec.image === undefined ? { image: effective.image } : {}),
+          ...(requestedSpec.region === undefined ? { region: effective.region } : {}),
+        }
   return {
-    effective: parsed.data,
+    effective,
     effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
-    requested,
+    requested: requestedWithDefaults,
   }
 }
 
@@ -996,7 +1119,12 @@ export class OcboxSandboxProvider implements SandboxProvider {
       providerSandboxId: ProviderSandboxIdSchema.parse(
         record.hostedSandboxId ?? record.hostedSessionId,
       ),
-      specification: hostedSpecification(spec, hostedSession?.effectiveSpec ?? null, observedAt),
+      specification: hostedSpecification(
+        spec,
+        hostedSession?.effectiveSpec ?? null,
+        observedAt,
+        this.#requestedSpec,
+      ),
       updatedAt: observedAt,
     })
   }
