@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { collectExecutionEvents, toExecResult } from '../../src/providers/ocbox/executions.js'
+import { HostedExecutionSchema } from '../../src/providers/ocbox/wire.js'
 import { errorResponse, jsonResponse, seededApi } from './doubles.js'
 
 const STARTED_AT = '2026-09-12T10:00:00.000Z'
@@ -13,11 +14,13 @@ function executionFixture(state = 'completed'): Record<string, unknown> {
     failure: null,
     failureKind: null,
     id: 'exec_hosted_1',
+    kind: 'pipe',
     outputBytes: 12,
     outputLimitBytes: 1048576,
     sandboxId: 'sbx_hosted_1',
     sessionId: 'sess_hosted_1',
     state,
+    stdin: 'null',
     truncated: false,
     updatedAt: EVENT_AT,
   }
@@ -285,6 +288,16 @@ describe('hosted execution streaming', () => {
       sleep: () => Promise.resolve(),
     })
     expect(collected.result).toMatchObject({ kind: 'command', exitCode: 0 })
+  })
+
+  it('accepts the hosted execution that names its input mode', () => {
+    const parsed = HostedExecutionSchema.safeParse({
+      ...executionFixture('running'),
+      kind: 'pty',
+      stdin: 'null',
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success ? parsed.data : null).toMatchObject({ kind: 'pty', stdin: 'null' })
   })
 
   it('accepts the hosted command result that names why the command ended', async () => {
