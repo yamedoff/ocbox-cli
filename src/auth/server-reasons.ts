@@ -217,6 +217,11 @@ export const SERVER_AUTH_REASONS = {
     message: 'The sign-in request body exceeds its accepted size.',
     nextStep: 'Start again with `ocbox auth login` and complete sign-in in the same browser.',
   },
+  // The auth lane keeps its sign-in wording for the product request-bytes cause.
+  api_quota_request_bytes: {
+    message: 'The sign-in request body exceeds its accepted size.',
+    nextStep: 'Start again with `ocbox auth login` and complete sign-in in the same browser.',
+  },
   auth_browser_session_required: {
     message: 'The authorization step requires a signed-in browser session.',
     nextStep: 'Start again with `ocbox auth login` and complete sign-in in the same browser.',
