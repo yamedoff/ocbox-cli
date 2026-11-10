@@ -115,6 +115,8 @@ export const HostedExecutionSchema = z
     updatedAt: z.string().min(1),
     sessionId: z.string().min(1),
     sandboxId: z.string().min(1).nullable(),
+    kind: z.enum(['pipe', 'pty']).optional(),
+    stdin: z.enum(['null', 'pipe']).optional(),
     state: HostedExecutionStateSchema,
     command: z.string().min(1).max(8_192),
     exitCode: z.number().int().nullable(),

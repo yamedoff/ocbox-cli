@@ -135,6 +135,8 @@ describe('streaming requests release the authentication gate before response wai
         exitCode: null,
         failureKind: null,
         failure: null,
+        kind: 'pipe',
+        stdin: 'null',
         truncated: false,
         outputBytes: 0,
         outputLimitBytes: 1024,

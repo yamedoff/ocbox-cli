@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: 0663fe856014fbe93d7e68b2f2698b4ad466249036a10450969255b7ffcf6425
+ * Pinned source SHA-256: 8e3ed583723d14c0fd92d4015760759a3fc66767afbe52d8ef3e4dcc448ffb05
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:0663fe856014fbe93d7e68b2f2698b4ad466249036a10450969255b7ffcf6425" as const
+export const OPENAPI_CHECKSUM = "sha256:8e3ed583723d14c0fd92d4015760759a3fc66767afbe52d8ef3e4dcc448ffb05" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -298,6 +298,8 @@ export interface Execution {
   readonly updatedAt: string
   readonly sessionId: string
   readonly sandboxId: string | null
+  readonly kind?: "pipe" | "pty"
+  readonly stdin?: "null" | "pipe"
   readonly state: "pending" | "running" | "completed" | "cancelled" | "failed"
   readonly command: string
   readonly exitCode: number | null
@@ -436,6 +438,10 @@ export interface CreateSessionRequest {
 
 export interface CreateExecutionRequest {
   readonly command: string
+  readonly kind?: "pipe" | "pty"
+  readonly stdin?: "null" | "pipe"
+  readonly cols?: number
+  readonly rows?: number
   readonly timeoutSeconds?: number
 }
 

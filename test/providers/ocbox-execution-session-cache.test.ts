@@ -26,11 +26,13 @@ function executionFixture(): Record<string, unknown> {
     failure: null,
     failureKind: null,
     id: HOSTED_EXECUTION,
+    kind: 'pipe',
     outputBytes: 0,
     outputLimitBytes: 1048576,
     sandboxId: HOSTED_SANDBOX,
     sessionId: HOSTED_SESSION,
     state: 'running',
+    stdin: 'null',
     truncated: false,
     updatedAt: STARTED_AT,
   }

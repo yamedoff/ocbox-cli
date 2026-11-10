@@ -92,6 +92,8 @@ async function setup(
       exitCode: null,
       failureKind: null,
       failure: null,
+      kind: 'pipe',
+      stdin: 'null',
       truncated: false,
       outputBytes: 0,
       outputLimitBytes: 1024,
