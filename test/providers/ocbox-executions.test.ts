@@ -54,7 +54,6 @@ describe('hosted execution streaming', () => {
             exitCode: 3,
             outputBytes: 5,
             outputLimitBytes: 1048576,
-            endReason: 'exit',
             stderr: '',
             stdout: 'hello',
             truncated: false,
@@ -85,7 +84,6 @@ describe('hosted execution streaming', () => {
         exitCode: 7,
         outputBytes: 1,
         outputLimitBytes: 8,
-        endReason: 'exit',
         stderr: '',
         stdout: 'x',
         truncated: false,
@@ -131,7 +129,6 @@ describe('hosted execution streaming', () => {
             exitCode: 0,
             outputBytes: 5,
             outputLimitBytes: 1048576,
-            endReason: 'exit',
             stderr: '',
             stdout: 'hello',
             truncated: false,
@@ -199,7 +196,6 @@ describe('hosted execution streaming', () => {
             exitCode: 0,
             outputBytes: 4,
             outputLimitBytes: 1048576,
-            endReason: 'exit',
             stderr: '',
             stdout: 'tail',
             truncated: false,
@@ -271,7 +267,6 @@ describe('hosted execution streaming', () => {
             exitCode: 0,
             outputBytes: 3,
             outputLimitBytes: 1048576,
-            endReason: 'exit',
             stderr: '',
             stdout: 'hi\n',
             truncated: false,
@@ -287,107 +282,15 @@ describe('hosted execution streaming', () => {
     expect(collected.result).toMatchObject({ kind: 'command', exitCode: 0 })
   })
 
-  it('accepts the hosted command result that names why the command ended', async () => {
-    const { api } = await seededApi((input) => {
-      const url = String(input)
-      if (url.includes('/events')) {
-        return Promise.resolve(
-          jsonResponse({
-            data: [
-              { at: EVENT_AT, kind: 'started', message: '', sequence: 0, stream: null },
-              { at: EVENT_AT, kind: 'completed', message: '', sequence: 1, stream: null },
-            ],
-            nextCursor: null,
-          }),
-        )
-      }
-      if (url.includes('/result')) {
-        return Promise.resolve(
-          jsonResponse({
-            kind: 'command',
-            exitCode: 137,
-            outputBytes: 0,
-            outputLimitBytes: 1048576,
-            stderr: '',
-            stdout: '',
-            truncated: false,
-            endReason: 'timeout',
-            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
-          }),
-        )
-      }
-      return Promise.resolve(jsonResponse(executionFixture('completed')))
-    })
-    const collected = await collectExecutionEvents(api, 'exec_hosted_1', {
-      sleep: () => Promise.resolve(),
-    })
-    expect(collected.result).toMatchObject({
-      kind: 'command',
-      exitCode: 137,
-      endReason: 'timeout',
-    })
-  })
-
-  it('accepts the cancelled result that keeps the output printed before it', async () => {
-    const { api } = await seededApi((input) => {
-      const url = String(input)
-      if (url.includes('/events')) {
-        return Promise.resolve(
-          jsonResponse({
-            data: [
-              { at: EVENT_AT, kind: 'started', message: '', sequence: 0, stream: null },
-              { at: EVENT_AT, kind: 'completed', message: '', sequence: 1, stream: null },
-            ],
-            nextCursor: null,
-          }),
-        )
-      }
-      if (url.includes('/result')) {
-        return Promise.resolve(
-          jsonResponse({
-            kind: 'cancelled',
-            stdout: 'printed before the cancel',
-            stderr: '',
-            truncated: false,
-            endReason: 'cancelled',
-          }),
-        )
-      }
-      return Promise.resolve(jsonResponse(executionFixture('completed')))
-    })
-    const collected = await collectExecutionEvents(api, 'exec_hosted_1', {
-      sleep: () => Promise.resolve(),
-    })
-    expect(collected.result).toMatchObject({
-      kind: 'cancelled',
-      stdout: 'printed before the cancel',
-      truncated: false,
-      endReason: 'cancelled',
-    })
-  })
-
   it('maps infrastructure and cancelled results distinctly', () => {
     expect(() =>
       toExecResult(
-        {
-          kind: 'infrastructure',
-          error: { code: 'PROVIDER_DOWN', message: 'down' },
-          endReason: 'platform_error',
-        },
+        { kind: 'infrastructure', error: { code: 'PROVIDER_DOWN', message: 'down' } },
         { completedAt: EVENT_AT, startedAt: STARTED_AT },
       ),
     ).toThrowError(expect.objectContaining({ code: 'PROVIDER_UNAVAILABLE' }))
     expect(
-      toExecResult(
-        {
-          kind: 'cancelled',
-          stdout: '',
-          stderr: '',
-          truncated: false,
-          endReason: 'cancelled',
-        },
-        { completedAt: EVENT_AT, startedAt: STARTED_AT },
-      ),
+      toExecResult({ kind: 'cancelled' }, { completedAt: EVENT_AT, startedAt: STARTED_AT }),
     ).toMatchObject({ cancelled: true, exitCode: 130, timedOut: false })
   })
 })

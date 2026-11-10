@@ -153,16 +153,6 @@ export const HostedExecutionEventPageSchema = z
   })
   .readonly()
 
-export const HostedExecutionEndReasonSchema = z.enum([
-  'exit',
-  'timeout',
-  'cancelled',
-  'killed',
-  'platform_error',
-  'box_stopped',
-  'box_destroyed',
-])
-
 export const HostedCommandResultSchema = z
   .strictObject({
     kind: z.literal('command'),
@@ -172,7 +162,6 @@ export const HostedCommandResultSchema = z
     truncated: z.boolean(),
     outputBytes: z.number().int().min(0),
     outputLimitBytes: z.number().int().min(1),
-    endReason: HostedExecutionEndReasonSchema,
     encoding: z
       .strictObject({
         stdout: z.enum(['utf-8', 'utf-8-lossy']),
@@ -186,18 +175,11 @@ export const HostedInfrastructureResultSchema = z
   .strictObject({
     kind: z.literal('infrastructure'),
     error: HostedSafeErrorSchema,
-    endReason: HostedExecutionEndReasonSchema,
   })
   .readonly()
 
 export const HostedCancelledResultSchema = z
-  .strictObject({
-    kind: z.literal('cancelled'),
-    stdout: z.string(),
-    stderr: z.string(),
-    truncated: z.boolean(),
-    endReason: HostedExecutionEndReasonSchema,
-  })
+  .strictObject({ kind: z.literal('cancelled') })
   .readonly()
 
 export const HostedExecutionResultSchema = z.discriminatedUnion('kind', [
@@ -219,7 +201,6 @@ export type HostedExecution = z.infer<typeof HostedExecutionSchema>
 export type HostedExecutionEventKind = z.infer<typeof HostedExecutionEventKindSchema>
 export type HostedExecutionEvent = z.infer<typeof HostedExecutionEventSchema>
 export type HostedExecutionEventPage = z.infer<typeof HostedExecutionEventPageSchema>
-export type HostedExecutionEndReason = z.infer<typeof HostedExecutionEndReasonSchema>
 export type HostedCommandResult = z.infer<typeof HostedCommandResultSchema>
 export type HostedInfrastructureResult = z.infer<typeof HostedInfrastructureResultSchema>
 export type HostedCancelledResult = z.infer<typeof HostedCancelledResultSchema>
