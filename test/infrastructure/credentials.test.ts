@@ -1,18 +1,19 @@
-import { lstat, readdir, rm } from 'node:fs/promises'
+import { lstat, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   CredentialProtectionError,
-  HostedOAuthCredentialStore,
-  ProtectedFileCredentialStore,
   type CredentialStore,
   type HostedOAuthCredential,
   type HostedOAuthCredentialKey,
+  HostedOAuthCredentialStore,
   type OsCredentialAdapter,
+  ProtectedFileCredentialStore,
   type ProtectedPathKind,
   type WindowsAclProtector,
 } from '../../src/credentials/index.js'
+import { PowerShellWindowsAclProtector } from '../../src/credentials/windows-acl.js'
 
 const temporaryDirectories: string[] = []
 const KEY: HostedOAuthCredentialKey = {
@@ -58,6 +59,29 @@ afterEach(async () => {
 })
 
 describe('credential stores', () => {
+  it.runIf(process.platform === 'win32')(
+    'rejects missing paths and path kinds through the real Windows ACL boundary',
+    async () => {
+      const directory = await temporaryDirectory()
+      const file = join(directory, 'empty-file')
+      await writeFile(file, '')
+      const protector = new PowerShellWindowsAclProtector()
+      // Concurrent callers must receive the verification for their own path,
+      // even when one request fails and retires the reused worker.
+      expect(
+        await Promise.all([
+          protector.protectAndVerify(directory, 'directory'),
+          protector.protectAndVerify(file, 'file'),
+          protector.protectAndVerify(file, 'directory'),
+        ]),
+      ).toEqual([true, true, false])
+      expect(await protector.protectAndVerify(join(directory, 'missing'), 'file')).toBe(false)
+      expect(await protector.protectAndVerify(file, 'directory')).toBe(false)
+      expect(await protector.protectAndVerify(directory, 'file')).toBe(false)
+    },
+    30_000,
+  )
+
   it.runIf(process.platform === 'win32')(
     'round-trips through real Windows ACL protection',
     async () => {

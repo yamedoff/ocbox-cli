@@ -1,0 +1,49 @@
+# CLI Sessions and hosted command execution
+
+## What it does
+
+LifecycleService maintains local Session views and operations. OcboxSandboxProvider maps local IDs to hosted Session IDs and implements the public API contract. ExecutionService validates a provider target and consumes its event/result handle. The hosted adapter calls the API directly; the fake adapter starts the local helper process.
+
+## Inside
+
+Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms a deleted hosted Session before marking the local mapping deleted; history remains in the lifecycle file. When a failed start leaves a current Operation or no primary binding, destroy first gives that Operation one bounded reconcile and then destroys the hosted Session named by the persisted mapping. A Session with no hosted mapping is removed locally, and the human result names that case.
+
+Explicit shell mode rejects a known non-Linux effective OS. The hosted public view may publish only scalar fields (`cpu`, `memory`, `image`, `region`); the adapter merges those reported fields over the request to form the full effective spec, and a payload that reports none of them stays unobserved. The requested spec is never promoted wholesale to observed metadata. When the local config omits an image or region, the observed value also replaces the local placeholder in the requested view.
+
+A create response that names only the hosted Session ID persists that ID before the wait, so a refused or timed-out create still leaves a destroyable mapping. The requested view shows the observed image and region when the hosted config omitted those fields; the offline schema placeholders never stand in for a server default.
+
+Execution submits createExecution, retains its handle and observes event/result endpoints. collectExecutionEvents polls event pages, orders by sequence, skips duplicates and exposes an optional cursor-checkpoint callback; the provider keeps its cursor in memory. Repeated retryable page failures fall back to Execution/result polling. The fake provider's helper emits framed events. The command's nonzero exit is separate from infrastructure failure. The CLI execution ID printed by `exec` is persisted with the hosted ID; `cancel` maps it back and reports the same ID. A terminal `cancelled` event or cancelled Execution state produces the cancelled outcome without waiting for a result endpoint that may not have caught up.
+
+The execution path reads the owned hosted Session once: `executionTarget` and `ExecutionService.start` share the observation, and an available warm-session daemon can serve it to later commands. A cached observation is advisory; the execution start remains authoritative for state changes the daemon has not seen. Lifecycle mutations still read the hosted Session directly, so a stop or destroy observes the server's current state.
+
+Hosted argv is shell-quoted into the public command string; shell mode sends its string directly. The adapter rounds timeouts up to seconds within 1–3600. Its createExecution body sends command and timeout only; `--cwd` and `--env` are refused with `CAPABILITY_UNSUPPORTED` before dispatch, while adapter-owned recursion markers are tolerated but not transmitted.
+
+## Data it keeps
+
+Local Session state, selection, local-to-hosted mappings, pending operations and operation checkpoints. A hosted mapping is written as soon as the create response names the hosted Session, before a primary binding exists. Hosted Execution and sandbox observations arrive through the public API. No server vendor identity is needed by this adapter.
+
+## States
+
+Local create/mutation intent → dispatched → observed terminal result → reconciled Session view. Execution pending/running → command success/failure or cancellation. An elapsed client deadline does not prove the server effect was undone. Destroy marks the hosted mapping deleted and retains local Session/Operation history with released bindings.
+
+## Limits and config
+
+Operation wait defaults to 5 minutes. Event collection defaults to a 5-minute wait, 250 ms polling and event pages of 100; its stream-failure bound defaults to 3. Legacy source-apply healthy polling is 1 second. The event collector falls back after more than three consecutive retryable page failures; non-retryable failures propagate immediately. Retry policy and Retry-After are applied within the remaining deadline.
+
+## When it fails
+
+Unsupported capabilities fail before pretending to perform an action. The hosted adapter advertises supportsMemoryPause=false, so CLI pause refuses before dispatch, even though a direct provider pause method exists. Preview methods exist in the provider but are subject to capability checks; a method's presence is not live deployment evidence. Lost replies preserve recovery evidence. Cancellation requires a terminal observation or reports incomplete convergence.
+
+Execution failures after an accepted start use the same safe typed code/message as failures before start. Human output prints the safe message; JSON and JSONL include the existing optional error detail. Infrastructure failure still exits 125 and remains distinct from a command whose own exit code is 125. Unknown error causes keep the generic envelope and are not serialized. This applies when event/result collection surfaces an error. The existing fallback separately tries to drain remaining events on a best-effort basis, so a terminal result does not prove all output history was recovered.
+
+## Code evidence
+
+Selection and transitions: `src/lifecycle/service.ts:87–340,510–700`. Hosted lifecycle/exec/preview: `src/providers/ocbox/provider.ts:506–950,1000–1424`. Output collection: `src/providers/ocbox/executions.ts:104–434`; cancellation helper: `src/providers/ocbox/operations.ts:399–486`.
+
+Verified against ocbox-cli @ 6e22448
+
+A hosted create persists the Session ID from the create operation before the wait; `exec` and `cancel` share the CLI execution ID; a cancelled run is reported as cancelled rather than a timeout.
+
+Verified against ocbox-cli @ 872e6f2 plus the create-ID, execution-ID and cancellation changes.
+
+Warm session cache: `src/warm/client.ts`, `src/warm/daemon.ts`.

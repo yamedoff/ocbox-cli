@@ -268,3 +268,27 @@ describe('loopback callback listener', () => {
     })
   })
 })
+
+it('explains that an abandoned browser flow never returned, with an advancing real timeout', async () => {
+  const listener = await startLoopbackListener({ expectedState: STATE, timeoutMilliseconds: 25 })
+  try {
+    await expect(listener.waitForCallback()).rejects.toMatchObject({
+      code: 'AUTH_REQUIRED',
+      details: { reasonCode: 'cli_login_callback_timeout' },
+    })
+  } finally {
+    await listener.close()
+  }
+})
+it('surfaces only a closed server reason from an error callback', async () => {
+  await withListener(async (listener) => {
+    const pending = expect(listener.waitForCallback()).rejects.toMatchObject({
+      details: { reasonCode: 'auth_browser_binding_missing' },
+      message: expect.stringContaining('req_123456abcdef'),
+    })
+    await send(
+      `${listener.redirectUri}?error=access_denied&state=${STATE}&reason_code=auth_browser_binding_missing&request_id=req_123456abcdef&error_description=private-canary`,
+    )
+    await pending
+  })
+})

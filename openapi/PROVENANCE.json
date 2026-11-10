@@ -1,14 +1,14 @@
 {
   "artifact": "openapi.yaml",
-  "sourceRepository": "yamedoff/opencloudbox (private)",
-  "sourceCommit": "96ea22927492a16d115daa791a3836ac9e06d159",
+  "source": "hosted-service",
+  "sourceCommit": "unavailable",
   "sourcePath": "openapi/openapi.yaml",
-  "sha256": "605be009a98ae9207efa44be343bffc7e28435b76259a81f4239b458ca3396ca",
-  "bytes": 70932,
+  "sha256": "b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046",
+  "bytes": 144982,
   "openapi": "3.1.0",
   "title": "OpenCloudBox hosted API",
   "version": "0.1.0",
   "consumedAs": "published-contract-artifact-only",
   "generated": ["src/api/generated/client.ts"],
-  "note": "This public CLI consumes only the reviewed OpenAPI artifact at the pinned private commit. No private implementation, domain, or test code is imported or copied."
+  "note": "Public API description with the source-sync v2 request and response shapes. The source revision is unavailable. Descriptions contain public client behavior only; the artifact is pinned by SHA-256 and byte length."
 }

@@ -7,8 +7,12 @@ interface PackageMetadata {
     'ocbox-execution-helper': string
     opencloudbox: string
   }
+  engines: { node: string }
+  files: string[]
   name: string
-  private: boolean
+  private?: boolean
+  publishConfig: { access: string; provenance: boolean }
+  scripts: { prepublishOnly: string }
   version: string
 }
 
@@ -18,12 +22,18 @@ async function readPackageMetadata(): Promise<PackageMetadata> {
 }
 
 describe('package identity', () => {
-  it('keeps the locked package name and version private', async () => {
+  it('publishes the locked package name and version with the required packaging gate', async () => {
     const metadata = await readPackageMetadata()
 
     expect(metadata.name).toBe('opencloudbox')
     expect(metadata.version).toBe('0.1.0')
-    expect(metadata.private).toBe(true)
+    expect(metadata).not.toHaveProperty('private')
+    expect(metadata.engines).toEqual({ node: '>=22' })
+    expect(metadata.scripts.prepublishOnly).toBe(
+      'pnpm run build && pnpm run typecheck && pnpm run test:unit',
+    )
+    expect(metadata.publishConfig).toEqual({ access: 'public', provenance: true })
+    expect(metadata.files).toEqual(['dist/**/*.js', 'dist/**/*.d.ts', 'oclif.manifest.json'])
   })
 
   it('maps both approved binary names to one entrypoint', async () => {

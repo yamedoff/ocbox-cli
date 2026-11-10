@@ -13,6 +13,8 @@ export const AuthMetadataSchema = z.strictObject({
   issuer: z.string().min(1).max(512),
   clientId: z.string().min(1).max(128),
   audience: z.literal('cli'),
+  /** The token's `/auth/me` subject; absent until the first identity read. */
+  subject: z.string().min(1).max(128).optional(),
   scopes: z.array(z.string().min(1).max(256)).max(256).readonly(),
   expiresAt: UtcTimestampSchema.nullable(),
   identity: HostedOAuthCredentialKeySchema,

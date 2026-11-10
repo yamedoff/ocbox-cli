@@ -1,7 +1,13 @@
 /** Registered public CLI OAuth client and the fixed loopback callback shape. */
 export const DEFAULT_CLIENT_ID = 'ocb_cli'
 export const DEFAULT_AUDIENCE = 'cli' as const
-export const DEFAULT_SCOPES = ['source:read'] as const
+/** Explicit, independently enforced repository and product permissions requested at consent. */
+export const DEFAULT_SCOPES = [
+  'source:read',
+  'product:read',
+  'product:edit',
+  'product:run',
+] as const
 export const LOOPBACK_HOST = '127.0.0.1'
 export const LOOPBACK_PATH = '/callback'
 

@@ -7,6 +7,8 @@ import type {
   SandboxProvider,
 } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
+
+const INVALID_SESSION_ID_MESSAGE = 'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
 import {
   runExecutionCommand,
   runExecutionCommandResult,
@@ -14,6 +16,8 @@ import {
   type ExecutionWritable,
 } from '../../src/execution/index.js'
 import { FakeProviderExecution } from '../../src/execution/fake-provider-execution.js'
+import { collectExecutionEvents } from '../../src/providers/ocbox/executions.js'
+import { seededApi, jsonResponse } from '../providers/doubles.js'
 import { ids, sandbox, session } from '../contracts/test-data.js'
 
 class MemoryWritable implements ExecutionWritable {
@@ -187,6 +191,67 @@ describe('execution command runner', () => {
     })
   })
 
+  it.each(['human', 'json', 'jsonl'] as const)(
+    'preserves a safe hosted error after execution starts in %s output',
+    async (mode) => {
+      // The start was accepted, then the documented event route returned a typed error.
+      const { api } = await seededApi(() =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              error: { code: 'NOT_FOUND', message: 'Resource was not found' },
+              requestId: ids.request,
+            },
+            404,
+          ),
+        ),
+      )
+      const cancel = vi.fn(async () => ({}) as Operation)
+      const provider = {
+        exec: {
+          execute: async (context: OperationContext): Promise<ExecHandle> => ({
+            execution: {
+              id: ids.execution,
+              operationId: context.operationId,
+              sandboxId: ids.sandbox,
+              command: { mode: 'argv', argv: ['tool'] },
+              status: 'running',
+              result: null,
+              createdAt: session.createdAt,
+              startedAt: session.createdAt,
+              completedAt: null,
+            },
+            events: {
+              [Symbol.asyncIterator]: () => ({
+                next: async () => {
+                  await collectExecutionEvents(api, 'exedo_example')
+                  return { done: true as const, value: undefined }
+                },
+              }),
+            },
+            result: new Promise(() => {}),
+          }),
+          cancel,
+        },
+      } as unknown as SandboxProvider
+      const output = io()
+      const result = await runExecutionCommandResult(
+        [...(mode === 'human' ? [] : [`--${mode}`]), '--', 'tool'],
+        () => ({ ...target(), provider }),
+        output,
+      )
+      expect(result.started).toBe(true)
+      expect(result.exitCode).toBe(125)
+      expect(cancel).toHaveBeenCalledOnce()
+      if (mode === 'human') expect(output.stderr.text()).toBe('Resource was not found\n')
+      else
+        expect(JSON.parse(output.stdout.text())).toMatchObject({
+          outcome: 'infrastructure_error',
+          error: { code: 'SANDBOX_NOT_FOUND', message: 'Resource was not found' },
+        })
+    },
+  )
+
   it('surfaces an actionable detail for an invalid exec argument', async () => {
     const jsonOutput = io()
     const jsonExit = await runExecutionCommand(
@@ -208,6 +273,21 @@ describe('execution command runner', () => {
     )
     expect(humanExit).toBe(125)
     expect(humanOutput.stderr.text()).toContain('Unknown exec option')
+  })
+
+  it('answers a malformed Session ID with INVALID_SPEC and exit 1', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--session', 'ses_nope', '--', 'tool'],
+      () => target(),
+      output,
+    )
+
+    expect(exitCode).toBe(1)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'infrastructure_error',
+      error: { code: 'INVALID_SPEC', message: INVALID_SESSION_ID_MESSAGE },
+    })
   })
 
   it('keeps the generic unexplained envelope for an untyped resolution failure', async () => {

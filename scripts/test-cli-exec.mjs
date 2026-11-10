@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -60,11 +61,35 @@ try {
   assert.equal(probe.stdout, '1\n')
   assert.equal(probe.stderr, '')
 
-  const initialized = parseEnvelope(
-    (await run(['init', ...runtimeFlags, '--json'], { cwd: projectDirectory })).stdout,
+  // Exec help shows the argv separator and the default workspace location.
+  const execHelp = await run(['exec', '--help'])
+  assert.equal(execHelp.code, 0)
+  const execHelpText = execHelp.stdout.toString('utf8')
+  assert.ok(
+    execHelpText.includes('ocbox exec [flags] -- <command> [args...]'),
+    'exec usage must show the -- <command> [args...] placeholder',
   )
-  assert.equal(initialized.data, 'created')
-  await run(['init', ...emptyRuntimeFlags, '--json'], { cwd: projectDirectory })
+  assert.ok(
+    execHelpText.includes('ocbox exec -- npm test'),
+    'exec description must show the npm test example',
+  )
+  assert.ok(
+    execHelpText.includes("box's workspace folder"),
+    'exec description must say commands run in the workspace folder',
+  )
+
+  const initialized = parseEnvelope(
+    (
+      await run(['init', '--provider', 'fake', ...runtimeFlags, '--json'], {
+        cwd: projectDirectory,
+      })
+    ).stdout,
+  )
+  assert.equal(initialized.data.status, 'created')
+  assert.equal(initialized.data.provider, 'fake')
+  await run(['init', '--provider', 'fake', ...emptyRuntimeFlags, '--json'], {
+    cwd: projectDirectory,
+  })
 
   const started = parseEnvelope(
     (await run(['start', ...runtimeFlags, '--json'], { cwd: projectDirectory })).stdout,
@@ -253,6 +278,44 @@ try {
     assert.equal(interrupted.stdout.toString('utf8'), `${marker}\n`)
     assert.match(interrupted.stderr.toString('utf8'), /Execution cancelled/)
   }
+
+  // A separate terminal cancels the fake provider through durable state.
+  const running = run(
+    [
+      'exec',
+      '--json',
+      ...runtimeFlags,
+      '--',
+      process.execPath,
+      '-e',
+      'setInterval(() => {}, 1000)',
+    ],
+    { cwd: projectDirectory },
+  )
+  const lifecycleDirectory = join(stateDirectory, 'lifecycle')
+  const lifecycleFile = (await readdir(lifecycleDirectory)).find((name) => name.endsWith('.json'))
+  let lastExecution
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const state = JSON.parse(await readFile(join(lifecycleDirectory, lifecycleFile), 'utf8'))
+    lastExecution = Object.values(state.lastFakeExecutions ?? {})[0]
+    if (lastExecution) break
+    await delay(25)
+  }
+  assert(lastExecution, 'fake exec must persist its last execution')
+  const cancelled = await run(['cancel', '--json', ...runtimeFlags], { cwd: projectDirectory })
+  assert.equal(cancelled.code, 0, cancelled.stderr.toString())
+  assert.equal(parseEnvelope(cancelled.stdout).data.state, 'cancelled')
+  const ended = await running
+  assert.equal(ended.code, 130)
+  assert.equal(parseEnvelope(ended.stdout).outcome, 'cancelled')
+  const repeated = await run(['cancel', lastExecution, '--json', ...runtimeFlags], {
+    cwd: projectDirectory,
+  })
+  assert.equal(repeated.code, 0)
+  assert.equal(parseEnvelope(repeated.stdout).data.state, 'cancelled')
+  const nothing = await run(['cancel', '--json', ...runtimeFlags], { cwd: projectDirectory })
+  assert.equal(nothing.code, 1)
+  assert.match(parseEnvelope(nothing.stderr).data.message, /Nothing running/)
 
   process.stdout.write('CLI exec E2E passed\n')
 } finally {

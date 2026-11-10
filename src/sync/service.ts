@@ -36,9 +36,16 @@ import {
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
+import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
+import type { CasProgress } from './cas-transfer.js'
+import { runCasPush } from './cas-push.js'
+import { runHostedDiff, runHostedPull } from './cas-pull.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
+  readonly casTransport?: CasTransport & Partial<CasFastTransport>
+  readonly casReadTransport?: CasReadTransport
+  readonly signal?: AbortSignal | undefined
   readonly providerName: string
   readonly projectId: ProjectId
   readonly sessionId: SessionId
@@ -111,6 +118,15 @@ export interface SyncPlanView {
 export interface SyncApplyView extends SyncPlanView {
   readonly applied: boolean
   readonly baselineUpdated: boolean
+  readonly uploadedFiles?: readonly string[]
+  readonly uploadedBytes?: number
+  readonly uploadedBlobs?: number
+  readonly pulledFiles?: readonly string[]
+  readonly pulledBytes?: number
+  readonly deletedFiles?: readonly string[]
+  readonly protocolVersion?: 2
+  readonly archiveBytes?: number
+  readonly manifestId?: string
   /** Identity of the applied operation, or null when the plan was a no-op. */
   readonly operationId: string | null
 }
@@ -128,16 +144,19 @@ export interface SyncLockOptions {
 }
 
 export interface SyncApplyOptions extends SyncLockOptions {
+  readonly onProgress?: ((event: CasProgress) => void) | undefined
   readonly cliRules: readonly IgnoreRule[]
   readonly delete: boolean
   readonly yes: boolean
   readonly interactive: boolean
   readonly confirm: () => Promise<boolean>
   readonly now?: () => Date
+  readonly pause?: (milliseconds: number) => Promise<void>
 }
 
 export interface SyncDiffOptions {
   readonly cliRules: readonly IgnoreRule[]
+  readonly pause?: (milliseconds: number) => Promise<void>
 }
 
 export interface SyncRecoverOptions extends SyncLockOptions {}
@@ -578,6 +597,7 @@ export async function runSyncDiff(
   context: SyncContext,
   options: SyncDiffOptions,
 ): Promise<SyncPlanView> {
+  if (context.providerName === 'ocbox') return runHostedDiff(context, options)
   await assertNoRecovery(context)
   await assertNoPendingBaseline(context)
   const inputs = await buildPlan(context, 'diff', options.cliRules)
@@ -641,6 +661,13 @@ async function* openSourceFile(root: string, path: ManifestPath): AsyncIterable<
   }
 }
 
+function hostedUnsupported(command: string): OcboxError {
+  return syncError(
+    'CAPABILITY_UNSUPPORTED',
+    `sync ${command} is not supported for hosted sandboxes yet`,
+  )
+}
+
 /**
  * Applies a one-way push or pull. Conflicts, blocked paths, unresolved recovery,
  * and unapproved deletions all fail closed before any target mutation.
@@ -650,6 +677,14 @@ export async function runSyncApply(
   mode: Exclude<SyncMode, 'diff'>,
   options: SyncApplyOptions,
 ): Promise<SyncApplyView> {
+  if (context.providerName === 'ocbox') {
+    if (mode === 'pull')
+      return withSyncLock(context, options, () => runHostedPull(context, options))
+    return withSyncLock(context, options, () => {
+      if (context.casTransport === undefined) throw hostedUnsupported('push')
+      return runCasPush(context, options)
+    })
+  }
   const now = options.now ?? (() => new Date())
   const roots = rootsFor(mode, context)
   const adapter = createTransferAdapter(context.providerName, roots.targetRoot)
@@ -753,6 +788,7 @@ export async function runSyncRecover(
   context: SyncContext,
   options: SyncRecoverOptions = {},
 ): Promise<SyncRecoverView> {
+  if (context.providerName === 'ocbox') throw hostedUnsupported('recover')
   return withSyncLock(context, options, async () => {
     let recovered = false
     let operationId: string | null = null
@@ -813,10 +849,44 @@ export function renderSyncPlan(view: SyncPlanView): string {
   ) {
     lines.push('No changes.')
   }
+  lines.push('+ added  ~ modified  - deleted (remote = in the box)')
   return lines.join('\n')
 }
 
 export function renderSyncApplied(view: SyncApplyView): string {
+  if (view.protocolVersion === 2) {
+    if (view.mode === 'pull') {
+      const changed = [...view.additions, ...view.modifications]
+      const deleted = view.deletedFiles ?? []
+      const skipped =
+        view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
+      if (changed.length === 0 && deleted.length === 0 && !skipped) return 'Source unchanged.'
+      const changedPaths = [...view.additions, ...view.modifications].map((entry) => entry.path)
+      const shown = [...changedPaths, ...deleted].slice(0, 10)
+      const remaining = changedPaths.length + deleted.length - shown.length
+      const skippedNote = skipped
+        ? ` ${String(view.deletions.length)} local deletion(s) skipped; rerun with --delete to remove them.`
+        : ''
+      return [
+        `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
+        ...shown,
+        ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+      ].join('\n')
+    }
+    const changed = [...view.additions, ...view.modifications, ...view.deletions]
+    if (changed.length === 0) return 'Source unchanged.'
+    const shown = changed.slice(0, 10)
+    const remaining = changed.length - shown.length
+    return [
+      `Source synced: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s), ${String(view.deletions.length)} deletion(s); uploaded ${String(view.uploadedBlobs ?? 0)} blob(s), ${String(view.uploadedBytes ?? 0)} bytes.`,
+      ...shown.map((entry) => entry.path),
+      ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+    ].join('\n')
+  }
+  if (view.uploadedFiles !== undefined)
+    return view.applied
+      ? `Uploaded ${view.uploadedFiles.length} file(s), ${view.uploadedBytes} bytes (${view.archiveBytes} archive bytes) to the hosted sandbox:\n${view.uploadedFiles.join('\n')}`
+      : 'Push skipped: hosted source is already verified; uploaded 0 files, 0 bytes.'
   if (!view.applied) {
     return `${view.mode === 'push' ? 'Push' : 'Pull'} skipped: no changes to apply.`
   }

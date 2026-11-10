@@ -230,6 +230,29 @@ describe('provider-neutral execution service', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('dispatches explicit shell commands when the effective specification is unobserved', async () => {
+    // A hosted response may contain only a partial effective specification. The adapter
+    // retains null rather than claiming the local requested specification was observed.
+    const execution = new FakeProviderExecution({
+      sessionIdForSandbox: () => ids.session,
+      supportsBash: true,
+    })
+    const run = await new ExecutionService().start(
+      {
+        ...target(execution),
+        sandbox: {
+          ...sandbox,
+          specification: { ...sandbox.specification, effective: null, effectiveObservedAt: null },
+        },
+      },
+      parseExecArguments(['--shell', "printf '%s\\n' hi"]),
+      async () => {},
+    )
+    const completion = await run.completion
+    expect(completion.outcome).toMatchObject({ kind: 'remote_result', result: { exitCode: 0 } })
+    expect(completion.output?.stdout.totalBytes).toBe(3)
+  })
+
   it('validates timeout and shell compatibility before provider mutation', async () => {
     const execute = vi.fn()
     const provider = { exec: { execute } } as unknown as SandboxProvider

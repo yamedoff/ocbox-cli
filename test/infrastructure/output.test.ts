@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { OcboxError } from '../../src/errors/index.js'
 import { OutputWriter } from '../../src/output/index.js'
-import { redactForOutput, sanitizeTelemetryPayload } from '../../src/security/index.js'
+import {
+  REDACTED_VALUE,
+  redactForOutput,
+  sanitizeTelemetryPayload,
+} from '../../src/security/index.js'
 
 class MemoryStream {
   readonly isTTY: boolean
@@ -110,6 +115,33 @@ describe('OutputWriter', () => {
     expect(stdout.value).not.toContain('abcdefghijklmnop')
     expect(stdout.value).toContain('[REDACTED]')
     expect(stdout.value).toContain('[LOCAL_PATH]')
+  })
+
+  it('keeps public secret metadata readable while redacting secret-shaped values', () => {
+    const redacted = redactForOutput({
+      secretExposureModes: ['unsupported'],
+      secretReferenceIds: ['ocbox:project/reference', 'sk-abcdefghijklmnop'],
+    })
+    expect(redacted).toEqual({
+      secretExposureModes: ['unsupported'],
+      secretReferenceIds: ['ocbox:project/reference', REDACTED_VALUE],
+    })
+  })
+
+  it('prints the API next step on its own line after the message', () => {
+    const stderr = new MemoryStream(false)
+    const writer = new OutputWriter({ mode: 'human', stdout: new MemoryStream(false), stderr })
+    writer.error(
+      new OcboxError({
+        code: 'PROJECT_NOT_FOUND',
+        message: 'Resource was not found',
+        requestId: '11111111-1111-4111-8111-111111111111' as never,
+        details: { nextStep: 'Run `ocbox project list` to find your project.' },
+      }),
+    )
+    expect(stderr.value).toBe(
+      'Resource was not found\nNext: Run `ocbox project list` to find your project.\n',
+    )
   })
 
   it('suppresses progress under redirection and all structured output', () => {

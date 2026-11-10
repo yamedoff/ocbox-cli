@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type {
@@ -14,7 +15,6 @@ import {
   Deadline,
   type RetryPolicy,
   resolvePollDelayMilliseconds,
-  sleepWithSignal,
 } from './retry.js'
 import {
   type HostedExecutionEvent,
@@ -46,7 +46,9 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
   }
 }
 
-const defaultSleep = (milliseconds: number): Promise<void> => sleepWithSignal(milliseconds)
+const defaultSleep = async (milliseconds: number): Promise<void> => {
+  await delay(milliseconds)
+}
 
 export interface PollExecutionOptions {
   readonly deadlineMilliseconds?: number | undefined
@@ -116,13 +118,14 @@ export async function collectExecutionEvents(
   let cursor: string | null = options.checkpoint?.cursor ?? null
   let lastSequence = options.checkpoint?.lastSequence ?? -1
   const seen: HostedEvent[] = []
+  let sawCancelled = false
   let failures = 0
   let attempt = 0
 
   const pause = async (milliseconds: number): Promise<void> => {
     try {
       if (sleep === defaultSleep) {
-        await sleepWithSignal(milliseconds, options.signal)
+        await delay(milliseconds, undefined, { signal: options.signal })
       } else {
         await sleep(milliseconds)
       }
@@ -169,6 +172,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(execution.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: execution.status,
       })
       if (!mapped.retryable) throw mapped
@@ -229,6 +233,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(finalResult.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: finalResult.status,
       })
       if (!mapped.retryable) throw mapped
@@ -273,6 +278,7 @@ export async function collectExecutionEvents(
         retryAfterSeconds: envelope.retryAfterSeconds ?? retryAfterOf(result.body),
         serverCode: envelope.code,
         serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
         status: result.status,
       })
     }
@@ -303,6 +309,7 @@ export async function collectExecutionEvents(
       }
       seen.push(event as unknown as HostedEvent)
       options.onEvent?.(event)
+      if (event.kind === 'cancelled') sawCancelled = true
       if (event.kind !== 'started' && event.kind !== 'stdout' && event.kind !== 'stderr') {
         sawTerminal = true
       }
@@ -355,7 +362,14 @@ export async function collectExecutionEvents(
         current.state === 'failed'
       ) {
         await drainRemainingEvents()
-        return { events: seen, executionId, result: await readResult() }
+        return {
+          events: seen,
+          executionId,
+          result:
+            sawCancelled || current.state === 'cancelled'
+              ? ({ kind: 'cancelled' } as unknown as HostedResult)
+              : await readResult(),
+        }
       }
       await pause(pollMs)
     }
@@ -408,7 +422,13 @@ export async function collectExecutionEvents(
     }
     const { sawTerminal } = ingestPage(page)
     if (sawTerminal) {
-      return { events: seen, executionId, result: await readResult() }
+      return {
+        events: seen,
+        executionId,
+        result: sawCancelled
+          ? ({ kind: 'cancelled' } as unknown as HostedResult)
+          : await readResult(),
+      }
     }
     if (page.nextCursor === null) {
       const current = await readExecution()
@@ -417,7 +437,14 @@ export async function collectExecutionEvents(
           current.state as 'completed' | 'cancelled' | 'failed' | 'pending' | 'running',
         )
       ) {
-        return { events: seen, executionId, result: await readResult() }
+        return {
+          events: seen,
+          executionId,
+          result:
+            current.state === 'cancelled'
+              ? ({ kind: 'cancelled' } as unknown as HostedResult)
+              : await readResult(),
+        }
       }
       if (deadline.exceeded()) {
         throw new OcboxError({
@@ -445,11 +472,16 @@ export function toExecResult(
   const rawCompleted = UtcTimestampSchema.parse(timing.completedAt)
   const completedAt = rawCompleted < startedAt ? startedAt : rawCompleted
   if (result.kind === 'cancelled') {
-    throw new OcboxError({
-      code: 'OPERATION_CANCELLED',
-      message: 'The hosted execution was cancelled',
-      requestId: newRequestId(),
-    })
+    return {
+      cancelled: true,
+      completedAt,
+      exitCode: 130,
+      signal: null,
+      startedAt,
+      stderr: new Uint8Array(),
+      stdout: new Uint8Array(),
+      timedOut: false,
+    }
   }
   if (result.kind === 'infrastructure') {
     throw new OcboxError({

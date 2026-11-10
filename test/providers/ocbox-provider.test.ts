@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
+import { parseProjectConfig, toSandboxSpec } from '../../src/config/index.js'
 import { MemoryOperationCheckpointStore } from '../../src/providers/ocbox/operations.js'
 import {
   executionWaitDeadlineMilliseconds,
   OcboxSandboxProvider,
 } from '../../src/providers/ocbox/provider.js'
 import {
+  ADMISSION_MESSAGES,
+  requestedSpecFromConfig,
+} from '../../src/providers/ocbox/requested-spec.js'
+import {
+  errorResponse,
   HOSTED_PROJECT,
   HOSTED_SANDBOX,
   HOSTED_SESSION,
-  LOCAL_IDS,
-  errorResponse,
   hostedOperationFixture,
   hostedSessionFixture,
   jsonResponse,
+  LOCAL_IDS,
   operationContext,
   seededApi,
   testSpec,
@@ -125,6 +131,12 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(fetched?.id).toBe(result.sandbox.id)
   })
 
+  it('does not expose the retired hosted source upload route', async () => {
+    const { api } = await seededApi(routeFetch('happy'))
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    expect('uploadSource' in provider).toBe(false)
+  })
+
   it('maps a valid hosted effectiveSpec into the Sandbox specification', async () => {
     const effectiveSpec = { ...testSpec(), cpu: { millicores: 2000 } }
     const { api } = await seededApi((input, init) => {
@@ -170,6 +182,157 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(result.sandbox.providerSandboxId).toBe('sbx_hosted_1')
     expect(result.sandbox.lifecycle.rawState).toBe('running')
     expect(result.sandbox.lifecycle.normalizedState).toBe('running')
+  })
+
+  it('maps the hosted public scalar effective fields onto the full specification', async () => {
+    const effectiveSpec = {
+      cpu: 2,
+      memory: 4096,
+      region: 'eu-west',
+      runtime: 'managed',
+      lifetimeSeconds: 1800,
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    const effective = result.sandbox.specification.effective
+    expect(effective).not.toBeNull()
+    expect(effective?.cpu.millicores).toBe(2000)
+    expect(effective?.memory.bytes).toBe(4096 * 2 ** 20)
+    expect(effective?.region).toBe('eu-west')
+    expect(effective?.image).toEqual(testSpec()['image'])
+    expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
+  })
+
+  it('uses the observed hosted image and region when the local config omitted them', async () => {
+    const effectiveSpec = {
+      cpu: 1,
+      memory: 2048,
+      image: 'opencloudbox/node:24',
+      region: 'eu-west',
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+      requestedSpec: { cpu: 1 },
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.requested.image).toEqual({
+      kind: 'image',
+      reference: 'opencloudbox/node:24',
+    })
+    expect(result.sandbox.specification.requested.region).toBe('eu-west')
+  })
+
+  it('shows the observed image and region when the hosted config omits them', async () => {
+    const effectiveSpec = {
+      ...testSpec(),
+      image: { kind: 'template', reference: 'node-24' },
+      region: 'eu',
+    }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({ effectiveSpec })))
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+      requestedSpec: { cpu: 1 },
+    })
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec() as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.requested.image).toEqual({
+      kind: 'template',
+      reference: 'node-24',
+    })
+    expect(result.sandbox.specification.requested.region).toBe('eu')
   })
 
   it('leaves an absent or unparseable hosted effectiveSpec unobserved and never promotes requested', async () => {
@@ -304,6 +467,31 @@ describe('hosted ocbox provider lifecycle', () => {
         } as never,
       ),
     ).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
+  })
+
+  it('keeps a REST 404 code and message instead of a generic lookup text', async () => {
+    const { api } = await seededApi(routeFetch('missing-project'))
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    const context = operationContext()
+
+    await expect(
+      provider.create(
+        context as never,
+        {
+          adoption: {
+            metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+            strategy: 'serialize_then_reconcile',
+          },
+          projectId: LOCAL_IDS.project,
+          sessionId: LOCAL_IDS.session,
+          specification: testSpec() as never,
+        } as never,
+      ),
+    ).rejects.toMatchObject({
+      code: 'PROJECT_NOT_FOUND',
+      providerCode: 'NOT_FOUND',
+      message: 'no',
+    })
   })
 
   it('keeps bearer material out of errors and diagnostics', async () => {
@@ -508,6 +696,40 @@ describe('hosted ocbox provider lifecycle', () => {
     await expect(handle.result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
   })
 
+  it('rejects cwd and environment options the hosted API cannot carry', async () => {
+    let calls = 0
+    const { api } = await seededApi(() => {
+      calls += 1
+      return Promise.reject(new Error('unexpected hosted call'))
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId: HOSTED_SESSION,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    for (const options of [
+      { environment: {}, workingDirectory: '/workspace' },
+      { environment: { FOO: 'bar' }, workingDirectory: null },
+    ]) {
+      await expect(
+        provider.exec.execute(
+          operationContext() as never,
+          {
+            command: { mode: 'argv', argv: ['pwd'] },
+            sandboxId: LOCAL_IDS.sandbox,
+            timeoutMilliseconds: null,
+            ...options,
+          } as never,
+        ),
+      ).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' })
+    }
+    expect(calls).toBe(0)
+  })
+
   it('treats a post-deletion getSession 404 as a verified destroy', async () => {
     let destroyCalls = 0
     let sessionCalls = 0
@@ -533,7 +755,11 @@ describe('hosted ocbox provider lifecycle', () => {
       }
       if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
         sessionCalls += 1
-        return Promise.resolve(errorResponse('NOT_FOUND', 404))
+        return Promise.resolve(
+          destroyCalls === 0
+            ? jsonResponse(hostedSessionFixture({}))
+            : errorResponse('NOT_FOUND', 404),
+        )
       }
       return Promise.resolve(jsonResponse({}))
     })
@@ -553,7 +779,7 @@ describe('hosted ocbox provider lifecycle', () => {
       } as never,
     )
     expect(destroyCalls).toBe(1)
-    expect(sessionCalls).toBe(1)
+    expect(sessionCalls).toBe(2)
     expect(result.sandbox.lifecycle.normalizedState).toBe('deleted')
     expect(result.operation.action).toBe('destroy')
   })
@@ -588,7 +814,11 @@ describe('hosted ocbox provider lifecycle', () => {
       }
       if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
         sessionCalls += 1
-        return Promise.resolve(errorResponse('NOT_FOUND', 404))
+        return Promise.resolve(
+          destroyCalls.length === 0
+            ? jsonResponse(hostedSessionFixture({}))
+            : errorResponse('NOT_FOUND', 404),
+        )
       }
       return Promise.resolve(jsonResponse({}))
     })
@@ -615,9 +845,178 @@ describe('hosted ocbox provider lifecycle', () => {
       } as never,
     )
     expect(destroyCalls).toEqual([false, true])
-    expect(sessionCalls).toBe(2)
+    expect(sessionCalls).toBe(3)
     expect(first.operation.idempotencyResolution?.kind).toBe('created')
     expect(second.operation.idempotencyResolution?.kind).toBe('replayed_result')
     expect(second.sandbox.lifecycle.normalizedState).toBe('deleted')
+  })
+})
+
+describe('hosted create request and admission', () => {
+  it('maps only explicit workspace fields to the five closed hosted names', () => {
+    expect(requestedSpecFromConfig(DEFAULT_PROJECT_CONFIG)).toEqual({
+      cpu: 1,
+      memory: 2147483648,
+      image: 'fake-node-24',
+      region: 'local',
+      runtime: 'container',
+    })
+    const minimal = DEFAULT_PROJECT_CONFIG.replace(
+      'runtimeClass = "container"\nregion = "local"\n',
+      '',
+    )
+      .replace('image = { kind = "template", reference = "fake-node-24" }\n', '')
+      .replace(/\[sandbox.resources\]\n[\s\S]*?\n\n/, '')
+    expect(requestedSpecFromConfig(minimal)).toEqual({})
+    expect(
+      requestedSpecFromConfig(minimal.replace('[provider]', '[provider]\nregion = "eu-west"')),
+    ).toEqual({ region: 'eu-west' })
+  })
+
+  it('sends configured secret reference ids in the create body', async () => {
+    const secretReferenceId = 'sec_0123456789abcdef0123456789abcdef'
+    const specification = toSandboxSpec(
+      parseProjectConfig(
+        DEFAULT_PROJECT_CONFIG.replace(
+          '[sandbox]\n',
+          `[sandbox]\nsecretReferenceIds = ["${secretReferenceId}"]\n`,
+        ),
+      ),
+    )
+    let body: unknown
+    const route = routeFetch('happy')
+    const { api } = await seededApi((input, init) => {
+      if (String(input).endsWith('/sessions') && init?.method === 'POST')
+        body = JSON.parse(String(init.body))
+      return route(input, init)
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    await provider.create(
+      operationContext() as never,
+      {
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification,
+      } as never,
+    )
+
+    expect(body).toEqual({ secretReferenceIds: [secretReferenceId] })
+  })
+
+  it.each([
+    undefined,
+    {},
+    { cpu: 2, memory: 4096, image: 'node:24', region: 'eu-west', runtime: 'container' },
+    { image: 'node:24' },
+  ])('sends requestedSpec only when explicit (%j)', async (requestedSpec) => {
+    let body: unknown
+    const route = routeFetch('happy')
+    const { api } = await seededApi((input, init) => {
+      if (String(input).endsWith('/sessions') && init?.method === 'POST')
+        body = JSON.parse(String(init.body))
+      return route(input, init)
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      requestedSpec,
+    })
+    await provider.create(
+      operationContext() as never,
+      {
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec(),
+      } as never,
+    )
+    expect(body).toEqual(
+      requestedSpec && Object.keys(requestedSpec).length
+        ? {
+            requestedSpec: {
+              ...requestedSpec,
+              ...('cpu' in requestedSpec ? { cpu: String(requestedSpec.cpu) } : {}),
+              ...('memory' in requestedSpec ? { memory: String(requestedSpec.memory) } : {}),
+            },
+          }
+        : {},
+    )
+  })
+
+  it.each(Object.entries(ADMISSION_MESSAGES))(
+    'explains admission denial from operation polling %s',
+    async (code, message) => {
+      const route = routeFetch('happy')
+      const { api } = await seededApi((input, init) =>
+        String(input).includes('/operations/')
+          ? Promise.resolve(
+              jsonResponse(
+                hostedOperationFixture({
+                  state: 'failed',
+                  error: { code, message: 'opaque denial' },
+                }),
+              ),
+            )
+          : route(input, init),
+      )
+      const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+      await expect(
+        provider.create(
+          operationContext() as never,
+          {
+            projectId: LOCAL_IDS.project,
+            sessionId: LOCAL_IDS.session,
+            specification: testSpec(),
+          } as never,
+        ),
+      ).rejects.toMatchObject({ message, providerCode: code })
+    },
+  )
+
+  it.each(Object.entries(ADMISSION_MESSAGES))(
+    'explains admission denial %s',
+    async (code, message) => {
+      const route = routeFetch('happy')
+      const { api } = await seededApi((input, init) =>
+        String(input).endsWith('/sessions') && init?.method === 'POST'
+          ? Promise.resolve(errorResponse(code, 403))
+          : route(input, init),
+      )
+      const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+      await expect(
+        provider.create(
+          operationContext() as never,
+          {
+            projectId: LOCAL_IDS.project,
+            sessionId: LOCAL_IDS.session,
+            specification: testSpec(),
+          } as never,
+        ),
+      ).rejects.toMatchObject({ message, providerCode: code })
+    },
+  )
+})
+
+describe('OcboxSandboxProvider source sync', () => {
+  it('uses source sync v2 for a box whatever its Session ID looks like', async () => {
+    const hostedSessionId = 'ses_2a08186210f9c89b7879e6d6d1c90d'
+    const { api } = await seededApi((input: unknown) =>
+      Promise.resolve(
+        String(input).includes(`/sessions/${hostedSessionId}`)
+          ? jsonResponse(hostedSessionFixture({ id: hostedSessionId }))
+          : jsonResponse({}),
+      ),
+    )
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    await expect(provider.sourceCasTransport(LOCAL_IDS.sandbox)).resolves.toMatchObject({
+      sessionId: hostedSessionId,
+    })
   })
 })

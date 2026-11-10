@@ -12,8 +12,8 @@ import {
   resolveAuthEndpoints,
   resolveAuthStateDirectory,
 } from '../../src/auth/runtime.js'
-import { credentialFromTokenPair } from '../../src/auth/token-manager.js'
 import { AUTH_STATE_LOCK_FILENAME, createSessionGate } from '../../src/auth/session-gate.js'
+import { credentialFromTokenPair } from '../../src/auth/token-manager.js'
 import { OcboxError } from '../../src/errors/index.js'
 import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
 import {
@@ -49,12 +49,24 @@ function metadataInput(overrides: { issuer?: string; clientId?: string } = {}) {
     identity: TEST_KEY,
     issuer: overrides.issuer ?? endpoints.issuer,
     schemaVersion: 1 as const,
-    scopes: ['source:read'],
+    scopes: [...endpoints.scopes],
     updatedAt: new Date(TEST_NOW).toISOString(),
   }
 }
 
 describe('auth runtime resolution', () => {
+  it('uses the named staging default without flags or environment', () => {
+    expect(resolveAuthEndpoints({}, {}).issuer).toBe('https://api.staging.opencloudbox.dev')
+    expect(resolveAuthEndpoints({}, { OCBOX_API_URL: 'https://env.test' }).issuer).toBe(
+      'https://env.test',
+    )
+    expect(
+      resolveAuthEndpoints(
+        { 'api-url': 'https://flag.test' },
+        { OCBOX_API_URL: 'https://env.test' },
+      ).issuer,
+    ).toBe('https://flag.test')
+  })
   it('defaults login to the canonical consent page under the API base', () => {
     const resolved = resolveAuthEndpoints({ 'api-url': 'https://api.example.test' }, {})
     expect(resolved.authorizationEndpoint).toBe('https://api.example.test/v1/auth/cli/authorize')
@@ -116,7 +128,10 @@ describe('hosted token manager runtime construction', () => {
   it('binds the credential to metadata from the caller-supplied state directory', async () => {
     const stateDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput()))
     const manager = createHostedTokenManager({
@@ -137,7 +152,10 @@ describe('hosted token manager runtime construction', () => {
     const stateDirectory = await temporaryStateDirectory()
     const otherDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(otherDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput()))
     const manager = createHostedTokenManager({
@@ -153,7 +171,10 @@ describe('hosted token manager runtime construction', () => {
   it('binds the credential to the configured client id', async () => {
     const stateDirectory = await temporaryStateDirectory()
     const store = new MemoryCredentialStore()
-    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    await store.set(
+      TEST_KEY,
+      credentialFromTokenPair({ ...tokenPair('a'), scope: endpoints.scopes.join(' ') }, TEST_NOW),
+    )
     const metadata = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
     await metadata.save(AuthMetadataSchema.parse(metadataInput({ clientId: 'other_client' })))
     const manager = createHostedTokenManager({

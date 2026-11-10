@@ -10,7 +10,8 @@ import { renderSyncApplied, runSyncApply } from '../../sync/service.js'
 
 /** One-way remote-to-local apply; deletions require `--delete` and confirmation. */
 export default class SyncPull extends OcboxCommand {
-  static override description = 'Apply Session-workspace-only changes to the local workspace'
+  static override description =
+    'Apply Session-workspace-only changes to the local workspace; on hosted boxes, downloads changed box files'
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),

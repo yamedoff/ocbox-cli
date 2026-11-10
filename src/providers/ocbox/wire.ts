@@ -11,7 +11,8 @@ import { z } from 'zod'
 export const HostedSafeErrorSchema = z
   .strictObject({
     code: z.string().min(1).max(64),
-    message: z.string().min(1).max(512),
+    message: z.string().min(1).max(1024),
+    reason: z.string().optional(),
     retryAfterSeconds: z.number().int().min(0).optional(),
   })
   .readonly()
@@ -83,6 +84,7 @@ export const HostedSessionSchema = z
     effectiveSpec: z.record(z.string(), z.unknown()),
     normalizedState: z.enum([
       'created',
+      'provisioning',
       'starting',
       'running',
       'pausing',
@@ -160,6 +162,12 @@ export const HostedCommandResultSchema = z
     truncated: z.boolean(),
     outputBytes: z.number().int().min(0),
     outputLimitBytes: z.number().int().min(1),
+    encoding: z
+      .strictObject({
+        stdout: z.enum(['utf-8', 'utf-8-lossy']),
+        stderr: z.enum(['utf-8', 'utf-8-lossy']),
+      })
+      .readonly(),
   })
   .readonly()
 

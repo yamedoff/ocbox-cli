@@ -1,3 +1,5 @@
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthenticatedHttpClient } from '../../src/auth/authenticated-client.js'
 import { AuthBindingError, LoginRequiredError } from '../../src/auth/errors.js'
@@ -643,5 +645,146 @@ describe('authenticated HTTP client', () => {
       'https://api.test/v1/projects',
     ])
     expect(seen.every((call) => !call.url.includes('attacker'))).toBe(true)
+  })
+})
+
+describe('authenticated HTTP client retries after a dropped connection', () => {
+  const API = 'https://api.test/v1/projects'
+  const dropped = (code: string): Error =>
+    new TypeError('fetch failed', { cause: Object.assign(new Error('network'), { code }) })
+
+  async function clientWith(fetchImpl: FetchPort, apiOrigin = 'https://api.test') {
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const tokens = new HostedTokenManager({
+      clock: fixedClock(TEST_NOW),
+      expirySkewMilliseconds: 30_000,
+      key: TEST_KEY,
+      refresh: () => Promise.resolve(tokenPair('b')),
+      store,
+    })
+    return new AuthenticatedHttpClient({
+      apiOrigin,
+      fetch: fetchImpl,
+      retryDelaysMilliseconds: [1, 1],
+      timeoutMilliseconds: 1_000,
+      tokens,
+    })
+  }
+
+  function failing(failures: readonly Error[]) {
+    const keys: Array<string | undefined> = []
+    const fetchImpl: FetchPort = (_input, init) => {
+      keys.push((init?.headers as Record<string, string> | undefined)?.['idempotency-key'])
+      const failure = failures[keys.length - 1]
+      return failure ? Promise.reject(failure) : Promise.resolve(new Response('ok'))
+    }
+    return { fetchImpl, keys }
+  }
+
+  it('sends a read again and succeeds', async () => {
+    const { fetchImpl, keys } = failing([dropped('UND_ERR_CONNECT_TIMEOUT')])
+    const client = await clientWith(fetchImpl)
+    const result = await client.request({ method: 'GET', url: API })
+    expect(result.response.status).toBe(200)
+    expect(keys).toHaveLength(2)
+  })
+
+  it('replays a keyed write with the same key, even if it may have been sent', async () => {
+    const { fetchImpl, keys } = failing([dropped('ECONNRESET'), dropped('ETIMEDOUT')])
+    const client = await clientWith(fetchImpl)
+    await client.request({ idempotencyKey: 'exec:key-1', method: 'POST', url: API })
+    expect(keys).toEqual(['exec:key-1', 'exec:key-1', 'exec:key-1'])
+  })
+
+  it('never resends an unkeyed write that may have been sent', async () => {
+    for (const code of ['ECONNRESET', 'ETIMEDOUT', 'UND_ERR_SOCKET']) {
+      const { fetchImpl, keys } = failing([dropped(code)])
+      const client = await clientWith(fetchImpl)
+      await expect(client.request({ method: 'POST', url: API })).rejects.toMatchObject({
+        code: 'PROVIDER_UNAVAILABLE',
+      })
+      expect(keys).toHaveLength(1)
+    }
+  })
+
+  it('resends an unkeyed write only when the connection never opened', async () => {
+    const { fetchImpl, keys } = failing([dropped('ECONNREFUSED')])
+    const client = await clientWith(fetchImpl)
+    await client.request({ method: 'POST', url: API })
+    expect(keys).toHaveLength(2)
+  })
+
+  it('stops after three attempts and names the cause', async () => {
+    const failure = dropped('ETIMEDOUT')
+    const { fetchImpl, keys } = failing([failure, failure, failure, failure])
+    const client = await clientWith(fetchImpl)
+    await expect(client.request({ method: 'GET', url: API })).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: 'The hosted service could not be reached (ETIMEDOUT, 3 attempts)',
+    })
+    expect(keys).toHaveLength(3)
+  })
+
+  it('does not retry after the request timed out', async () => {
+    let calls = 0
+    const fetchImpl: FetchPort = (_input, init) => {
+      calls += 1
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    }
+    const store = new MemoryCredentialStore()
+    await store.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
+    const client = new AuthenticatedHttpClient({
+      apiOrigin: 'https://api.test',
+      fetch: fetchImpl,
+      retryDelaysMilliseconds: [1, 1],
+      timeoutMilliseconds: 5,
+      tokens: new HostedTokenManager({
+        clock: fixedClock(TEST_NOW),
+        expirySkewMilliseconds: 30_000,
+        key: TEST_KEY,
+        refresh: () => Promise.resolve(tokenPair('b')),
+        store,
+      }),
+    })
+    await expect(client.request({ method: 'GET', url: API })).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+    })
+    expect(calls).toBe(1)
+  })
+
+  it('stops waiting when the caller cancels', async () => {
+    const controller = new AbortController()
+    let calls = 0
+    const fetchImpl: FetchPort = () => {
+      calls += 1
+      controller.abort()
+      return Promise.reject(dropped('ECONNREFUSED'))
+    }
+    const client = await clientWith(fetchImpl)
+    await expect(
+      client.request({ method: 'GET', signal: controller.signal, url: API }),
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(calls).toBe(1)
+  })
+
+  it('recognises the failure real fetch raises when nothing is listening', async () => {
+    const server = createServer()
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    await new Promise((resolve) => server.close(resolve))
+    let calls = 0
+    const fetchImpl: FetchPort = (input, init) => {
+      calls += 1
+      return fetch(input, init)
+    }
+    const origin = `http://127.0.0.1:${port}`
+    const client = await clientWith(fetchImpl, origin)
+    await expect(client.request({ method: 'POST', url: `${origin}/v1/x` })).rejects.toMatchObject({
+      message: 'The hosted service could not be reached (ECONNREFUSED, 3 attempts)',
+    })
+    expect(calls).toBe(3)
   })
 })

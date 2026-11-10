@@ -44,7 +44,14 @@ function joinPath(path: readonly PropertyKey[]): string {
 const KNOWN_CHILDREN: Readonly<Record<string, readonly string[]>> = {
   '<root>': ['schemaVersion', 'provider', 'sandbox', 'network', 'lifecycle', 'source', 'env'],
   provider: ['name', 'runtimeClass', 'region'],
-  sandbox: ['operatingSystem', 'architecture', 'image', 'environmentName', 'resources'],
+  sandbox: [
+    'operatingSystem',
+    'architecture',
+    'image',
+    'environmentName',
+    'secretReferenceIds',
+    'resources',
+  ],
   'sandbox.image': ['kind', 'reference'],
   'sandbox.resources': ['cpuMillicores', 'memoryBytes', 'diskBytes'],
   network: ['egress', 'allowedHosts', 'directInbound', 'previews'],

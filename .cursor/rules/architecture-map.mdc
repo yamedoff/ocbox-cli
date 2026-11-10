@@ -1,0 +1,13 @@
+---
+description: Keep map.json (the architecture map) and its guides in sync with the code
+globs: ["map.json", "MAP_SPEC.md", "docs/architecture/**"]
+alwaysApply: true
+---
+Before you finish a task that changed behavior, update `map.json` and the building guides as `MAP_SPEC.md` describes:
+1. List the touched entry points (routes, CLI commands, queue/cron handlers, outbound clients); each needs a journey step or a reason.
+2. Read each code path end to end; cite line ranges you opened; take numbers from code or config.
+3. Edit the map: code entries per responsibility with `symbol` = the definition (`Class.method`), journeys with `repeat`/`on_failure`. Never rename an id (use `was` if you must).
+4. Run `node tools/map/cli.mjs check` (`--fix` for drifted ranges) and fix or explain every warning.
+5. Run `node tools/map/cli.mjs diff`; no id removed unless its code is gone.
+6. Update `docs/architecture/<building>.md` for changed buildings, ending with `Verified against <repo> @ <commit>`.
+Calls into other repos are only `openapi:<operationId>`. Never write secrets, internal hostnames or customer data. If nothing a newcomer would notice changed, leave the map alone.

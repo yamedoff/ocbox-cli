@@ -10,6 +10,20 @@ import {
 const BROWSER_PAGE = 'https://web.example.test/authorize'
 
 describe('auth endpoint configuration', () => {
+  it('keeps explicitly narrowed product scopes without adding edit or run', () => {
+    const endpoints = authEndpointsFromIssuer('https://api.example.test', {
+      scopes: ['product:read'],
+    })
+    const url = new URL(
+      buildAuthorizationUrl(endpoints, {
+        codeChallenge: 'challenge-value',
+        redirectUri: 'http://127.0.0.1:49152/callback',
+        state: 'state-value',
+      }),
+    )
+    expect(url.searchParams.get('scope')).toBe('product:read')
+  })
+
   it('derives the documented protocol endpoints from the issuer under the pinned /v1 contract root', () => {
     const endpoints = protocolEndpointsFromIssuer('https://api.example.test/')
     expect(endpoints.clientId).toBe(DEFAULT_CLIENT_ID)
@@ -86,7 +100,7 @@ describe('auth endpoint configuration', () => {
     expect(url.searchParams.get('response_type')).toBe('code')
     expect(url.searchParams.get('client_id')).toBe(DEFAULT_CLIENT_ID)
     expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:49152/callback')
-    expect(url.searchParams.get('scope')).toBe('source:read')
+    expect(url.searchParams.get('scope')).toBe('source:read product:read product:edit product:run')
     expect(url.searchParams.get('audience')).toBe('cli')
     expect(url.searchParams.get('state')).toBe('state-value')
     expect(url.searchParams.get('code_challenge')).toBe('challenge-value')

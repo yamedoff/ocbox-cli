@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "packages": {
+    "@oclif/core": {
+      "kind": "library",
+      "reason": "Parses CLI commands and flags locally; no hosted service implementation."
+    },
+    "zod": {
+      "kind": "library",
+      "reason": "Validates local configuration and public API response shapes."
+    },
+    "smol-toml": {
+      "kind": "library",
+      "reason": "Parses and serializes owned local agent TOML configuration."
+    }
+  }
+}

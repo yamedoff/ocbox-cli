@@ -112,7 +112,7 @@ async function workspace(name) {
 }
 
 async function initAndStart(space) {
-  await run(['init', ...space.runtime, '--json'], { cwd: space.project })
+  await run(['init', '--provider', 'fake', ...space.runtime, '--json'], { cwd: space.project })
   const started = await run(['start', ...space.runtime, '--json'], { cwd: space.project })
   assert.equal(started.code, 0, 'start must succeed')
   return parseEnvelope(started.stdout).data.session.id
@@ -129,13 +129,32 @@ try {
   assert.match(help.stdout.toString('utf8'), /sync diff/)
   assert.match(help.stdout.toString('utf8'), /sync push/)
   assert.match(help.stdout.toString('utf8'), /sync pull/)
+  assert.match(help.stdout.toString('utf8'), /sync recover/)
+  assert.match(
+    help.stdout.toString('utf8'),
+    /On hosted boxes, push uploads local files, pull downloads changed box files, and diff compares local files with the box/,
+  )
+  assert.doesNotMatch(
+    help.stdout.toString('utf8'),
+    /Hosted boxes support sync push only; sync pull and sync diff are being added/,
+  )
   const diffHelp = await run(['sync', 'diff', '--help'])
   assert.equal(diffHelp.code, 0)
   assert.match(diffHelp.stdout.toString('utf8'), /--session/)
+  assert.match(
+    diffHelp.stdout.toString('utf8'),
+    /on hosted boxes, compares local files with the box/,
+  )
+  const pushHelp = await run(['sync', 'push', '--help'])
+  assert.equal(pushHelp.code, 0)
+  assert.match(
+    pushHelp.stdout.toString('utf8').replace(/\s+/g, ' '),
+    /Fake provider only; hosted commands run in the workspace folder of the box/,
+  )
 
   // 2. Session target resolution: missing selection fails typed.
   const empty = await workspace('empty')
-  await run(['init', ...empty.runtime, '--json'], { cwd: empty.project })
+  await run(['init', '--provider', 'fake', ...empty.runtime, '--json'], { cwd: empty.project })
   const missing = await run(['sync', 'diff', ...empty.runtime, ...empty.sync, '--json'], {
     cwd: empty.project,
   })

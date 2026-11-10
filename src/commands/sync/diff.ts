@@ -6,7 +6,7 @@ import { renderSyncPlan, runSyncDiff } from '../../sync/service.js'
 /** Read-only three-way comparison; never mutates either side. */
 export default class SyncDiff extends OcboxCommand {
   static override description =
-    'Compare the local workspace, the Session workspace, and the last verified baseline'
+    'Compare the local workspace, the Session workspace, and the last verified baseline; on hosted boxes, compares local files with the box (read-only)'
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),

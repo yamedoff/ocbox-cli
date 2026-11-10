@@ -13,7 +13,7 @@ import {
   normalizeIssuer,
   protocolEndpointsFromIssuer,
 } from './config.js'
-import { newRequestId } from './errors.js'
+import { isLoginRequired, newRequestId } from './errors.js'
 import type { EntropyPort } from './entropy.js'
 import type { LoopbackListener, LoopbackListenerFactory } from './loopback.js'
 import { type AuthMetadata, type AuthMetadataRepository, AuthMetadataSchema } from './metadata.js'
@@ -29,7 +29,11 @@ export interface AuthStatusView {
   readonly audience: 'cli' | null
   readonly scopes: readonly string[]
   readonly expiresAt: string | null
+  /** The access token's own expiry; it never decides `loggedIn` by itself. */
+  readonly accessTokenExpiresAt: string | null
   readonly expired: boolean
+  /** Present when a stored session cannot be used and the user must sign in again. */
+  readonly reasonCode?: string
 }
 
 export interface AuthLoginView extends AuthStatusView {
@@ -40,7 +44,18 @@ export interface AuthLogoutView {
   readonly loggedOut: true
   readonly revocationAttempted: boolean
   readonly revoked: boolean
+  readonly revocationReason: RevocationReason
 }
+
+export type RevocationReason =
+  | 'revoked'
+  | 'no_local_credential'
+  | 'metadata_missing'
+  | 'metadata_unreadable'
+  | 'credential_unreadable'
+  | 'identity_mismatch'
+  | 'endpoint_invalid'
+  | 'remote_failed'
 
 export interface AuthLoginOptions {
   readonly signal?: AbortSignal | undefined
@@ -68,15 +83,18 @@ function statusFrom(
   metadata: { issuer: string; audience: 'cli'; scopes: readonly string[] } | null,
   credential: { scopes: readonly string[]; expiresAt: string | null } | null,
   now: number,
+  options: { loggedIn?: boolean; reasonCode?: string } = {},
 ): AuthStatusView {
   if (metadata === null || credential === null) {
     return {
       audience: null,
       expired: false,
       expiresAt: null,
+      accessTokenExpiresAt: null,
       issuer: null,
       loggedIn: false,
       scopes: [],
+      ...(options.reasonCode === undefined ? {} : { reasonCode: options.reasonCode }),
     }
   }
   const expiry = credential.expiresAt === null ? null : Date.parse(credential.expiresAt)
@@ -85,15 +103,36 @@ function statusFrom(
     audience: metadata.audience,
     expired,
     expiresAt: credential.expiresAt,
+    accessTokenExpiresAt: credential.expiresAt,
     issuer: metadata.issuer,
-    loggedIn: !expired,
+    loggedIn: options.loggedIn ?? !expired,
     scopes: credential.scopes,
+    ...(options.reasonCode === undefined ? {} : { reasonCode: options.reasonCode }),
   }
 }
 
-function staleStateError(message: string): OcboxError {
+function reasonCodeOf(error: unknown): string | undefined {
+  if (!(error instanceof OcboxError)) return undefined
+  // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+  const value = error.details?.['reasonCode']
+  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : undefined
+}
+
+function isRejectedRefresh(error: unknown): boolean {
+  return (
+    isLoginRequired(error) ||
+    (error instanceof OcboxError &&
+      (error.code === 'AUTH_EXPIRED' || error.code === 'AUTH_FORBIDDEN'))
+  )
+}
+
+function staleStateError(message: string, reasonCode: string): OcboxError {
   return new OcboxError({
     code: 'INVALID_STATE',
+    details: {
+      reasonCode,
+      nextStep: 'Run `ocbox auth logout` then `ocbox auth login` using the same state directory.',
+    },
     message,
     requestId: newRequestId(),
   })
@@ -203,6 +242,7 @@ export class AuthSessionService {
         throw staleStateError(
           'Login could not commit or restore local authentication state; ' +
             'run `ocbox auth logout` and inspect the state directory',
+          'cli_auth_commit_restore_failed',
         )
       }
       throw error
@@ -243,12 +283,14 @@ export class AuthSessionService {
       } catch {
         throw staleStateError(
           'Stored authentication state could not be validated; run `ocbox auth logout`',
+          'cli_auth_state_unreadable',
         )
       }
       if (metadata === null) {
         if (credential !== null) {
           throw staleStateError(
-            'Stored credentials have no matching login metadata; run `ocbox auth logout`',
+            'The secret store has a login but the selected state directory has no login metadata. This can follow an interrupted login or moving local state. Run `ocbox auth logout` then `ocbox auth login` using the same state directory.',
+            'cli_auth_metadata_missing',
           )
         }
         return statusFrom(null, null, this.#options.clock.now())
@@ -257,6 +299,7 @@ export class AuthSessionService {
         throw staleStateError(
           'Stored login metadata points to an unexpected credential identity; ' +
             'run `ocbox auth logout`',
+          'cli_auth_identity_mismatch',
         )
       }
       if (credential === null) {
@@ -269,6 +312,7 @@ export class AuthSessionService {
           throw staleStateError(
             'Stored authentication metadata is stale and could not be cleared; ' +
               'run `ocbox auth logout` again and inspect the state directory',
+            'cli_auth_stale_metadata_cleanup_failed',
           )
         }
         return statusFrom(null, null, this.#options.clock.now())
@@ -280,6 +324,7 @@ export class AuthSessionService {
       } catch {
         throw staleStateError(
           'Stored login metadata contains an invalid hosted API URL; run `ocbox auth logout`',
+          'cli_auth_issuer_invalid',
         )
       }
       if (
@@ -290,9 +335,50 @@ export class AuthSessionService {
         throw staleStateError(
           'Stored login metadata does not match the credential generation; ' +
             'run `ocbox auth logout` then `ocbox auth login`',
+          'cli_auth_generation_mismatch',
         )
       }
-      return statusFrom(metadata, credential, this.#options.clock.now())
+      const now = this.#options.clock.now()
+      const expiry = credential.expiresAt === null ? null : Date.parse(credential.expiresAt)
+      const expired = expiry !== null && (Number.isNaN(expiry) || expiry <= now)
+      if (!expired) return statusFrom(metadata, credential, now)
+      if (credential.refreshToken === undefined) {
+        return statusFrom(metadata, credential, now, {
+          loggedIn: false,
+          reasonCode: 'cli_auth_refresh_missing',
+        })
+      }
+      // The access token has expired but the refresh token can still mint a
+      // new one. Run the same rotation other commands use instead of telling
+      // the user to sign in again.
+      let pair: Awaited<ReturnType<CliOAuthClientPort['refresh']>>
+      try {
+        const endpoints = protocolEndpointsFromIssuer(metadata.issuer, {
+          clientId: metadata.clientId,
+          scopes: metadata.scopes,
+        })
+        pair = await this.#options.oauth(endpoints).refresh({
+          refreshToken: credential.refreshToken,
+        })
+      } catch (error) {
+        if (isRejectedRefresh(error)) {
+          return statusFrom(metadata, credential, now, {
+            loggedIn: false,
+            reasonCode: reasonCodeOf(error) ?? 'cli_auth_refresh_rejected',
+          })
+        }
+        // A transient failure does not prove the session was revoked.
+        return statusFrom(metadata, credential, now, { loggedIn: true })
+      }
+      const next = credentialFromTokenPair(pair, now)
+      const nextMetadata = AuthMetadataSchema.parse({
+        ...metadata,
+        expiresAt: next.expiresAt,
+        scopes: next.scopes,
+        updatedAt: new Date(now).toISOString(),
+      })
+      await this.#commit(next, nextMetadata)
+      return statusFrom(nextMetadata, next, now)
     })
   }
 
@@ -303,9 +389,12 @@ export class AuthSessionService {
       // deletion halfway and leave a credential/metadata split.
       let metadata: AuthMetadata | null = null
       let credential: HostedOAuthCredential | null = null
+      let metadataUnreadable = false
+      let credentialUnreadable = false
       try {
         metadata = await this.#options.metadataStore.load()
       } catch {
+        metadataUnreadable = true
         // A malformed/unreadable metadata record cannot identify a safe remote
         // endpoint, but it must not prevent local credential deletion.
       }
@@ -314,10 +403,20 @@ export class AuthSessionService {
       try {
         credential = await this.#options.credentialStore.get(this.#options.credentialKey)
       } catch {
+        credentialUnreadable = true
         // Cleanup below still attempts the store's delete operation directly.
       }
       let revocationAttempted = false
       let revoked = false
+      let revocationReason: RevocationReason = metadataUnreadable
+        ? 'metadata_unreadable'
+        : credentialUnreadable
+          ? 'credential_unreadable'
+          : credential === null
+            ? 'no_local_credential'
+            : metadata === null
+              ? 'metadata_missing'
+              : 'identity_mismatch'
       if (
         credential !== null &&
         metadata !== null &&
@@ -333,7 +432,9 @@ export class AuthSessionService {
           }
           await this.#options.oauth(endpoints).revoke(input)
           revoked = true
+          revocationReason = 'revoked'
         } catch {
+          revocationReason = revocationAttempted ? 'remote_failed' : 'endpoint_invalid'
           // Invalid legacy metadata and remote revocation failures never block
           // local cleanup; the outcome remains explicit in the returned view.
           revoked = false
@@ -359,9 +460,10 @@ export class AuthSessionService {
         throw staleStateError(
           'Local authentication material could not be fully cleared; ' +
             'run `ocbox auth logout` again and inspect the state directory',
+          'cli_auth_cleanup_failed',
         )
       }
-      return { loggedOut: true, revocationAttempted, revoked }
+      return { loggedOut: true, revocationAttempted, revoked, revocationReason }
     }, options.signal)
   }
 
@@ -370,12 +472,18 @@ export class AuthSessionService {
     const configured = this.#options.endpoints
     if (configured !== null) {
       if (configured.issuer !== metadata.issuer || configured.clientId !== metadata.clientId) {
-        throw staleStateError('Configured authentication endpoints do not match the stored login')
+        throw staleStateError(
+          'Configured authentication endpoints do not match the stored login',
+          'cli_auth_endpoint_mismatch',
+        )
       }
       return configured
     }
     if (metadata.clientId !== DEFAULT_CLIENT_ID) {
-      throw staleStateError('Stored login metadata names an unexpected OAuth client')
+      throw staleStateError(
+        'Stored login metadata names an unexpected OAuth client',
+        'cli_auth_client_mismatch',
+      )
     }
     return protocolEndpointsFromIssuer(metadata.issuer, {
       clientId: metadata.clientId,
