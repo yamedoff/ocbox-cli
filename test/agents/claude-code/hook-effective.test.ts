@@ -110,6 +110,7 @@ function hostedRoutes(effectiveSpec: Record<string, unknown>): {
           kind: 'command',
           outputBytes: 2,
           outputLimitBytes: 65_536,
+          endReason: 'exit',
           stderr: '',
           stdout: '',
           truncated: false,

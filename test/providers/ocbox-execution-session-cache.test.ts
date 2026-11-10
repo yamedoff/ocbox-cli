@@ -68,6 +68,7 @@ describe('execution session read reuse', () => {
             kind: 'command',
             outputBytes: 2,
             outputLimitBytes: 1048576,
+            endReason: 'exit',
             stderr: '',
             stdout: 'hi',
             truncated: false,
