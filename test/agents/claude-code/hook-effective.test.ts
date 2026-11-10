@@ -113,6 +113,7 @@ function hostedRoutes(effectiveSpec: Record<string, unknown>): {
           stderr: '',
           stdout: '',
           truncated: false,
+          encoding: { stdout: 'utf-8', stderr: 'utf-8' },
         }),
       )
     }

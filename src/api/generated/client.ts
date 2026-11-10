@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: f372a8cfdb9103d8f100cd9e37eb6357d4c550e64ecafb88396772dae8c42425
+ * Pinned source SHA-256: b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:f372a8cfdb9103d8f100cd9e37eb6357d4c550e64ecafb88396772dae8c42425" as const
+export const OPENAPI_CHECKSUM = "sha256:b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -324,6 +324,7 @@ export interface CommandResult {
   readonly truncated: boolean
   readonly outputBytes: number
   readonly outputLimitBytes: number
+  readonly encoding: { readonly stdout: "utf-8" | "utf-8-lossy"; readonly stderr: "utf-8" | "utf-8-lossy" }
 }
 
 export interface InfrastructureResult {

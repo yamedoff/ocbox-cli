@@ -162,6 +162,12 @@ export const HostedCommandResultSchema = z
     truncated: z.boolean(),
     outputBytes: z.number().int().min(0),
     outputLimitBytes: z.number().int().min(1),
+    encoding: z
+      .strictObject({
+        stdout: z.enum(['utf-8', 'utf-8-lossy']),
+        stderr: z.enum(['utf-8', 'utf-8-lossy']),
+      })
+      .readonly(),
   })
   .readonly()
 

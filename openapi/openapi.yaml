@@ -3321,7 +3321,7 @@ components:
     CommandResult:
       type: object
       additionalProperties: false
-      required: [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes]
+      required: [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes, encoding]
       properties:
         kind:
           type: string
@@ -3340,6 +3340,18 @@ components:
         outputLimitBytes:
           type: integer
           minimum: 1
+        encoding:
+          type: object
+          additionalProperties: false
+          required: [stdout, stderr]
+          description: How each retained stream was decoded; utf-8-lossy means a replacement happened.
+          properties:
+            stdout:
+              type: string
+              enum: [utf-8, utf-8-lossy]
+            stderr:
+              type: string
+              enum: [utf-8, utf-8-lossy]
     InfrastructureResult:
       type: object
       additionalProperties: false

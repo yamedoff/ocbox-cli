@@ -71,6 +71,7 @@ describe('execution session read reuse', () => {
             stderr: '',
             stdout: 'hi',
             truncated: false,
+            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
           }),
         )
       }
