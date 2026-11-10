@@ -35,6 +35,38 @@ describe('safe sign-in failure reporting', () => {
       expect(error.message).toContain('req_123456abcdef')
     },
   )
+  it('keeps the sign-in body-too-large message for the product request-bytes cause', async () => {
+    const client = new CliOAuthClient({
+      apiBase: 'https://api.opencloudbox.dev',
+      tokenEndpoint: 'https://api.opencloudbox.dev/v1/auth/cli/token',
+      revocationEndpoint: 'https://api.opencloudbox.dev/v1/auth/cli/revoke',
+      clientId: 'ocb_cli',
+      timeoutMilliseconds: 1000,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'PAYLOAD_TOO_LARGE',
+              reasonCode: 'api_quota_request_bytes',
+              message: 'private-canary',
+            },
+            requestId: 'req_123456abcdef',
+          }),
+          { status: 413, headers: { 'x-request-id': 'req_123456abcdef' } },
+        ),
+    })
+    const error = await client.refresh({ refreshToken: 'private-canary' }).catch((value) => value)
+    expect(error).toBeInstanceOf(OcboxError)
+    expect(error).toMatchObject({ code: 'AUTH_REQUIRED' })
+    expect(error.details).toMatchObject({
+      reasonCode: 'api_quota_request_bytes',
+      providerRequestId: 'req_123456abcdef',
+    })
+    expect(error.message).toContain('sign-in request body exceeds')
+    expect(error.message).toContain('req_123456abcdef')
+    expect(error.message).not.toContain('private-canary')
+  })
+
   it('persists only bounded reason metadata through the real atomic JSON store and expires it', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ocbox-reasons-'))
     try {
