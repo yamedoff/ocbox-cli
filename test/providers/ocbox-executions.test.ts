@@ -57,6 +57,7 @@ describe('hosted execution streaming', () => {
             stderr: '',
             stdout: 'hello',
             truncated: false,
+            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
           }),
         )
       }
@@ -86,6 +87,7 @@ describe('hosted execution streaming', () => {
         stderr: '',
         stdout: 'x',
         truncated: false,
+        encoding: { stdout: 'utf-8', stderr: 'utf-8' },
       },
       { completedAt: EVENT_AT, startedAt: STARTED_AT },
     )
@@ -130,6 +132,7 @@ describe('hosted execution streaming', () => {
             stderr: '',
             stdout: 'hello',
             truncated: false,
+            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
           }),
         )
       }
@@ -196,6 +199,7 @@ describe('hosted execution streaming', () => {
             stderr: '',
             stdout: 'tail',
             truncated: false,
+            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
           }),
         )
       }
@@ -239,6 +243,43 @@ describe('hosted execution streaming', () => {
     expect(
       toExecResult(collected.result, { completedAt: EVENT_AT, startedAt: STARTED_AT }),
     ).toMatchObject({ cancelled: true, exitCode: 130, timedOut: false })
+  })
+
+  it('accepts the hosted command result that names the stream encoding', async () => {
+    const { api } = await seededApi((input) => {
+      const url = String(input)
+      if (url.includes('/events')) {
+        return Promise.resolve(
+          jsonResponse({
+            data: [
+              { at: EVENT_AT, kind: 'started', message: '', sequence: 0, stream: null },
+              { at: EVENT_AT, kind: 'stdout', message: 'hi\n', sequence: 1, stream: 'stdout' },
+              { at: EVENT_AT, kind: 'completed', message: '', sequence: 2, stream: null },
+            ],
+            nextCursor: null,
+          }),
+        )
+      }
+      if (url.includes('/result')) {
+        return Promise.resolve(
+          jsonResponse({
+            kind: 'command',
+            exitCode: 0,
+            outputBytes: 3,
+            outputLimitBytes: 1048576,
+            stderr: '',
+            stdout: 'hi\n',
+            truncated: false,
+            encoding: { stdout: 'utf-8', stderr: 'utf-8' },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(executionFixture('completed')))
+    })
+    const collected = await collectExecutionEvents(api, 'exec_hosted_1', {
+      sleep: () => Promise.resolve(),
+    })
+    expect(collected.result).toMatchObject({ kind: 'command', exitCode: 0 })
   })
 
   it('maps infrastructure and cancelled results distinctly', () => {
