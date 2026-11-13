@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -377,6 +377,100 @@ describe('CAS v3 fast re-sync', () => {
     expect(after[0]).toContain('/source/cas/fast')
     expect(after[1]).toContain('/source/cas/check')
     expect(checkRequests).toBe(2)
+  })
+
+  it('keeps the check first when the local delta deletes a path', async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    await writeFile(join(local, 'b.txt'), 'two')
+    const pages = [page(0, [file('a.txt', 'one'), file('b.txt', 'two')])]
+    let checkState: 'unchanged' | 'changed' = 'changed'
+    const { origin, requests } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        json(response, {
+          version: 3,
+          state: checkState,
+          changedPaths: [],
+          changedCount: 0,
+          editedPaths: [],
+          editedCount: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    await runSyncApply(context, 'push', options)
+    const before = requests.length
+    await rm(join(local, 'b.txt'))
+    checkState = 'unchanged'
+    const view = await runSyncApply(context, 'push', options)
+    expect(renderSyncApplied(view)).toBe('Source unchanged.')
+    expect(requests.slice(before).map((entry) => entry.path)).toEqual([
+      expect.stringContaining('/source/cas/check'),
+    ])
+  })
+
+  it('clears the pending snapshot when the fast apply reports a conflict', async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    const pages = [page(0, [file('a.txt', 'one')])]
+    const { origin } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        json(response, {
+          version: 3,
+          state: 'changed',
+          changedPaths: ['a.txt'],
+          changedCount: 1,
+          editedPaths: ['b.txt'],
+          editedCount: 1,
+          replayed: false,
+        })
+        return
+      }
+      if (request.path.endsWith('/source/cas/fast')) {
+        json(response, {
+          version: 3,
+          state: 'changed',
+          fingerprint: 'c'.repeat(64),
+          missing: [],
+          writtenFiles: 0,
+          linkedFiles: 0,
+          removedFiles: 0,
+          fetchedBlobs: 0,
+          fetchedBytes: 0,
+          editedPaths: ['b.txt'],
+          editedCount: 1,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    await runSyncApply(context, 'push', options)
+    await writeFile(join(local, 'a.txt'), 'two')
+    await expect(runSyncApply(context, 'push', options)).rejects.toMatchObject({
+      code: 'SYNC_CONFLICT',
+    })
+    const transport = context.casTransport
+    if (transport === undefined) throw new Error('expected a CAS transport')
+    const key = createHash('sha256')
+      .update(JSON.stringify([transport.scope, context.localRoot]))
+      .digest('hex')
+    const pending = join(
+      context.stateDirectory,
+      'sync',
+      context.projectId,
+      context.sessionId,
+      'cas',
+      key,
+      'pending.json',
+    )
+    await expect(stat(pending)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('falls back to the v2 cycle when the server has no check route', async () => {

@@ -151,12 +151,16 @@ export async function runCasPush(
   const deletedPaths = [...old.keys()].filter((path) => !current.has(path)).sort()
   const fingerprint = casTreeFingerprint(currentFiles)
 
-  // A local delta that fits one v3 fast apply goes straight to the fast apply:
-  // its answer is terminal, so the separate read-only check is not needed
-  // first. A push with no local delta keeps the check, because that check is
-  // what tells the user the box's tree moved under them; a delta that does not
-  // fit the fast limits keeps today's check-then-v2 flow too.
+  // A local delta with no deleted paths that fits one v3 fast apply goes
+  // straight to the fast apply: its answer is terminal, so the separate
+  // read-only check is not needed first. A push with no local delta keeps the
+  // check, because that check is what tells the user the box's tree moved
+  // under them; a delta that does not fit the fast limits, or that deletes a
+  // synced path, keeps today's check-then-v2 flow too.
   const mayFastApply = fast !== undefined && previous !== undefined && changedPaths.length > 0
+  // A local delta that deletes a synced path keeps the check first, so an
+  // unchanged box tree still stops before the deletion approval gate.
+  const checkFirst = !mayFastApply || deletedPaths.length > 0
   const checkTree = async (): Promise<'unchanged' | 'changed' | undefined> => {
     if (fast === undefined) return undefined
     try {
@@ -174,7 +178,7 @@ export async function runCasPush(
   }
   // The v3 check is read-only: an unchanged tree stops here without a plan,
   // upload or apply.
-  if (!mayFastApply && (await checkTree()) === 'unchanged') {
+  if (checkFirst && (await checkTree()) === 'unchanged') {
     options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
     return unchangedView(context, previous === undefined)
   }
@@ -264,11 +268,12 @@ export async function runCasPush(
         // The check the fast path skipped is the answer today's flow reports:
         // an unchanged tree (a concurrent apply landed) finishes the push, and
         // anything else is the same conflict as today.
-        if ((await checkTree()) === 'unchanged') {
+        if (!checkFirst && (await checkTree()) === 'unchanged') {
           await rm(pendingPath, { force: true })
           options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
           return unchangedView(context, previous === undefined)
         }
+        await rm(pendingPath, { force: true })
         throw casRefusal(409)
       }
       if (outcome !== undefined) {
@@ -309,7 +314,7 @@ export async function runCasPush(
 
   // A delta that did not fit the fast limits, or a fast apply the server
   // refused with a v2 fallback, keeps today's check-then-v2 flow.
-  if (mayFastApply && (await checkTree()) === 'unchanged') {
+  if (!checkFirst && (await checkTree()) === 'unchanged') {
     await rm(pendingPath, { force: true })
     options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
     return unchangedView(context, previous === undefined)
