@@ -13,7 +13,7 @@ import {
 import { type CasSnapshot, casError, readCasBlob } from './cas-snapshot.js'
 
 export interface CasProgress {
-  phase: 'scan' | 'prepared' | 'plan' | 'upload' | 'apply' | 'complete'
+  phase: 'scan' | 'check' | 'prepared' | 'plan' | 'upload' | 'apply' | 'complete'
   files?: number
   pages?: number
   uploadedBlobs?: number

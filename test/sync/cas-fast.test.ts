@@ -473,6 +473,57 @@ describe('CAS v3 fast re-sync', () => {
     await expect(stat(pending)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it("reports the push's phases in its JSON answer", async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    const pages = [page(0, [file('a.txt', 'one')])]
+    const { origin } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        json(response, {
+          version: 3,
+          state: 'changed',
+          changedPaths: ['a.txt'],
+          changedCount: 1,
+          editedPaths: [],
+          editedCount: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (request.path.endsWith('/source/cas/fast')) {
+        json(response, {
+          version: 3,
+          state: 'applied',
+          fingerprint: request.body['fingerprint'],
+          missing: [],
+          writtenFiles: 1,
+          linkedFiles: 0,
+          removedFiles: 0,
+          fetchedBlobs: 0,
+          fetchedBytes: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    const first = await runSyncApply(context, 'push', options)
+    await writeFile(join(local, 'a.txt'), 'two')
+    const second = await runSyncApply(context, 'push', options)
+    for (const view of [first, second]) {
+      const phases = view.phases ?? []
+      expect(phases.map((entry) => entry.phase)).toEqual(expect.arrayContaining(['scan', 'apply']))
+      expect(phases.length).toBeGreaterThanOrEqual(2)
+      for (const entry of phases) {
+        expect(Number.isInteger(entry.ms)).toBe(true)
+        expect(entry.ms).toBeGreaterThanOrEqual(0)
+      }
+    }
+    expect(first.phases?.map((entry) => entry.phase)).toContain('check')
+  })
+
   it('falls back to the v2 cycle when the server has no check route', async () => {
     const local = await localRoot()
     await writeFile(join(local, 'a.txt'), 'one')
