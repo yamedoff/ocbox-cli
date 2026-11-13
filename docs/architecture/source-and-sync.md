@@ -38,6 +38,6 @@ Hosted recover is refused when its capability is absent; a hosted server without
 
 ## Code evidence
 
-Transport selection: `src/sync/command.ts:41–101`, `src/providers/ocbox/provider.ts:549–571`, `src/sync/service.ts:675–700`. V3 check/fast push: `src/sync/cas-push.ts:87–364`, `src/sync/cas-transfer.ts:187–317`, `src/sync/cas-contract.ts:49–202`, `src/providers/ocbox/cas.ts:111–188`. V2 push: `src/sync/cas-contract.ts:5–262`, `cas-push.ts:27–329`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:71–190`, `src/providers/ocbox/cas.ts:16–284`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
+Transport selection: `src/sync/command.ts:41–101`, `src/providers/ocbox/provider.ts:549–571`, `src/sync/service.ts:675–700`. V3 check/fast push: `src/sync/cas-push.ts:87–364`, `src/sync/cas-transfer.ts:187–317`, `src/sync/cas-contract.ts:49–213`, `src/providers/ocbox/cas.ts:111–188`. V2 push: `src/sync/cas-contract.ts:5–264`, `cas-push.ts:27–364`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:71–185`, `src/providers/ocbox/cas.ts:16–284`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
 
 Verified against ocbox-cli @ 43928ad
