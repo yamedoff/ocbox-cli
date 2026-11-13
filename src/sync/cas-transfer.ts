@@ -251,7 +251,6 @@ export async function fastApplyCasSnapshot(
     if (reply.state !== 'changed' && reply.fingerprint !== input.fingerprint)
       throw casError('SYNC_INTEGRITY', 'Source sync receipt did not match its tree')
     if (reply.state === 'changed') {
-      options.onProgress?.({ phase: 'complete', uploadedBlobs: uploaded.size, uploadedBytes })
       return {
         state: 'changed',
         uploadedBlobs: uploaded.size,
