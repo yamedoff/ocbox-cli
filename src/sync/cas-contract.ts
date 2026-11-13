@@ -57,7 +57,7 @@ export const CasCheckResultSchema = z.strictObject({
 })
 export const CasFastApplyResultSchema = z.strictObject({
   version: z.literal(3),
-  state: z.enum(['awaiting_blobs', 'applied']),
+  state: z.enum(['awaiting_blobs', 'applied', 'changed']),
   fingerprint: hash,
   missing: z.array(CasBlobSchema.extend({ url: z.string().max(16_384) })).max(CAS_LIMITS.maxBlobs),
   writtenFiles: size,
@@ -66,6 +66,8 @@ export const CasFastApplyResultSchema = z.strictObject({
   fetchedBlobs: size,
   fetchedBytes: size,
   replayed: z.boolean(),
+  editedPaths: z.array(z.string().max(4096)).max(100).optional(),
+  editedCount: size.optional(),
 })
 export const CasResultSchema = z.strictObject({
   version: z.literal(2),

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { OcboxError } from '../errors/index.js'
-import { CasPlanRefused } from '../providers/ocbox/cas.js'
+import { CasPlanRefused, casRefusal } from '../providers/ocbox/cas.js'
 import {
   CAS_LIMITS,
   type CasBlob,
@@ -151,22 +151,36 @@ export async function runCasPush(
   const deletedPaths = [...old.keys()].filter((path) => !current.has(path)).sort()
   const fingerprint = casTreeFingerprint(currentFiles)
 
-  // The v3 check is read-only: an unchanged tree stops here without a plan,
-  // upload or apply. A server without the route falls through to the v2 path.
-  if (fast !== undefined) {
+  // A local delta with no deleted paths that fits one v3 fast apply goes
+  // straight to the fast apply: its answer is terminal, so the separate
+  // read-only check is not needed first. A push with no local delta keeps the
+  // check, because that check is what tells the user the box's tree moved
+  // under them; a delta that does not fit the fast limits, or that deletes a
+  // synced path, keeps today's check-then-v2 flow too.
+  const mayFastApply = fast !== undefined && previous !== undefined && changedPaths.length > 0
+  // A local delta that deletes a synced path keeps the check first, so an
+  // unchanged box tree still stops before the deletion approval gate.
+  const checkFirst = !mayFastApply || deletedPaths.length > 0
+  const checkTree = async (): Promise<'unchanged' | 'changed' | undefined> => {
+    if (fast === undefined) return undefined
     try {
       const answer = await fast.check(
         fingerprint,
         changedPaths.length <= 1024 ? changedPaths : undefined,
         `cas-check-${fingerprint}`,
       )
-      if (answer.state === 'unchanged') {
-        options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
-        return unchangedView(context, previous === undefined)
-      }
+      return answer.state
     } catch (error) {
+      // A server without the route falls through to the v2 path.
       if (!(error instanceof OcboxError) || error.code !== 'CAPABILITY_UNSUPPORTED') throw error
+      return undefined
     }
+  }
+  // The v3 check is read-only: an unchanged tree stops here without a plan,
+  // upload or apply.
+  if (checkFirst && (await checkTree()) === 'unchanged') {
+    options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
+    return unchangedView(context, previous === undefined)
   }
 
   const deletions = deletedPaths.map((path) => ({
@@ -202,8 +216,11 @@ export async function runCasPush(
 
   // A local change that fits one v3 delta request takes the fast apply. A box
   // with no applied record refuses it with manifest_invalid, so fall back to
-  // the full v2 cycle instead of failing the push.
-  if (fast !== undefined && previous !== undefined && changedPaths.length > 0) {
+  // the full v2 cycle instead of failing the push. A `changed` answer means an
+  // agent edited an owned path the delta does not name: run the check the fast
+  // path skipped and report the same conflict the check-then-fast-apply flow
+  // reports today.
+  if (mayFastApply && fast !== undefined) {
     const changedFiles = changedPaths
       .map((path) => currentSnapshot.get(path))
       .filter((file): file is CasFile => file !== undefined)
@@ -233,13 +250,33 @@ export async function runCasPush(
       blobs.length <= CAS_LIMITS.maxBlobs &&
       requestBytes <= CAS_LIMITS.maxPageBytes + 32_768
     ) {
+      let outcome: Awaited<ReturnType<typeof fastApplyCasSnapshot>> | undefined
       try {
-        const result = await fastApplyCasSnapshot(
+        outcome = await fastApplyCasSnapshot(
           { fingerprint, files: changedFiles, blobs, deletedPaths },
           cache,
           fast,
           { signal: context.signal, onProgress: options.onProgress },
         )
+      } catch (error) {
+        const fallback =
+          (error instanceof CasPlanRefused && error.code === 'SYNC_INTEGRITY') ||
+          (error instanceof OcboxError && error.code === 'CAPABILITY_UNSUPPORTED')
+        if (!fallback) throw error
+      }
+      if (outcome?.state === 'changed') {
+        // The check the fast path skipped is the answer today's flow reports:
+        // an unchanged tree (a concurrent apply landed) finishes the push, and
+        // anything else is the same conflict as today.
+        if (!checkFirst && (await checkTree()) === 'unchanged') {
+          await rm(pendingPath, { force: true })
+          options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
+          return unchangedView(context, previous === undefined)
+        }
+        await rm(pendingPath, { force: true })
+        throw casRefusal(409)
+      }
+      if (outcome !== undefined) {
         await writeCasState(statePath, snapshot)
         await rm(pendingPath, { force: true })
         return {
@@ -267,17 +304,20 @@ export async function runCasPush(
           uploadedFiles: changedFiles
             .filter((file) => file.type === 'file')
             .map((file) => file.path),
-          uploadedBlobs: result.uploadedBlobs,
-          uploadedBytes: result.uploadedBytes,
+          uploadedBlobs: outcome.uploadedBlobs,
+          uploadedBytes: outcome.uploadedBytes,
           protocolVersion: 2,
         }
-      } catch (error) {
-        const fallback =
-          (error instanceof CasPlanRefused && error.code === 'SYNC_INTEGRITY') ||
-          (error instanceof OcboxError && error.code === 'CAPABILITY_UNSUPPORTED')
-        if (!fallback) throw error
       }
     }
+  }
+
+  // A delta that did not fit the fast limits, or a fast apply the server
+  // refused with a v2 fallback, keeps today's check-then-v2 flow.
+  if (!checkFirst && (await checkTree()) === 'unchanged') {
+    await rm(pendingPath, { force: true })
+    options.onProgress?.({ phase: 'complete', uploadedBlobs: 0, uploadedBytes: 0 })
+    return unchangedView(context, previous === undefined)
   }
 
   let result: Awaited<ReturnType<typeof syncCasSnapshot>>
