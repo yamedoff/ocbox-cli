@@ -187,6 +187,9 @@ noninteractive use requires `--yes`. A server without the pull route answers
 
 Human TTY output shows phase/upload progress. `--json` keeps one result envelope;
 `--jsonl` adds `sync.progress` events (`phase`, optional file/page counts and
-uploaded blob/byte counts) followed by `sync.pushed`. The v2 result adds
+uploaded blob/byte counts) followed by `sync.pushed`. A hosted push result also
+carries `phases: [{phase, ms}]`: one entry per progress event in the order it ran,
+with `ms` the whole time from that phase's event to the next (the last runs to the
+end of the push). The human renderer ignores the field. The v2 result adds
 `protocolVersion: 2`, `uploadedBlobs`, `uploadedBytes` and the applied plan ID
 in `operationId`. Counts describe this invocation, including when resuming.

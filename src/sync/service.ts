@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import type { ProjectId, SessionId } from '../domain/ids.js'
 import { OperationIdSchema, RequestIdSchema } from '../domain/ids.js'
 import { UtcTimestampSchema } from '../domain/timestamps.js'
@@ -115,6 +116,12 @@ export interface SyncPlanView {
   readonly excluded: readonly SyncExcludedView[]
 }
 
+/** Wall time the CLI spent in one sync phase; `ms` is whole milliseconds. */
+export interface SyncPhaseTiming {
+  readonly phase: CasProgress['phase']
+  readonly ms: number
+}
+
 export interface SyncApplyView extends SyncPlanView {
   readonly applied: boolean
   readonly baselineUpdated: boolean
@@ -129,6 +136,8 @@ export interface SyncApplyView extends SyncPlanView {
   readonly manifestId?: string
   /** Identity of the applied operation, or null when the plan was a no-op. */
   readonly operationId: string | null
+  /** Wall time spent in each progress phase, in the order the phases ran. */
+  readonly phases?: readonly SyncPhaseTiming[]
 }
 
 export interface SyncRecoverView {
@@ -669,6 +678,34 @@ function hostedUnsupported(command: string): OcboxError {
 }
 
 /**
+ * Times the progress phases a hosted push reports. Each phase's `ms` runs from its
+ * own event to the next phase's event (or to the end of the push), so the entries
+ * partition the CLI's push work in the order the phases ran.
+ */
+function phaseTimings(onProgress: SyncApplyOptions['onProgress']): {
+  readonly record: (event: CasProgress) => void
+  readonly finish: () => readonly SyncPhaseTiming[]
+} {
+  const phases: { phase: CasProgress['phase']; ms: number }[] = []
+  let last = performance.now()
+  return {
+    record: (event) => {
+      const now = performance.now()
+      const previous = phases.at(-1)
+      if (previous !== undefined) previous.ms = Math.max(0, Math.round(now - last))
+      last = now
+      phases.push({ phase: event.phase, ms: 0 })
+      onProgress?.(event)
+    },
+    finish: () => {
+      const previous = phases.at(-1)
+      if (previous !== undefined) previous.ms = Math.max(0, Math.round(performance.now() - last))
+      return phases
+    },
+  }
+}
+
+/**
  * Applies a one-way push or pull. Conflicts, blocked paths, unresolved recovery,
  * and unapproved deletions all fail closed before any target mutation.
  */
@@ -680,9 +717,11 @@ export async function runSyncApply(
   if (context.providerName === 'ocbox') {
     if (mode === 'pull')
       return withSyncLock(context, options, () => runHostedPull(context, options))
-    return withSyncLock(context, options, () => {
+    return withSyncLock(context, options, async () => {
       if (context.casTransport === undefined) throw hostedUnsupported('push')
-      return runCasPush(context, options)
+      const timings = phaseTimings(options.onProgress)
+      const view = await runCasPush(context, { ...options, onProgress: timings.record })
+      return { ...view, phases: timings.finish() }
     })
   }
   const now = options.now ?? (() => new Date())

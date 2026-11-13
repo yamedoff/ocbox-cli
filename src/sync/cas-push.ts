@@ -163,6 +163,7 @@ export async function runCasPush(
   const checkFirst = !mayFastApply || deletedPaths.length > 0
   const checkTree = async (): Promise<'unchanged' | 'changed' | undefined> => {
     if (fast === undefined) return undefined
+    options.onProgress?.({ phase: 'check' })
     try {
       const answer = await fast.check(
         fingerprint,
