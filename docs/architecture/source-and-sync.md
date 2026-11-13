@@ -2,6 +2,8 @@
 
 ## What it does
 
+Every hosted push answer carries `phases: [{phase, ms}]`: one entry per progress event in the order it ran (`scan`, `check`, `prepared`, `plan`, `upload`, `apply`, `complete`), with `ms` the whole time from that event to the next and the last running to the end of the push. A phase that runs twice appears twice; the human renderer ignores the field.
+
 Every hosted push uses the content-addressed v2 transport for a mapped `sesdo_` Session. On a v3 box a push with no local change first asks the terminal check whether the box already holds the local tree: an unchanged answer prints `Source unchanged.` and stops. A small local delta with previous state and no deleted paths goes straight to the fast apply: `applied` finishes the push, and `changed` makes the CLI run the check it skipped and report the same conflict. A delta that deletes a synced path keeps the check first, then takes the fast apply or v2 as today. Anything else keeps the check-then-v2 cycle, and a server without the v3 routes falls back to v2. Hosted diff and pull reuse the same CAS v2 box: a fresh snapshot describes the box tree, diff compares it with the local tree, and pull downloads the changed files and writes them atomically. The fake/local validation path also has a two-sided manifest planner and journalled filesystem transfer. These paths have different capabilities and must not be described interchangeably.
 
 ## Inside
@@ -38,6 +40,6 @@ Hosted recover is refused when its capability is absent; a hosted server without
 
 ## Code evidence
 
-Transport selection: `src/sync/command.ts:41–101`, `src/providers/ocbox/provider.ts:549–571`, `src/sync/service.ts:675–700`. V3 check/fast push: `src/sync/cas-push.ts:87–369`, `src/sync/cas-transfer.ts:187–316`, `src/sync/cas-contract.ts:49–213`, `src/providers/ocbox/cas.ts:111–188`. V2 push: `src/sync/cas-contract.ts:5–264`, `cas-push.ts:27–369`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:71–185`, `src/providers/ocbox/cas.ts:16–284`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
+Transport selection: `src/sync/command.ts:41–101`, `src/providers/ocbox/provider.ts:549–571`, `src/sync/service.ts:712–725`. V3 check/fast push: `src/sync/cas-push.ts:87–370`, `src/sync/cas-transfer.ts:187–316`, `src/sync/cas-contract.ts:49–213`, `src/providers/ocbox/cas.ts:111–188`. V2 push: `src/sync/cas-contract.ts:5–264`, `cas-push.ts:27–370`, `cas-snapshot.ts:37–292`, `cas-transfer.ts:71–185`, `src/providers/ocbox/cas.ts:16–284`. Hosted read-back: `src/sync/cas-pull.ts:1–560`. Local transfer: `src/sync/planner.ts:192–383`, `local-transfer-adapter.ts:129–170,311–393`, `archive.ts:144–196`; scanner: `manifest.ts:311–474`.
 
-Verified against ocbox-cli @ a86b664
+Verified against ocbox-cli @ 1e11c8c
