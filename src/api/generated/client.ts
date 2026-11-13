@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046
+ * Pinned source SHA-256: 0338072f9a9f3b1ed63331e3160e845b026920a023329bbeecf474679065bf57
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046" as const
+export const OPENAPI_CHECKSUM = "sha256:0338072f9a9f3b1ed63331e3160e845b026920a023329bbeecf474679065bf57" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -66,7 +66,7 @@ export interface CasFastApplyRequest {
 
 export interface CasFastApplyResult {
   readonly version: number
-  readonly state: "awaiting_blobs" | "applied"
+  readonly state: "awaiting_blobs" | "applied" | "changed"
   readonly fingerprint: string
   readonly missing: readonly { readonly hash: string; readonly size: number; readonly url: string }[]
   readonly writtenFiles: number
@@ -75,6 +75,8 @@ export interface CasFastApplyResult {
   readonly fetchedBlobs: number
   readonly fetchedBytes: number
   readonly replayed: boolean
+  readonly editedPaths?: readonly string[]
+  readonly editedCount?: number
 }
 
 export interface CasPlanRequest {

@@ -280,6 +280,105 @@ describe('CAS v3 fast re-sync', () => {
     expect(renderSyncApplied(view)).toContain('1 modification(s)')
   })
 
+  it('asks the box once for a push with a local delta', async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    const pages = [page(0, [file('a.txt', 'one')])]
+    const { origin, requests } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        json(response, {
+          version: 3,
+          state: 'changed',
+          changedPaths: ['a.txt'],
+          changedCount: 1,
+          editedPaths: [],
+          editedCount: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (request.path.endsWith('/source/cas/fast')) {
+        json(response, {
+          version: 3,
+          state: 'applied',
+          fingerprint: request.body['fingerprint'],
+          missing: [],
+          writtenFiles: 1,
+          linkedFiles: 0,
+          removedFiles: 0,
+          fetchedBlobs: 0,
+          fetchedBytes: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    await runSyncApply(context, 'push', options)
+    const before = requests.length
+    await writeFile(join(local, 'a.txt'), 'two')
+    const view = await runSyncApply(context, 'push', options)
+    expect(requests.length - before).toBe(1)
+    expect(requests.at(-1)?.path).toContain('/source/cas/fast')
+    expect(renderSyncApplied(view)).toContain('1 modification(s)')
+  })
+
+  it('runs the skipped check and reports the conflict when the fast apply answers changed', async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    const pages = [page(0, [file('a.txt', 'one')])]
+    let checkRequests = 0
+    const { origin, requests } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        checkRequests += 1
+        json(response, {
+          version: 3,
+          state: 'changed',
+          changedPaths: ['a.txt'],
+          changedCount: 1,
+          editedPaths: ['b.txt'],
+          editedCount: 1,
+          replayed: false,
+        })
+        return
+      }
+      if (request.path.endsWith('/source/cas/fast')) {
+        json(response, {
+          version: 3,
+          state: 'changed',
+          fingerprint: 'c'.repeat(64),
+          missing: [],
+          writtenFiles: 0,
+          linkedFiles: 0,
+          removedFiles: 0,
+          fetchedBlobs: 0,
+          fetchedBytes: 0,
+          editedPaths: ['b.txt'],
+          editedCount: 1,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    await runSyncApply(context, 'push', options)
+    const before = requests.length
+    await writeFile(join(local, 'a.txt'), 'two')
+    await expect(runSyncApply(context, 'push', options)).rejects.toMatchObject({
+      code: 'SYNC_CONFLICT',
+      message: 'Source sync conflicts with the workspace; resolve it and retry',
+    })
+    const after = requests.slice(before).map((entry) => entry.path)
+    expect(after).toHaveLength(2)
+    expect(after[0]).toContain('/source/cas/fast')
+    expect(after[1]).toContain('/source/cas/check')
+    expect(checkRequests).toBe(2)
+  })
+
   it('falls back to the v2 cycle when the server has no check route', async () => {
     const local = await localRoot()
     await writeFile(join(local, 'a.txt'), 'one')
