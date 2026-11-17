@@ -64,7 +64,5 @@ export function sizeLine(size: BoxSize): string {
   if (size.memoryBytes !== undefined) parts.push(`${amount(size.memoryBytes)} memory`)
   if (size.diskBytes !== undefined) parts.push(`${amount(size.diskBytes)} disk`)
   if (size.maxLifetimeSeconds !== undefined) parts.push(`max ${duration(size.maxLifetimeSeconds)}`)
-  if (size.price !== undefined)
-    parts.push(`$${(size.price.microUsdPerHour / 1_000_000).toFixed(2)}/h`)
   return parts.length === 0 ? size.id : `${size.id}  ${parts.join(', ')}`
 }

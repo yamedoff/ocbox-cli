@@ -132,8 +132,8 @@ describe('sizes command', () => {
     expect(calls).toEqual(['/v1/sizes'])
     expect(output(stdoutSpy)).toBe(
       [
-        'cpu-small  no GPU, 2 CPU, 4 GiB memory, 20 GiB disk, max 2h, $0.00/h',
-        'gpu-small  1 x gpu-a, 8 CPU, 64 GiB memory, 100 GiB disk, max 1h, $1.50/h',
+        'cpu-small  no GPU, 2 CPU, 4 GiB memory, 20 GiB disk, max 2h',
+        'gpu-small  1 x gpu-a, 8 CPU, 64 GiB memory, 100 GiB disk, max 1h',
         '',
       ].join('\n'),
     )
