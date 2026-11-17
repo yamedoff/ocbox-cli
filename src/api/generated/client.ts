@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046
+ * Pinned source SHA-256: 0663fe856014fbe93d7e68b2f2698b4ad466249036a10450969255b7ffcf6425
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046" as const
+export const OPENAPI_CHECKSUM = "sha256:0663fe856014fbe93d7e68b2f2698b4ad466249036a10450969255b7ffcf6425" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -324,16 +324,22 @@ export interface CommandResult {
   readonly truncated: boolean
   readonly outputBytes: number
   readonly outputLimitBytes: number
+  readonly endReason: "exit" | "timeout" | "cancelled" | "killed" | "platform_error" | "box_stopped" | "box_destroyed"
   readonly encoding: { readonly stdout: "utf-8" | "utf-8-lossy"; readonly stderr: "utf-8" | "utf-8-lossy" }
 }
 
 export interface InfrastructureResult {
   readonly kind: "infrastructure"
   readonly error: SafeError
+  readonly endReason: "exit" | "timeout" | "cancelled" | "killed" | "platform_error" | "box_stopped" | "box_destroyed"
 }
 
 export interface CancelledResult {
   readonly kind: "cancelled"
+  readonly stdout: string
+  readonly stderr: string
+  readonly truncated: boolean
+  readonly endReason: "exit" | "timeout" | "cancelled" | "killed" | "platform_error" | "box_stopped" | "box_destroyed"
 }
 
 export type ExecutionResult = CommandResult | InfrastructureResult | CancelledResult

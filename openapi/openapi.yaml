@@ -3321,7 +3321,8 @@ components:
     CommandResult:
       type: object
       additionalProperties: false
-      required: [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes, encoding]
+      required:
+        [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes, endReason, encoding]
       properties:
         kind:
           type: string
@@ -3340,6 +3341,9 @@ components:
         outputLimitBytes:
           type: integer
           minimum: 1
+        endReason:
+          type: string
+          enum: [exit, timeout, cancelled, killed, platform_error, box_stopped, box_destroyed]
         encoding:
           type: object
           additionalProperties: false
@@ -3355,21 +3359,33 @@ components:
     InfrastructureResult:
       type: object
       additionalProperties: false
-      required: [kind, error]
+      required: [kind, error, endReason]
       properties:
         kind:
           type: string
           enum: [infrastructure]
         error:
           $ref: '#/components/schemas/SafeError'
+        endReason:
+          type: string
+          enum: [exit, timeout, cancelled, killed, platform_error, box_stopped, box_destroyed]
     CancelledResult:
       type: object
       additionalProperties: false
-      required: [kind]
+      required: [kind, stdout, stderr, truncated, endReason]
       properties:
         kind:
           type: string
           enum: [cancelled]
+        stdout:
+          type: string
+        stderr:
+          type: string
+        truncated:
+          type: boolean
+        endReason:
+          type: string
+          enum: [exit, timeout, cancelled, killed, platform_error, box_stopped, box_destroyed]
     ExecutionResult:
       oneOf:
         - $ref: '#/components/schemas/CommandResult'
