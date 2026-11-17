@@ -184,10 +184,23 @@ export async function syncCasSnapshot(
   }
 }
 
+export type CasFastApplyOutcome =
+  | { state: 'applied'; uploadedBlobs: number; uploadedBytes: number }
+  | {
+      state: 'changed'
+      uploadedBlobs: number
+      uploadedBytes: number
+      editedPaths: readonly string[]
+      editedCount: number
+    }
+
 /**
  * The v3 fast apply: send the changed files and deleted paths, upload only the
  * blobs the store lacks, and repeat the same request key until the receipt is
- * terminal. The server answers `awaiting_blobs` until every blob is present.
+ * terminal. The server answers `awaiting_blobs` until every blob is present,
+ * `applied` when the box holds the new tree, and `changed` when an agent edited
+ * an owned path the delta does not name (the caller then runs the check it
+ * skipped).
  */
 export async function fastApplyCasSnapshot(
   input: {
@@ -199,7 +212,7 @@ export async function fastApplyCasSnapshot(
   cache: string,
   transport: CasFastTransport,
   options: CasTransferOptions = {},
-): Promise<{ uploadedBlobs: number; uploadedBytes: number }> {
+): Promise<CasFastApplyOutcome> {
   const fetcher = options.fetcher ?? fetch,
     pause = options.pause ?? ((ms) => sleepWithSignal(ms, options.signal)),
     now = options.now ?? Date.now
@@ -233,11 +246,22 @@ export async function fastApplyCasSnapshot(
     if (!parsed.success)
       throw casError('SYNC_INTEGRITY', 'Source sync returned an invalid fast-apply receipt')
     const reply = parsed.data
-    if (reply.fingerprint !== input.fingerprint)
+    // A changed answer names the tree the box held before the push, not the
+    // client's tree: only the answers about this request are bound to it.
+    if (reply.state !== 'changed' && reply.fingerprint !== input.fingerprint)
       throw casError('SYNC_INTEGRITY', 'Source sync receipt did not match its tree')
+    if (reply.state === 'changed') {
+      return {
+        state: 'changed',
+        uploadedBlobs: uploaded.size,
+        uploadedBytes,
+        editedPaths: reply.editedPaths ?? [],
+        editedCount: reply.editedCount ?? 0,
+      }
+    }
     if (reply.state === 'applied') {
       options.onProgress?.({ phase: 'complete', uploadedBlobs: uploaded.size, uploadedBytes })
-      return { uploadedBlobs: uploaded.size, uploadedBytes }
+      return { state: 'applied', uploadedBlobs: uploaded.size, uploadedBytes }
     }
     const seen = new Set<string>()
     for (const blob of reply.missing) {

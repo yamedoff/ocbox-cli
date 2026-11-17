@@ -2517,10 +2517,12 @@ components:
           enum: [3]
         state:
           type: string
-          enum: [awaiting_blobs, applied]
+          enum: [awaiting_blobs, applied, changed]
+          description: '`changed` names the owned paths an agent edited that the delta does not name and applies nothing; `editedPaths` and `editedCount` are present only on that answer.'
         fingerprint:
           type: string
           pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the tree the box now holds; on a changed answer, the tree it held before the push.
         missing:
           type: array
           items:
@@ -2554,6 +2556,16 @@ components:
           minimum: 0
         replayed:
           type: boolean
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The owned paths an agent edited that the delta does not name; present only when the state is changed.
+        editedCount:
+          type: integer
+          minimum: 0
+          description: How many owned paths an agent edited that the delta does not name; present only when the state is changed.
     CasPlanRequest:
       type: object
       additionalProperties: false
