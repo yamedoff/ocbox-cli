@@ -9,6 +9,8 @@ import {
 import {
   ADMISSION_MESSAGES,
   requestedSpecFromConfig,
+  requestedSpecFromFlags,
+  SIZE_REFUSAL_MESSAGES,
 } from '../../src/providers/ocbox/requested-spec.js'
 import {
   errorResponse,
@@ -969,6 +971,70 @@ describe('hosted create request and admission', () => {
           } as never,
         ),
       ).rejects.toMatchObject({ message, providerCode: code })
+    },
+  )
+
+  it('turns the size and lifetime flags into hosted request fields', () => {
+    expect(requestedSpecFromFlags({ size: 'gpu-small', lifetime: 3600, cpu: 2 })).toEqual({
+      cpu: 2,
+      sizeId: 'gpu-small',
+      lifetimeSeconds: 3600,
+    })
+    expect(requestedSpecFromFlags({})).toEqual({})
+  })
+
+  it('sends the size and lifetime the customer asked for', async () => {
+    let body: unknown
+    const route = routeFetch('happy')
+    const { api } = await seededApi((input, init) => {
+      if (String(input).endsWith('/sessions') && init?.method === 'POST')
+        body = JSON.parse(String(init.body))
+      return route(input, init)
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      requestedSpec: { sizeId: 'gpu-small', lifetimeSeconds: 3600 },
+    })
+    await provider.create(
+      operationContext() as never,
+      {
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: testSpec(),
+      } as never,
+    )
+    expect(body).toEqual({ requestedSpec: { sizeId: 'gpu-small', lifetimeSeconds: 3600 } })
+  })
+
+  it.each(Object.entries(SIZE_REFUSAL_MESSAGES))(
+    'names the refusal reason %s and points at the sizes command',
+    async (reasonCode, message) => {
+      const route = routeFetch('happy')
+      const { api } = await seededApi((input, init) =>
+        String(input).endsWith('/sessions') && init?.method === 'POST'
+          ? Promise.resolve(
+              jsonResponse(
+                {
+                  error: { code: 'VALIDATION_ERROR', message: 'refused', reasonCode },
+                  requestId: '11111111-1111-4111-8111-111111111111',
+                },
+                422,
+              ),
+            )
+          : route(input, init),
+      )
+      const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+      const refused = provider.create(
+        operationContext() as never,
+        {
+          projectId: LOCAL_IDS.project,
+          sessionId: LOCAL_IDS.session,
+          specification: testSpec(),
+        } as never,
+      )
+      await expect(refused).rejects.toMatchObject({ message, providerCode: reasonCode })
+      expect(message).toContain('ocbox sizes')
     },
   )
 

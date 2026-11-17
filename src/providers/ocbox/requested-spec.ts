@@ -10,6 +10,9 @@ export interface HostedRequestedSpec extends Record<string, unknown> {
   image?: string
   region?: string
   runtime?: string
+  /** Box size id from the sizes list, and the lifetime asked for it, in seconds. */
+  sizeId?: string
+  lifetimeSeconds?: number
 }
 
 export function requestedSpecFromConfig(source: string): HostedRequestedSpec {
@@ -28,6 +31,27 @@ export function requestedSpecFromConfig(source: string): HostedRequestedSpec {
     ...(raw.sandbox?.image === undefined ? {} : { image: config.sandbox.image.reference }),
     ...(raw.provider?.region === undefined ? {} : { region: config.provider.region }),
     ...(raw.provider?.runtimeClass === undefined ? {} : { runtime: config.provider.runtimeClass }),
+  }
+}
+
+/** The resource flags a customer passed on the command line, as hosted request fields. */
+export function requestedSpecFromFlags(flags: {
+  readonly cpu?: number | undefined
+  readonly memory?: number | undefined
+  readonly image?: string | undefined
+  readonly region?: string | undefined
+  readonly runtime?: string | undefined
+  readonly size?: string | undefined
+  readonly lifetime?: number | undefined
+}): HostedRequestedSpec {
+  return {
+    ...(flags.cpu === undefined ? {} : { cpu: flags.cpu }),
+    ...(flags.memory === undefined ? {} : { memory: flags.memory }),
+    ...(flags.image === undefined ? {} : { image: flags.image }),
+    ...(flags.region === undefined ? {} : { region: flags.region }),
+    ...(flags.runtime === undefined ? {} : { runtime: flags.runtime }),
+    ...(flags.size === undefined ? {} : { sizeId: flags.size }),
+    ...(flags.lifetime === undefined ? {} : { lifetimeSeconds: flags.lifetime }),
   }
 }
 
@@ -64,6 +88,24 @@ export function admissionError(
     providerCode: denial,
     requestId,
   })
+}
+
+/** Refusals the hosted API names with a reason code when a size or lifetime is outside the plan. */
+export const SIZE_REFUSAL_MESSAGES: Readonly<Record<string, string>> = {
+  size_not_in_plan:
+    'This box size is not available on your plan; run `ocbox sizes` to see the sizes you can use.',
+  lifetime_over_limit:
+    'The requested lifetime is longer than this size allows; run `ocbox sizes` to see the maximum lifetime of each size, then retry with a shorter --lifetime.',
+}
+
+export function sizeRefusalError(
+  reasonCode: string | undefined,
+  requestId: RequestId,
+): OcboxError | undefined {
+  if (reasonCode === undefined || !Object.hasOwn(SIZE_REFUSAL_MESSAGES, reasonCode)) return undefined
+  const message = SIZE_REFUSAL_MESSAGES[reasonCode]
+  if (message === undefined) return undefined
+  return new OcboxError({ code: 'INVALID_SPEC', message, providerCode: reasonCode, requestId })
 }
 
 export function friendlyAdmissionFailure(error: unknown): never {

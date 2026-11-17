@@ -80,6 +80,7 @@ import {
 import {
   admissionError,
   friendlyAdmissionFailure,
+  sizeRefusalError,
   type HostedRequestedSpec,
 } from './requested-spec.js'
 import {
@@ -731,6 +732,12 @@ export class OcboxSandboxProvider implements SandboxProvider {
               ...(this.#requestedSpec.runtime === undefined
                 ? {}
                 : { runtime: this.#requestedSpec.runtime }),
+              ...(this.#requestedSpec.sizeId === undefined
+                ? {}
+                : { sizeId: this.#requestedSpec.sizeId }),
+              ...(this.#requestedSpec.lifetimeSeconds === undefined
+                ? {}
+                : { lifetimeSeconds: this.#requestedSpec.lifetimeSeconds }),
             },
           }
     const created = await this.#api.generated.createSession({
@@ -744,6 +751,11 @@ export class OcboxSandboxProvider implements SandboxProvider {
     if (created.status >= 400) {
       const denial = admissionError(envelopeOf(created.body).code, toRequestId(created.requestId))
       if (denial) throw denial
+      const refusal = sizeRefusalError(
+        envelopeOf(created.body).reasonCode,
+        toRequestId(created.requestId),
+      )
+      if (refusal) throw refusal
     }
     const started = this.#assertSuccess('createSession', created, [200, 201, 202])
     const hostedOp = started.body as HostedOperation & { session?: HostedSession }

@@ -290,6 +290,7 @@ export function isErrorEnvelopeLike(value: unknown): value is ErrorEnvelopeLike 
 /** Extracts the server code/message/next step/requestId/retry hint from a generated body. */
 export function envelopeOf(body: unknown): {
   code?: string | undefined
+  reasonCode?: string | undefined
   message?: string | undefined
   nextStep?: string | undefined
   requestId?: string | undefined
@@ -298,6 +299,7 @@ export function envelopeOf(body: unknown): {
   if (!isErrorEnvelopeLike(body)) return {}
   const error = body.error as {
     code?: unknown
+    reasonCode?: unknown
     message?: unknown
     nextStep?: unknown
     retryAfterSeconds?: unknown
@@ -310,6 +312,7 @@ export function envelopeOf(body: unknown): {
       : undefined
   return {
     ...(typeof error.code === 'string' ? { code: error.code } : {}),
+    ...(typeof error.reasonCode === 'string' ? { reasonCode: error.reasonCode } : {}),
     ...(typeof error.message === 'string' ? { message: error.message } : {}),
     ...(typeof error.nextStep === 'string' ? { nextStep: error.nextStep } : {}),
     ...(typeof body.requestId === 'string' ? { requestId: body.requestId } : {}),

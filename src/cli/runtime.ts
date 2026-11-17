@@ -27,7 +27,7 @@ import { FakeSandboxProvider } from '../providers/fake/index.js'
 import { ProviderRegistry } from '../providers/index.js'
 import { DEFAULT_API_URL } from '../providers/ocbox/defaults.js'
 import { createOcboxProvider } from '../providers/ocbox/factory.js'
-import { requestedSpecFromConfig } from '../providers/ocbox/requested-spec.js'
+import { requestedSpecFromConfig, requestedSpecFromFlags } from '../providers/ocbox/requested-spec.js'
 import { createWarmSessionCache, warmSessionsEnabled } from '../warm/client.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
@@ -75,6 +75,8 @@ export interface RuntimeFlags {
   readonly image?: string | undefined
   readonly region?: string | undefined
   readonly runtime?: string | undefined
+  readonly size?: string | undefined
+  readonly lifetime?: number | undefined
   readonly config?: string | undefined
   readonly json?: boolean | undefined
   readonly jsonl?: boolean | undefined
@@ -92,6 +94,13 @@ export const hostedRuntimeFlags = {
   image: Flags.string({ description: 'Requested hosted image reference' }),
   region: Flags.string({ description: 'Requested hosted region' }),
   runtime: Flags.string({ description: 'Requested hosted runtime' }),
+  size: Flags.string({
+    description: 'Box size id from `ocbox sizes`; omit for the default size of your plan',
+  }),
+  lifetime: Flags.integer({
+    min: 1,
+    description: 'Box lifetime in seconds; at most the size maximum shown by `ocbox sizes`',
+  }),
 }
 
 export interface CliIo {
@@ -249,12 +258,7 @@ export async function createLifecycleService(
       projectId: hostedProjectId,
       requestedSpec: {
         ...requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
-        ...Object.fromEntries(
-          ['cpu', 'memory', 'image', 'region', 'runtime'].flatMap((key) => {
-            const value = flags[key as keyof RuntimeFlags]
-            return value === undefined ? [] : [[key, value]]
-          }),
-        ),
+        ...requestedSpecFromFlags(flags),
       },
       ...(sessionCache === undefined ? {} : { sessionCache }),
     }),
