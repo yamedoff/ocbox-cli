@@ -221,6 +221,31 @@ describe('session get command', () => {
     expect(output(stdoutSpy)).toContain('ses_1  stopped  project=prj_1')
     expect(output(stdoutSpy)).toContain('Reason api_box_state_conflict.')
   })
+
+  it('reports the hosted api_session_not_found reason for an unknown Session', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: {
+              code: 'SESSION_NOT_FOUND',
+              message: 'The Session was not found',
+              reasonCode: 'api_session_not_found',
+              nextStep: 'List the project Sessions and use an existing Session ID.',
+            },
+            requestId: 'request-1',
+          },
+          404,
+        ),
+      ),
+    )
+
+    await SessionGet.run([...runArguments(), 'ses_missing'], { root: process.cwd() })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+  })
 })
 
 describe('gpu check command', () => {
