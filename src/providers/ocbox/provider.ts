@@ -749,12 +749,13 @@ export class OcboxSandboxProvider implements SandboxProvider {
       idempotencyKey: context.idempotencyKey,
     })
     if (created.status >= 400) {
-      const denial = admissionError(envelopeOf(created.body).code, toRequestId(created.requestId))
-      if (denial) throw denial
-      const refusal = sizeRefusalError(
-        envelopeOf(created.body).reasonCode,
+      const envelope = envelopeOf(created.body)
+      const denial = admissionError(
+        envelope.reason ?? envelope.code,
         toRequestId(created.requestId),
       )
+      if (denial) throw denial
+      const refusal = sizeRefusalError(envelope.reasonCode, toRequestId(created.requestId))
       if (refusal) throw refusal
     }
     const started = this.#assertSuccess('createSession', created, [200, 201, 202])
@@ -1222,7 +1223,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
 
   #sandboxOf(
     record: SandboxRecord,
-    bindingState: 'running' | 'stopped',
+    bindingState: 'running' | 'stopped' | 'destroyed',
     observedAt: string,
     spec: SandboxSpec,
     hostedSession: HostedSession | null,

@@ -111,6 +111,19 @@ describe('hosted error mapping', () => {
     })
   })
 
+  it('reads the safe provider reason from an error envelope', () => {
+    const envelope = envelopeOf({
+      error: {
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Box admission was refused',
+        reason: 'user_active_limit',
+      },
+      requestId: REQUEST_ID,
+    })
+    expect(envelope.reason).toBe('user_active_limit')
+    expect(envelope.code).toBe('SERVICE_UNAVAILABLE')
+  })
+
   it('keeps diagnostics free of credential-like material', () => {
     const error = new OcboxError({
       code: 'PROVIDER_RATE_LIMIT',

@@ -10,6 +10,7 @@ security:
 tags:
   - name: Projects
   - name: Environments
+  - name: Sizes
   - name: Sessions
   - name: Operations
   - name: Executions
@@ -39,6 +40,12 @@ x-error-codes:
   INVALID_REQUEST: 400
   METHOD_NOT_ALLOWED: 405
   NOT_FOUND: 404
+  SESSION_NOT_FOUND: 404
+  PROJECT_NOT_FOUND: 404
+  ENVIRONMENT_NOT_FOUND: 404
+  EXECUTION_NOT_FOUND: 404
+  OPERATION_NOT_FOUND: 404
+  SOURCE_PLAN_REQUIRED: 404
   OPERATION_NOT_CANCELLABLE: 409
   PAYLOAD_TOO_LARGE: 413
   PAYMENT_CONFLICT: 409
@@ -54,6 +61,45 @@ x-error-codes:
   UNAUTHENTICATED: 401
   VALIDATION_ERROR: 422
 paths:
+  /sizes:
+    get:
+      operationId: listSizes
+      tags: [Sizes]
+      summary: List the box sizes the caller's plan offers.
+      description: Returns the catalog sizes the authenticated owner's plan offers, in the order the plan lists them. Each size carries its id, GPU type and count, CPU, memory, disk, maximum lifetime and hourly price. Provider names, provider snapshots, organizations, regions and spot detail are never returned. Next: create a session with requestedSpec.sizeId from this list; its requestedSpec.lifetimeSeconds must not exceed the size's maxLifetimeSeconds.
+      responses:
+        '200':
+          $ref: '#/components/responses/BoxSizePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /gpu-check:
+    get:
+      operationId: checkGpuSpec
+      tags: [Sizes]
+      summary: Check whether a GPU box can be created now.
+      description: Read-only. Answers with the matching size and price, or with every problem, what is available now and alternatives the caller's plan offers. Nothing is reserved.
+      parameters:
+        - $ref: '#/components/parameters/GpuType'
+        - $ref: '#/components/parameters/GpuCount'
+        - $ref: '#/components/parameters/GpuLifetimeSeconds'
+        - $ref: '#/components/parameters/GpuCpu'
+        - $ref: '#/components/parameters/GpuMemoryMib'
+        - $ref: '#/components/parameters/GpuDiskGib'
+      responses:
+        '200':
+          $ref: '#/components/responses/GpuCheck'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /projects:
     get:
       operationId: listProjects
@@ -62,6 +108,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/ProjectOrder'
       responses:
         '200':
           $ref: '#/components/responses/ProjectPage'
@@ -152,7 +199,7 @@ paths:
       operationId: deleteProject
       tags: [Projects]
       summary: Destroy a project asynchronously.
-      description: Accepts an optional confirmation body. `confirmInUse: true` acknowledges deletion while live sessions still reference the scope.
+      description: Accepts an optional confirmation body. A project that still has a box that is not destroyed is refused with 409 `SESSION_STATE_CONFLICT`; destroy every box of the project before deleting it. `confirmInUse: true` is accepted for compatibility: it never releases a box and does not allow deleting a project whose boxes are not all destroyed.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -277,7 +324,7 @@ paths:
       operationId: deleteEnvironment
       tags: [Environments]
       summary: Destroy an environment asynchronously.
-      description: Accepts an optional confirmation body. `confirmInUse: true` acknowledges deletion while live sessions still reference the scope.
+      description: Accepts an optional confirmation body. `confirmInUse: true` is accepted for compatibility: it acknowledges deleting the secrets of the environment while live sessions still reference them. It never releases a live box: the boxes of the project keep running until their owner destroys them.
       parameters:
         - $ref: '#/components/parameters/EnvironmentId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -306,10 +353,12 @@ paths:
     get:
       operationId: listSessions
       tags: [Sessions]
+      description: Lists the sessions of a project. Destroyed sessions are left out unless includeDestroyed=true; because a call reads at most 100 stored rows, a page can be short or empty, so follow nextCursor until it is null. This is the only REST session list; there is no owner-level list route.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeDestroyed'
       responses:
         '200':
           $ref: '#/components/responses/SessionPage'
@@ -528,7 +577,7 @@ paths:
   /sessions/{sessionId}/executions:
     post:
       operationId: createExecution
-      description: Accept a command and return its durable execution ID promptly. Pending means launch is starting. Poll getExecution until running or terminal; replay with the same idempotency key returns the same execution without advancing launch.
+      description: Accept a command and return its durable execution ID at acceptance. The default answer is the accepted execution with state pending; pass wait true to wait up to the server completion window for a short command to finish. Pending means launch is starting. Poll getExecution until running or terminal; replay with the same idempotency key returns the same execution without advancing launch. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -559,7 +608,7 @@ paths:
   /executions/{executionId}:
     get:
       operationId: getExecution
-      description: Advance at most one bounded launch or supervision stage and return the current execution. Continue polling pending and running states.
+      description: Advance at most one bounded launch or supervision stage and return the current execution. Continue polling pending and running states. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -577,6 +626,7 @@ paths:
   /executions/{executionId}/events:
     get:
       operationId: listExecutionEvents
+      description: Return the retained execution events in sequence. Output events carry command output, which is text; a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -598,6 +648,7 @@ paths:
   /executions/{executionId}/result:
     get:
       operationId: getExecutionResult
+      description: Return the terminal result of an execution. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -640,8 +691,8 @@ paths:
   /sessions/{sessionId}/source/cas/plan:
     post:
       operationId: planSourceCas
-      summary: Plan content-addressed source sync v2
-      description: Requires a sesdo_ session. Retry an identical request key and body after response loss.
+      summary: CAS v2 plan for object-owned boxes
+      description: Requires a sesdo_ session. Source bytes transfer directly to private EU object storage; retry the identical request key and body after response loss.
       tags: [Source]
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -684,8 +735,8 @@ paths:
   /sessions/{sessionId}/source/cas/apply:
     post:
       operationId: applySourceCas
-      summary: Apply content-addressed source sync v2
-      description: Requires a sesdo_ session. Retry an identical request key and body after response loss.
+      summary: CAS v2 apply for object-owned boxes
+      description: Requires a sesdo_ session. Source bytes transfer directly to private EU object storage; retry the identical request key and body after response loss.
       tags: [Source]
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -725,6 +776,34 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/files:
+    post:
+      operationId: pushSourceFiles
+      summary: Push a small source tree in one call
+      description: Requires a ses_ session. The files are the whole project tree; send every project file each time. Files an earlier push wrote that the request leaves out are removed from the box, while files created in the box by commands are kept. The server builds the canonical CAS v2 manifest and pages, stores the blobs itself, applies the tree and returns the apply state. At most 200 files and 2 MiB decoded in total; use planSourceCas/applySourceCas for larger trees. Retry the identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceFilesPushRequest'
+      responses:
+        '200':
+          description: The applied source receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; repeat this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
   /sessions/{sessionId}/source/cas/check:
     post:
       operationId: checkSourceCas
@@ -747,44 +826,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CasCheckResult'
-        '401':
-          $ref: '#/components/responses/Unauthenticated'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-        '429':
-          $ref: '#/components/responses/RateLimited'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-  /sessions/{sessionId}/source/cas/fast:
-    post:
-      operationId: fastApplySourceCas
-      summary: CAS v3 fast apply for object-owned boxes
-      description: Requires a sesdo_ session. Applies the changed files of the client's tree without the v2 cycle; the answer is terminal in the same request and names the blobs the store still lacks.
-      tags: [Source]
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CasFastApplyRequest'
-      responses:
-        '200':
-          description: The terminal answer: awaiting the blobs to upload, or the apply receipt
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CasFastApplyResult'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
@@ -867,6 +908,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CasSnapshotPageResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/fast:
+    post:
+      operationId: fastApplySourceCas
+      summary: CAS v3 fast apply for object-owned boxes
+      description: Requires a sesdo_ session. Applies the changed files of the client's tree without the v2 cycle; the answer is terminal in the same request and names the blobs the store still lacks.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasFastApplyRequest'
+      responses:
+        '200':
+          description: The terminal answer: awaiting the blobs to upload, or the apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasFastApplyResult'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
@@ -1777,11 +1856,7 @@ paths:
         - bearerAuth: []
       responses:
         '200':
-          description: The identity of the presented bearer token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthIdentity'
+          $ref: '#/components/responses/AuthIdentity'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '429':
@@ -1937,6 +2012,61 @@ components:
       in: cookie
       name: ocb_session
   parameters:
+    GpuType:
+      name: gpuType
+      in: query
+      required: true
+      description: GPU type id, as listed by GET /v1/sizes.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    GpuCount:
+      name: gpuCount
+      in: query
+      required: true
+      description: GPUs wanted in one box.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 64
+    GpuLifetimeSeconds:
+      name: lifetimeSeconds
+      in: query
+      required: false
+      description: Box lifetime wanted, in seconds.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 86400
+    GpuCpu:
+      name: cpu
+      in: query
+      required: false
+      description: vCPU count wanted. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 64
+    GpuMemoryMib:
+      name: memoryMib
+      in: query
+      required: false
+      description: Memory wanted, in MiB. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 262144
+    GpuDiskGib:
+      name: diskGib
+      in: query
+      required: false
+      description: Disk wanted, in GiB. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1024
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1965,6 +2095,24 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    IncludeDestroyed:
+      name: includeDestroyed
+      in: query
+      required: false
+      description: Include destroyed sessions. Defaults to false; destroyed sessions are left out of the list and its pages. Only GET /v1/projects/{projectId}/sessions supports this filter.
+      schema:
+        type: string
+        enum: ['true', 'false']
+        default: 'false'
+    ProjectOrder:
+      name: order
+      in: query
+      required: false
+      description: Listing direction. Defaults to newest-first; `oldest` returns the creation order.
+      schema:
+        type: string
+        enum: [newest, oldest]
+        default: newest
     SessionIdQuery:
       name: sessionId
       in: query
@@ -2065,6 +2213,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Project'
+    GpuCheck:
+      description: Whether the GPU box can be created now, and what would work if not.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GpuCheck'
+    BoxSizePage:
+      description: The box sizes the caller's plan offers, in plan order.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BoxSizePage'
     ProjectPage:
       description: Opaque cursor page of projects.
       content:
@@ -2256,6 +2416,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MagicLinkAccepted'
+    AuthIdentity:
+      description: The presented token's own subject, audience, scopes and expiry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthIdentity'
     WebSession:
       description: Current web session binding.
       content:
@@ -2401,159 +2567,38 @@ components:
           schema:
             $ref: '#/components/schemas/PaymentReconciliation'
   schemas:
-    AuthIdentity:
+    SourceFilesPushRequest:
       type: object
       additionalProperties: false
-      required: [subject, audience, scopes, expiresAt]
+      required: [files]
       properties:
-        subject:
+        files:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, content]
+            properties:
+              path:
+                type: string
+                minLength: 1
+                maxLength: 4096
+                description: Safe relative path; no `..`, absolute path or symlink.
+              content:
+                type: string
+                maxLength: 2796204
+                description: Base64-encoded file bytes, not a path or archive.
+              mode:
+                type: integer
+                enum: [420, 493]
+        sessionId:
+          type: string
+          pattern: '^ses_[a-f0-9]{30}$'
+        idempotencyKey:
           type: string
           minLength: 1
           maxLength: 128
-        audience:
-          type: string
-          enum: [cli, mcp]
-        scopes:
-          type: array
-          items:
-            type: string
-            minLength: 1
-            maxLength: 128
-        expiresAt:
-          type: string
-          format: date-time
-    CasCheckRequest:
-      type: object
-      additionalProperties: false
-      required: [version, fingerprint]
-      properties:
-        version:
-          type: integer
-          enum: [3]
-        fingerprint:
-          type: string
-          pattern: '^[a-f0-9]{64}$'
-          description: The content fingerprint of the client's source tree.
-        changedPaths:
-          type: array
-          maxItems: 1024
-          items:
-            type: string
-          description: The paths the client's tree changed since the tree it last pushed.
-    CasCheckResult:
-      type: object
-      additionalProperties: false
-      required: [version, state, changedPaths, changedCount, editedPaths, editedCount, replayed]
-      properties:
-        version:
-          type: integer
-          enum: [3]
-        state:
-          type: string
-          enum: [unchanged, changed]
-        changedPaths:
-          type: array
-          maxItems: 100
-          items:
-            type: string
-        changedCount:
-          type: integer
-          minimum: 0
-        editedPaths:
-          type: array
-          maxItems: 100
-          items:
-            type: string
-        editedCount:
-          type: integer
-          minimum: 0
-        replayed:
-          type: boolean
-    CasFastApplyRequest:
-      type: object
-      additionalProperties: false
-      required: [version, fingerprint, files, blobs]
-      properties:
-        version:
-          type: integer
-          enum: [3]
-        fingerprint:
-          type: string
-          pattern: '^[a-f0-9]{64}$'
-        files:
-          type: array
-          maxItems: 512
-          items:
-            type: object
-            description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The delta is validated with the v2 page rules.'
-            additionalProperties: true
-        blobs:
-          type: array
-          maxItems: 4096
-          items:
-            type: object
-            additionalProperties: false
-            required: [hash, size]
-            properties:
-              hash:
-                type: string
-                pattern: '^[a-f0-9]{64}$'
-              size:
-                type: integer
-                minimum: 0
-                maximum: 16777216
-        deletedPaths:
-          type: array
-          maxItems: 1024
-          items:
-            type: string
-    CasFastApplyResult:
-      type: object
-      additionalProperties: false
-      required: [version, state, fingerprint, missing, writtenFiles, linkedFiles, removedFiles, fetchedBlobs, fetchedBytes, replayed]
-      properties:
-        version:
-          type: integer
-          enum: [3]
-        state:
-          type: string
-          enum: [awaiting_blobs, applied]
-        fingerprint:
-          type: string
-          pattern: '^[a-f0-9]{64}$'
-        missing:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [hash, size, url]
-            properties:
-              hash:
-                type: string
-                pattern: '^[a-f0-9]{64}$'
-              size:
-                type: integer
-                minimum: 0
-              url:
-                type: string
-                description: Short-lived PUT capability; never log or persist it.
-        writtenFiles:
-          type: integer
-          minimum: 0
-        linkedFiles:
-          type: integer
-          minimum: 0
-        removedFiles:
-          type: integer
-          minimum: 0
-        fetchedBlobs:
-          type: integer
-          minimum: 0
-        fetchedBytes:
-          type: integer
-          minimum: 0
-        replayed:
-          type: boolean
     CasPlanRequest:
       type: object
       additionalProperties: false
@@ -2599,7 +2644,7 @@ components:
               maxItems: 512
               items:
                 type: object
-                description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. Paths, bounds and slice integrity are validated.'
+                description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The Session validates topology, paths, bounds and slice integrity.'
                 additionalProperties: true
             blobs:
               type: array
@@ -2627,6 +2672,161 @@ components:
         planId:
           type: string
           pattern: '^casdo_[a-f0-9]{30}$'
+    CasCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the client's source tree.
+        changedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+          description: The paths the client's tree changed since the tree it last pushed.
+    CasCheckResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, changedPaths, changedCount, editedPaths, editedCount, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [unchanged, changed]
+        changedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The paths the client's tree changed since the tree the box applied.
+        changedCount:
+          type: integer
+          minimum: 0
+          description: How many paths the client's tree changed.
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The paths an agent edited inside the box; never empty when the state is changed because of an edit.
+        editedCount:
+          type: integer
+          minimum: 0
+          description: How many owned paths no longer match the applied manifest.
+        replayed:
+          type: boolean
+          description: The answer replays the receipt of the same request key.
+    CasFastApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint, files, blobs]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the client's whole tree after the change.
+        files:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The delta is validated with the v2 page rules, so it is a tree the v2 applier would also accept.'
+            additionalProperties: true
+        blobs:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+                maximum: 16777216
+        deletedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+          description: The owned paths the client's tree no longer has.
+    CasFastApplyResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, fingerprint, missing, writtenFiles, linkedFiles, removedFiles, fetchedBlobs, fetchedBytes, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [awaiting_blobs, applied, changed]
+          description: '`changed` names the owned paths an agent edited that the delta does not name and applies nothing; `editedPaths` and `editedCount` are present only on that answer.'
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the tree the box now holds; on a changed answer, the tree it held before the push.
+        missing:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+              url:
+                type: string
+                description: Short-lived PUT capability; never log or persist it.
+        writtenFiles:
+          type: integer
+          minimum: 0
+          description: How many files the box rewrote.
+        linkedFiles:
+          type: integer
+          minimum: 0
+          description: How many files the box carried over with a link.
+        removedFiles:
+          type: integer
+          minimum: 0
+          description: How many owned paths the box deleted.
+        fetchedBlobs:
+          type: integer
+          minimum: 0
+        fetchedBytes:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+          description: The answer replays the receipt of the same request key.
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The owned paths an agent edited that the delta does not name; present only when the state is changed.
+        editedCount:
+          type: integer
+          minimum: 0
+          description: How many owned paths an agent edited that the delta does not name; present only when the state is changed.
     CasSourceResult:
       type: object
       additionalProperties: false
@@ -2895,6 +3095,12 @@ components:
       additionalProperties: false
       required: [code, message]
       properties:
+        reasonCode:
+          type: string
+          maxLength: 128
+          pattern: "^[a-z][a-z0-9_]*$"
+        retryable:
+          type: boolean
         code:
           type: string
           minLength: 1
@@ -2906,10 +3112,47 @@ components:
         retryAfterSeconds:
           type: integer
           minimum: 0
+        nextStep:
+          type: string
+          maxLength: 1024
+          description: Safe public corrective action naming the next tool or REST call.
+        executionId:
+          type: string
+          maxLength: 128
+          description: The running execution that blocks this request, when the refusal names one.
+        runningExecutionIds:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 128
+          description: Every running execution that fills a box's concurrent-command limit.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: The concurrent-command limit the refusal enforced.
+        limitName:
+          type: string
+          maxLength: 128
+          pattern: "^[a-z][a-z0-9_]*$"
+          description: The stable name of the limit the refusal enforced, when it names a setting.
+        limitValue:
+          type: integer
+          minimum: 1
+          description: The value of the named limit the refusal enforced.
+        planId:
+          type: string
+          maxLength: 128
+          description: The source plan that blocks this request, when the refusal names one.
+        snapshotId:
+          type: string
+          maxLength: 128
+          description: The source snapshot that blocks this request, when the refusal names one.
         reason:
           type: string
           description: Safe provider failure category; contains no provider coordinates or messages.
-          enum: [provider_region_unavailable, provider_toolbox_unreachable, provider_timeout, provider_refused, provider_error, user_active_limit, global_capacity, admission_closed, budget_exhausted, spec_not_allowed, admission_unavailable, workspace_busy, source_apply_revoked]
+          enum: [provider_region_unavailable, provider_toolbox_unreachable, provider_timeout, provider_refused, provider_error, box_stopped, box_destroyed, user_active_limit, global_capacity, admission_closed, budget_exhausted, gpu_budget_exhausted, spec_not_allowed, admission_unavailable, workspace_busy, source_apply_revoked, execution_cleanup_required, activation_pending, execution_limit_reached, manifest_invalid, plan_expired, blob_hash_mismatch, fetch_failed, apply_failed, path_conflict, disk_full, api_provider_storage_unavailable, account_store_full]
     ErrorEnvelope:
       type: object
       additionalProperties: false
@@ -3045,7 +3288,7 @@ components:
           type: boolean
         state:
           type: string
-          enum: [running, stopped]
+          enum: [running, stopped, destroyed]
         sandboxId:
           type: string
           minLength: 1
@@ -3123,7 +3366,7 @@ components:
         normalizedState:
           type: string
           enum:
-            [created, provisioning, starting, running, pausing, paused, stopping, stopped, destroying, destroyed]
+            [created, provisioning, starting, running, pausing, paused, stopping, stopped, destroying, destroyed, failed]
         rawState:
           type: string
           minLength: 1
@@ -3136,6 +3379,17 @@ components:
             - type: string
               minLength: 1
             - type: 'null'
+        failure:
+          type: object
+          additionalProperties: false
+          required: [reasonCode, nextStep]
+          properties:
+            reasonCode:
+              type: string
+              minLength: 1
+            nextStep:
+              type: string
+              minLength: 1
     ResourceLink:
       type: object
       additionalProperties: false
@@ -3288,6 +3542,8 @@ components:
           oneOf:
             - $ref: '#/components/schemas/SafeError'
             - type: 'null'
+        hold:
+          $ref: '#/components/schemas/SafeError'
         truncated:
           type: boolean
         outputBytes:
@@ -3476,6 +3732,137 @@ components:
         expiresAt:
           type: string
           format: date-time
+    BoxSizePrice:
+      type: object
+      additionalProperties: false
+      required: [microUsdPerHour]
+      properties:
+        microUsdPerHour:
+          type: integer
+          minimum: 0
+          description: The size's hourly price in whole micro-USD; never negative.
+    BoxSize:
+      type: object
+      additionalProperties: false
+      required: [id, gpuType, gpuCount, cpuMillicores, memoryBytes, diskBytes, maxLifetimeSeconds, price]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_-]*$'
+        gpuType:
+          type: [string, 'null']
+          maxLength: 64
+          description: The OCB-facing GPU type; null for a CPU size.
+        gpuCount:
+          type: integer
+          minimum: 0
+          maximum: 8
+        cpuMillicores:
+          type: integer
+          minimum: 1
+        memoryBytes:
+          type: integer
+          minimum: 1
+        diskBytes:
+          type: integer
+          minimum: 1
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+          description: The longest life this size may run under the caller's plan.
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+    GpuShape:
+      type: object
+      additionalProperties: false
+      required: [type, count]
+      properties:
+        type:
+          type: string
+          maxLength: 64
+        count:
+          type: integer
+          minimum: 1
+    GpuCheckProblem:
+      type: object
+      additionalProperties: false
+      required: [field, reason, message, requested, availableNow]
+      properties:
+        field:
+          type: string
+          enum: [gpu.type, gpu.count, gpu, lifetimeSeconds, gpuHours, cpu, memory, disk]
+        reason:
+          type: string
+          enum: [size_not_in_plan, lifetime_over_limit, gpu_budget_exhausted, gpu_unavailable, spec_not_allowed]
+        message:
+          type: string
+        requested:
+          type: string
+        availableNow:
+          type: array
+          items:
+            type: string
+    GpuCheckAlternative:
+      type: object
+      additionalProperties: false
+      required: [sizeId, gpu, maxLifetimeSeconds, price, capacityKnown]
+      properties:
+        sizeId:
+          type: string
+        gpu:
+          $ref: '#/components/schemas/GpuShape'
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+        capacityKnown:
+          type: boolean
+    GpuCheck:
+      type: object
+      additionalProperties: false
+      required: [ok, message]
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+        sizeId:
+          type: string
+        gpu:
+          $ref: '#/components/schemas/GpuShape'
+        lifetimeSeconds:
+          type: integer
+          minimum: 1
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+        capacityKnown:
+          type: boolean
+        reason:
+          type: string
+          enum: [size_not_in_plan, lifetime_over_limit, gpu_budget_exhausted, gpu_unavailable, spec_not_allowed]
+        problems:
+          type: array
+          items:
+            $ref: '#/components/schemas/GpuCheckProblem'
+        alternatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/GpuCheckAlternative'
+    BoxSizePage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BoxSize'
     ProjectPage:
       type: object
       additionalProperties: false
@@ -3606,12 +3993,35 @@ components:
             lifetimeSeconds:
               type: integer
               minimum: 300
-              maximum: 7200
-              description: Optional shorter lifetime in seconds; must also be at or below the deployment maxLifetimeSeconds.
+              maximum: 86400
+              description: Optional shorter lifetime in seconds; must also be at or below the size's maxLifetimeSeconds from GET /v1/sizes and the resolved account entitlement. The absolute safety ceiling is one day.
+            gpuType:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: '^[a-z][a-z0-9_-]*$'
+              description: GPU type to create, from GET /v1/sizes. Give it with gpuCount and without sizeId. GET /v1/gpu-check says first whether the box is possible.
+            gpuCount:
+              type: integer
+              minimum: 1
+              maximum: 64
+              description: GPUs in the box. Give it with gpuType.
+            sizeId:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: '^[a-z][a-z0-9_-]*$'
+              description: Optional box size id from GET /v1/sizes. The size fixes the box's snapshot and resources; omit for the plan's default size. A size the plan does not offer is refused with reasonCode size_not_in_plan.
+            diskGib:
+              type: integer
+              minimum: 1
+              maximum: 1024
+              description: Disk in GiB for a GPU box. It applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
             cpu:
               type: string
               minLength: 1
               maxLength: 64
+              description: vCPU count as a whole number. On a GPU box it applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
             image:
               type: string
               minLength: 1
@@ -3620,6 +4030,7 @@ components:
               type: string
               minLength: 1
               maxLength: 64
+              description: Memory in MiB as a whole number. On a GPU box it applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
             region:
               type: string
               minLength: 1
@@ -3630,9 +4041,9 @@ components:
               maxLength: 64
         secretReferenceIds:
           type: array
-          description: Optional workload secret reference ids to attach to the new Session. Ids are opaque; secret values are never accepted or returned.
           maxItems: 32
           uniqueItems: true
+          description: Optional ids of the caller's own active secret references in this project, resolved through the same owner-scoped service as MCP `session_create`. The value is never sent or returned; an id that names no active reference of this owner and project is refused.
           items:
             type: string
             minLength: 1
@@ -3650,6 +4061,9 @@ components:
           type: integer
           minimum: 1
           maximum: 3600
+        wait:
+          type: boolean
+          description: Wait for the command to finish before answering, up to the server completion window (8000 ms on staging). Default false: answer at acceptance with state pending and poll getExecution.
     CreateSourceManifestRequest:
       type: object
       additionalProperties: false
@@ -3733,6 +4147,15 @@ components:
           type: string
           minLength: 1
           maxLength: 32768
+        headerForm:
+          type: string
+          enum: [basic, bearer]
+          description: 'How the API builds the complete Authorization header value from value before it is saved: basic is Basic base64(username:value) and bearer is Bearer value. The box sends Authorization: $NAME with the saved value. Omit to store value verbatim.'
+        username:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 'Username for headerForm: basic; defaults to x-access-token. Not allowed with headerForm: bearer.'
         confirmUnrestrictedHosts:
           type: boolean
         confirmProcessExposure:
@@ -3740,6 +4163,7 @@ components:
     RotateSecretReferenceRequest:
       type: object
       additionalProperties: false
+      description: 'If the secret was created with a headerForm, the API applies that saved form to value before storing it.'
       required: [value]
       properties:
         value:
@@ -3892,6 +4316,27 @@ components:
           type: string
           minLength: 1
           maxLength: 512
+    AuthIdentity:
+      type: object
+      additionalProperties: false
+      required: [subject, audience, scopes, expiresAt]
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 128
+        audience:
+          type: string
+          enum: [cli, mcp]
+        scopes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        expiresAt:
+          type: string
+          format: date-time
     WebSession:
       type: object
       additionalProperties: false

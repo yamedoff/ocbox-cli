@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046
+ * Pinned source SHA-256: 975aa2a4cb15ae4765f0122edce4062c03a269da3182bbbc78af4c39f24ae0c4
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:b15727ffec426d25a37bc33d0e5a199bd140d8a0ed5bed64faf86cd369443046" as const
+export const OPENAPI_CHECKSUM = "sha256:975aa2a4cb15ae4765f0122edce4062c03a269da3182bbbc78af4c39f24ae0c4" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -33,11 +33,21 @@ export interface ApiResult<ResponseType> {
   readonly retryAfter?: string | null
 }
 
-export interface AuthIdentity {
-  readonly subject: string
-  readonly audience: "cli" | "mcp"
-  readonly scopes: readonly string[]
-  readonly expiresAt: string
+export interface SourceFilesPushRequest {
+  readonly files: readonly { readonly path: string; readonly content: string; readonly mode?: number }[]
+  readonly sessionId?: string
+  readonly idempotencyKey?: string
+}
+
+export interface CasPlanRequest {
+  readonly version: number
+  readonly manifest: { readonly syncId: string; readonly pageHashes: readonly string[]; readonly fileCount: number; readonly totalBytes: number }
+  readonly page: { readonly index: number; readonly files: readonly Record<string, unknown>[]; readonly blobs: readonly { readonly hash: string; readonly size: number }[] }
+}
+
+export interface CasApplyRequest {
+  readonly version: number
+  readonly planId: string
 }
 
 export interface CasCheckRequest {
@@ -66,7 +76,7 @@ export interface CasFastApplyRequest {
 
 export interface CasFastApplyResult {
   readonly version: number
-  readonly state: "awaiting_blobs" | "applied"
+  readonly state: "awaiting_blobs" | "applied" | "changed"
   readonly fingerprint: string
   readonly missing: readonly { readonly hash: string; readonly size: number; readonly url: string }[]
   readonly writtenFiles: number
@@ -75,17 +85,8 @@ export interface CasFastApplyResult {
   readonly fetchedBlobs: number
   readonly fetchedBytes: number
   readonly replayed: boolean
-}
-
-export interface CasPlanRequest {
-  readonly version: number
-  readonly manifest: { readonly syncId: string; readonly pageHashes: readonly string[]; readonly fileCount: number; readonly totalBytes: number }
-  readonly page: { readonly index: number; readonly files: readonly Record<string, unknown>[]; readonly blobs: readonly { readonly hash: string; readonly size: number }[] }
-}
-
-export interface CasApplyRequest {
-  readonly version: number
-  readonly planId: string
+  readonly editedPaths?: readonly string[]
+  readonly editedCount?: number
 }
 
 export interface CasSourceResult {
@@ -174,10 +175,20 @@ export interface CasPullResult {
 }
 
 export interface SafeError {
+  readonly reasonCode?: string
+  readonly retryable?: boolean
   readonly code: string
   readonly message: string
   readonly retryAfterSeconds?: number
-  readonly reason?: "provider_region_unavailable" | "provider_toolbox_unreachable" | "provider_timeout" | "provider_refused" | "provider_error" | "user_active_limit" | "global_capacity" | "admission_closed" | "budget_exhausted" | "spec_not_allowed" | "admission_unavailable" | "workspace_busy" | "source_apply_revoked"
+  readonly nextStep?: string
+  readonly executionId?: string
+  readonly runningExecutionIds?: readonly string[]
+  readonly limit?: number
+  readonly limitName?: string
+  readonly limitValue?: number
+  readonly planId?: string
+  readonly snapshotId?: string
+  readonly reason?: "provider_region_unavailable" | "provider_toolbox_unreachable" | "provider_timeout" | "provider_refused" | "provider_error" | "box_stopped" | "box_destroyed" | "user_active_limit" | "global_capacity" | "admission_closed" | "budget_exhausted" | "gpu_budget_exhausted" | "spec_not_allowed" | "admission_unavailable" | "workspace_busy" | "source_apply_revoked" | "execution_cleanup_required" | "activation_pending" | "execution_limit_reached" | "manifest_invalid" | "plan_expired" | "blob_hash_mismatch" | "fetch_failed" | "apply_failed" | "path_conflict" | "disk_full" | "api_provider_storage_unavailable" | "account_store_full"
 }
 
 export interface User {
@@ -223,7 +234,7 @@ export interface SandboxBinding {
   readonly ordinal: number
   readonly role: "primary"
   readonly active: boolean
-  readonly state: "running" | "stopped"
+  readonly state: "running" | "stopped" | "destroyed"
   readonly sandboxId: string
   readonly boundAt: string
   readonly releasedAt: string | null
@@ -252,10 +263,11 @@ export interface Session {
   readonly projectId: string
   readonly requestedSpec: Record<string, unknown>
   readonly effectiveSpec: Record<string, unknown>
-  readonly normalizedState: "created" | "provisioning" | "starting" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "destroying" | "destroyed"
+  readonly normalizedState: "created" | "provisioning" | "starting" | "running" | "pausing" | "paused" | "stopping" | "stopped" | "destroying" | "destroyed" | "failed"
   readonly rawState: string
   readonly sandboxes: readonly SandboxBinding[]
   readonly primarySandboxId: string | null
+  readonly failure?: { readonly reasonCode: string; readonly nextStep: string }
 }
 
 export interface ResourceLink {
@@ -303,6 +315,7 @@ export interface Execution {
   readonly exitCode: number | null
   readonly failureKind: "command" | "infrastructure" | null
   readonly failure: SafeError | null
+  readonly hold?: SafeError
   readonly truncated: boolean
   readonly outputBytes: number
   readonly outputLimitBytes: number
@@ -376,6 +389,60 @@ export interface Preview {
   readonly expiresAt: string
 }
 
+export interface BoxSizePrice {
+  readonly microUsdPerHour: number
+}
+
+export interface BoxSize {
+  readonly id: string
+  readonly gpuType: string | null
+  readonly gpuCount: number
+  readonly cpuMillicores: number
+  readonly memoryBytes: number
+  readonly diskBytes: number
+  readonly maxLifetimeSeconds: number
+  readonly price: BoxSizePrice
+}
+
+export interface GpuShape {
+  readonly type: string
+  readonly count: number
+}
+
+export interface GpuCheckProblem {
+  readonly field: "gpu.type" | "gpu.count" | "gpu" | "lifetimeSeconds" | "gpuHours" | "cpu" | "memory" | "disk"
+  readonly reason: "size_not_in_plan" | "lifetime_over_limit" | "gpu_budget_exhausted" | "gpu_unavailable" | "spec_not_allowed"
+  readonly message: string
+  readonly requested: string
+  readonly availableNow: readonly string[]
+}
+
+export interface GpuCheckAlternative {
+  readonly sizeId: string
+  readonly gpu: GpuShape
+  readonly maxLifetimeSeconds: number
+  readonly price: BoxSizePrice
+  readonly capacityKnown: boolean
+}
+
+export interface GpuCheck {
+  readonly ok: boolean
+  readonly message: string
+  readonly sizeId?: string
+  readonly gpu?: GpuShape
+  readonly lifetimeSeconds?: number
+  readonly maxLifetimeSeconds?: number
+  readonly price?: BoxSizePrice
+  readonly capacityKnown?: boolean
+  readonly reason?: "size_not_in_plan" | "lifetime_over_limit" | "gpu_budget_exhausted" | "gpu_unavailable" | "spec_not_allowed"
+  readonly problems?: readonly GpuCheckProblem[]
+  readonly alternatives?: readonly GpuCheckAlternative[]
+}
+
+export interface BoxSizePage {
+  readonly data: readonly BoxSize[]
+}
+
 export interface ProjectPage {
   readonly data: readonly Project[]
   readonly nextCursor: string | null
@@ -424,13 +491,14 @@ export interface UpdateEnvironmentRequest {
 }
 
 export interface CreateSessionRequest {
-  readonly requestedSpec?: { readonly lifetimeSeconds?: number; readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
+  readonly requestedSpec?: { readonly lifetimeSeconds?: number; readonly gpuType?: string; readonly gpuCount?: number; readonly sizeId?: string; readonly diskGib?: number; readonly cpu?: string; readonly image?: string; readonly memory?: string; readonly region?: string; readonly runtime?: string }
   readonly secretReferenceIds?: readonly string[]
 }
 
 export interface CreateExecutionRequest {
   readonly command: string
   readonly timeoutSeconds?: number
+  readonly wait?: boolean
 }
 
 export interface CreateSourceManifestRequest {
@@ -460,6 +528,8 @@ export interface CreateSecretReferenceRequest {
   readonly exposureMode: "process" | "host"
   readonly allowedHosts?: readonly string[]
   readonly value: string
+  readonly headerForm?: "basic" | "bearer"
+  readonly username?: string
   readonly confirmUnrestrictedHosts?: boolean
   readonly confirmProcessExposure?: boolean
 }
@@ -525,6 +595,13 @@ export interface GithubLoginStart {
 export interface CompleteGithubLoginRequest {
   readonly state: string
   readonly providerCode: string
+}
+
+export interface AuthIdentity {
+  readonly subject: string
+  readonly audience: "cli" | "mcp"
+  readonly scopes: readonly string[]
+  readonly expiresAt: string
 }
 
 export interface WebSession {
@@ -779,7 +856,9 @@ export interface ErrorEnvelope {
 }
 
 export interface OpenCloudBoxClient {
-  listProjects(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listSizes(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  checkGpuSpec(args?: { readonly query?: { readonly gpuType?: string; readonly gpuCount?: number; readonly lifetimeSeconds?: number; readonly cpu?: number; readonly memoryMib?: number; readonly diskGib?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listProjects(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly order?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createProject(args: { readonly body: CreateProjectRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getProject(args: { readonly path: { readonly projectId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   updateProject(args: { readonly path: { readonly projectId: string }; readonly body: UpdateProjectRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -789,7 +868,7 @@ export interface OpenCloudBoxClient {
   getEnvironment(args: { readonly path: { readonly environmentId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   updateEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body: UpdateEnvironmentRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
+  listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number; readonly includeDestroyed?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<SessionCreateResponse | ErrorEnvelope>>
   getSession(args: { readonly path: { readonly sessionId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   startSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -806,10 +885,11 @@ export interface OpenCloudBoxClient {
   cancelExecution(args: { readonly path: { readonly executionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   planSourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasPlanRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>>
   applySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>>
+  pushSourceFiles(args: { readonly path: { readonly sessionId: string }; readonly body: SourceFilesPushRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>>
   checkSourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasCheckRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasCheckResult | ErrorEnvelope>>
-  fastApplySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasFastApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasFastApplyResult | ErrorEnvelope>>
   createSourceSnapshot(args: { readonly path: { readonly sessionId: string }; readonly body: CasSnapshotRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSnapshotResult | ErrorEnvelope>>
   readSourceSnapshotPage(args: { readonly path: { readonly sessionId: string }; readonly body: CasSnapshotPageRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSnapshotPageResult | ErrorEnvelope>>
+  fastApplySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasFastApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasFastApplyResult | ErrorEnvelope>>
   createSourcePull(args: { readonly path: { readonly sessionId: string }; readonly body: CasPullRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasPullResult | ErrorEnvelope>>
   listSourceManifests(args: { readonly path: { readonly sessionId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createSourceManifest(args: { readonly path: { readonly sessionId: string }; readonly body: CreateSourceManifestRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -847,7 +927,7 @@ export interface OpenCloudBoxClient {
   getCurrentWebSession(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   revokeCurrentWebSession(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   renewWebSession(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
-  getAuthMe(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<AuthIdentity | ErrorEnvelope>>
+  getAuthMe(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   startCliAuthorization(args: { readonly body: StartCliAuthorizationRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   exchangeCliToken(args: { readonly body: CliTokenRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   revokeCliToken(args: { readonly body: RevokeTokenRequest; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -866,11 +946,56 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
   const defaultHeaders = options.headers ?? {}
   const normalizedBase = baseUrl.replace(/\/v1\/?$/, '').replace(/\/$/, '')
   return {
-    async listProjects(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async listSizes(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/sizes`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async checkGpuSpec(args?: { readonly query?: { readonly gpuType?: string; readonly gpuCount?: number; readonly lifetimeSeconds?: number; readonly cpu?: number; readonly memoryMib?: number; readonly diskGib?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/gpu-check`)
+      if (args?.query !== undefined) {
+        if (args.query.gpuType !== undefined) url.searchParams.set("gpuType", String(args.query.gpuType))
+        if (args.query.gpuCount !== undefined) url.searchParams.set("gpuCount", String(args.query.gpuCount))
+        if (args.query.lifetimeSeconds !== undefined) url.searchParams.set("lifetimeSeconds", String(args.query.lifetimeSeconds))
+        if (args.query.cpu !== undefined) url.searchParams.set("cpu", String(args.query.cpu))
+        if (args.query.memoryMib !== undefined) url.searchParams.set("memoryMib", String(args.query.memoryMib))
+        if (args.query.diskGib !== undefined) url.searchParams.set("diskGib", String(args.query.diskGib))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async listProjects(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly order?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/projects`)
       if (args?.query !== undefined) {
         if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
         if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+        if (args.query.order !== undefined) url.searchParams.set("order", String(args.query.order))
       }
       const headers: Record<string, string> = { ...defaultHeaders }
       const response = await transport.fetch(url, {
@@ -1072,11 +1197,12 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
-    async listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+    async listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number; readonly includeDestroyed?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/projects/${encodeURIComponent(String(args.path.projectId))}/sessions`)
       if (args?.query !== undefined) {
         if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
         if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+        if (args.query.includeDestroyed !== undefined) url.searchParams.set("includeDestroyed", String(args.query.includeDestroyed))
       }
       const headers: Record<string, string> = { ...defaultHeaders }
       const response = await transport.fetch(url, {
@@ -1409,6 +1535,27 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
+    async pushSourceFiles(args: { readonly path: { readonly sessionId: string }; readonly body: SourceFilesPushRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasSourceResult | ErrorEnvelope>> {
+      const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/files`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as CasSourceResult | ErrorEnvelope,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
     async checkSourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasCheckRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasCheckResult | ErrorEnvelope>> {
       const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/cas/check`)
       const headers: Record<string, string> = { ...defaultHeaders }
@@ -1424,27 +1571,6 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
         body: parsed as CasCheckResult | ErrorEnvelope,
-        requestId: response.headers.get('x-request-id'),
-        replay: response.headers.get('idempotency-replayed') === 'true',
-        retryAfter: response.headers.get('retry-after'),
-        status: response.status,
-      }
-    },
-    async fastApplySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasFastApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasFastApplyResult | ErrorEnvelope>> {
-      const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/cas/fast`)
-      const headers: Record<string, string> = { ...defaultHeaders }
-      if (args?.body !== undefined) headers['content-type'] = 'application/json'
-      headers['idempotency-key'] = args.idempotencyKey
-      const response = await transport.fetch(url, {
-        method: "POST",
-        headers,
-        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
-        ...(args?.signal === undefined ? {} : { signal: args.signal }),
-      })
-      const text = await response.text()
-      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
-      return {
-        body: parsed as CasFastApplyResult | ErrorEnvelope,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
         retryAfter: response.headers.get('retry-after'),
@@ -1487,6 +1613,27 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
         body: parsed as CasSnapshotPageResult | ErrorEnvelope,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async fastApplySourceCas(args: { readonly path: { readonly sessionId: string }; readonly body: CasFastApplyRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<CasFastApplyResult | ErrorEnvelope>> {
+      const url = new URL(`${normalizedBase}/v1/sessions/${encodeURIComponent(String(args.path.sessionId))}/source/cas/fast`)
+      const headers: Record<string, string> = { ...defaultHeaders }
+      if (args?.body !== undefined) headers['content-type'] = 'application/json'
+      headers['idempotency-key'] = args.idempotencyKey
+      const response = await transport.fetch(url, {
+        method: "POST",
+        headers,
+        ...(args?.body === undefined ? {} : { body: JSON.stringify(args.body) }),
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as CasFastApplyResult | ErrorEnvelope,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
         retryAfter: response.headers.get('retry-after'),
@@ -2231,7 +2378,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
         status: response.status,
       }
     },
-    async getAuthMe(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<AuthIdentity | ErrorEnvelope>> {
+    async getAuthMe(args?: { readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
       const url = new URL(`${normalizedBase}/v1/auth/me`)
       const headers: Record<string, string> = { ...defaultHeaders }
       const response = await transport.fetch(url, {
@@ -2242,7 +2389,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const text = await response.text()
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
-        body: parsed as AuthIdentity | ErrorEnvelope,
+        body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
         retryAfter: response.headers.get('retry-after'),
