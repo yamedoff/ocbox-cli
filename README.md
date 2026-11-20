@@ -21,6 +21,8 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.ps1 | iex
 ```
 
+These commands work once the first release is published; until then install with `npm i -g opencloudbox`.
+
 The install scripts place `ocbox` in `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on
 Windows), verify the release checksum, and add the bin folder to PATH (printing
 the line to add on macOS and Linux when it is not already there). To install
