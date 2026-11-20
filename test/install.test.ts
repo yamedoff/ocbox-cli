@@ -216,6 +216,34 @@ describe('install.sh', () => {
 })
 
 describe('install.ps1', () => {
+  it('keeps every exit inside the file-invocation branch', async () => {
+    const script = await readFile(join(repoRoot, 'install.ps1'), 'utf8')
+    const guard = /if\s*\(\s*\$isFileInvocation\s*\)\s*\{/.exec(script)
+    expect(guard, 'install.ps1 has no file-invocation branch').not.toBeNull()
+
+    const open = script.indexOf('{', guard?.index ?? 0)
+    let depth = 0
+    let close = -1
+    for (let index = open; index < script.length; index += 1) {
+      if (script[index] === '{') {
+        depth += 1
+      } else if (script[index] === '}') {
+        depth -= 1
+        if (depth === 0) {
+          close = index
+          break
+        }
+      }
+    }
+    expect(close, 'the file-invocation branch is not closed').toBeGreaterThan(open)
+
+    const exits = [...script.matchAll(/\bexit\b/gi)].map((match) => match.index ?? -1)
+    expect(exits.length).toBeGreaterThan(0)
+    const lineOf = (index: number) => script.slice(0, index).split('\n').length
+    const outside = exits.filter((index) => index < open || index > close).map(lineOf)
+    expect(outside).toEqual([])
+  })
+
   it.skipIf(powerShellCommands.length === 0)('parses under PowerShell', () => {
     const script = join(repoRoot, 'install.ps1')
     const quoted = script.replace(/'/g, "''")
@@ -226,6 +254,36 @@ describe('install.ps1', () => {
       expect(result.stderr).toBe('')
     }
   })
+
+  it.skipIf(!hasPwsh)(
+    'keeps the caller session alive when an irm | iex install fails',
+    async () => {
+      const root = await makeTemporaryRoot()
+      const release = join(root, 'empty-release')
+      await mkdir(release, { recursive: true })
+      const script = await readFile(join(repoRoot, 'install.ps1'), 'utf8')
+      const encoded = Buffer.from(script, 'utf8').toString('base64')
+      const env: NodeJS.ProcessEnv = { ...process.env, OCBOX_RELEASE_BASE: release }
+      delete env['OCBOX_VERSION']
+      const command = [
+        `$script = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encoded}'))`,
+        '$before = $ErrorActionPreference',
+        'Invoke-Expression $script',
+        `[Console]::Out.WriteLine("session-alive errorActionPreference=$ErrorActionPreference before=$before")`,
+      ].join('\n')
+
+      const result = spawnSync('pwsh', ['-NoProfile', '-Command', command], {
+        encoding: 'utf8',
+        env,
+        timeout: 120_000,
+      })
+
+      expect(result.stderr).toContain('ocbox install:')
+      expect(result.stderr).toContain('No release tarball was found')
+      expect(result.stdout).toMatch(/session-alive errorActionPreference=(\S+) before=\1/)
+      expect(result.status).toBe(0)
+    },
+  )
 
   for (const command of powerShellCommands) {
     it.skipIf(process.platform !== 'win32')(
