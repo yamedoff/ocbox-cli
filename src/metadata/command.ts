@@ -12,6 +12,20 @@ export const metadataFlags = {
   ...runtimeFlags,
   'api-url': Flags.string({ description: 'Hosted API base URL; defaults to OCBOX_API_URL' }),
 }
+
+/**
+ * Output, authentication and configuration flags for hosted reads and actions
+ * that are not box creates: they do not take the resource overrides `start` and
+ * `exec` carry, so those flags are not advertised.
+ */
+export const hostedFlags = {
+  'api-url': Flags.string({ description: 'Hosted API base URL; defaults to OCBOX_API_URL' }),
+  config: runtimeFlags.config,
+  json: runtimeFlags.json,
+  jsonl: runtimeFlags.jsonl,
+  'no-color': runtimeFlags['no-color'],
+  'state-dir': runtimeFlags['state-dir'],
+}
 export const projectFlag = {
   'project-id': Flags.string({
     required: true,
