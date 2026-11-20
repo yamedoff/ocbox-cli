@@ -138,6 +138,13 @@ describe('API minimum version gate', () => {
     expect(result.minimumVersion).toBe('9.0.0')
     expect(result.message).toContain('run: ocbox update')
     expect(fetch).toHaveBeenCalledTimes(1)
+
+    resetVersionGate()
+    stderrSpy.mockClear()
+    vi.stubGlobal('fetch', fetch)
+    process.env['OCBOX_API_URL'] = 'http://127.0.0.1:4567'
+    await runStartupVersionGate(['status'])
+    expect(output(stderrSpy)).toContain('run: ocbox update')
   })
 
   it('refuses an API request after the gate is outdated but lets a local command finish', async () => {
