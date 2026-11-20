@@ -4,6 +4,7 @@ import {
   type OpenCloudBoxClient,
 } from '../api/generated/client.js'
 import { OcboxError } from '../errors/index.js'
+import { assertCliVersionSupported } from '../version/gate.js'
 import { AuthenticatedHttpClient } from './authenticated-client.js'
 import { type HostedProtocolEndpoints, DEFAULT_HTTP_TIMEOUT_MILLISECONDS } from './config.js'
 import { AuthBindingError, newRequestId } from './errors.js'
@@ -246,6 +247,9 @@ export function createAuthenticatedTransport(
   })
   return {
     async fetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+      // The startup gate already told the user to update; do not send a request
+      // the hosted API will reject, and do not let a local command fail here.
+      assertCliVersionSupported()
       const request = input instanceof Request ? input : null
       const url = request === null ? input : request.url
       const method = init.method ?? request?.method ?? 'GET'

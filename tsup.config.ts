@@ -38,6 +38,7 @@ export default defineConfig({
     'commands/start': 'src/commands/start.ts',
     'commands/status': 'src/commands/status.ts',
     'commands/stop': 'src/commands/stop.ts',
+    'commands/update': 'src/commands/update.ts',
     'commands/sync/diff': 'src/commands/sync/diff.ts',
     'commands/sync/index': 'src/commands/sync/index.ts',
     'commands/sync/pull': 'src/commands/sync/pull.ts',
