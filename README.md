@@ -22,8 +22,9 @@ irm https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.ps1 | iex
 ```
 
 The install scripts place `ocbox` in `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on
-Windows), verify the release checksum, and print the PATH line to add when the
-bin folder is not already on PATH. To install from npm instead:
+Windows), verify the release checksum, and add the bin folder to PATH (printing
+the line to add on macOS and Linux when it is not already there). To install
+from npm instead:
 
 ```sh
 npm i -g opencloudbox
