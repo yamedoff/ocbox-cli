@@ -76,6 +76,8 @@ Every mutating MCP tool requires `idempotencyKey` in the arguments (or an
   `stderr` become `[REDACTED]`). `ocbox exec` is the command that streams
   command output; `ocbox execution get` reports the execution state, exit code
   and failure reason, and the result kind.
+- `preview_create`: the REST route answers with the Preview; the MCP tool also
+  wraps it in an Operation. `ocbox preview create` prints the preview URL.
 - `usage_list`: the hosted REST route pages owner-wide usage. `--session-id`
   filters the page the CLI received, while the MCP tool filters before it pages,
   so a heavily paged account can need more pages to find one Session's events.
