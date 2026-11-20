@@ -63,8 +63,19 @@ $MinNodeMajor = 22
         $version = $version -replace '^ocbox-', '' -replace '\.tgz$', ''
       }
       else {
-        $releaseJson = Invoke-WebRequest -UseBasicParsing -Uri $LatestReleaseApi
-        $version = ($releaseJson.Content | ConvertFrom-Json).tag_name
+        if ($releaseBase -ne $DefaultReleaseBase) {
+          $latest = Invoke-WebRequest -UseBasicParsing -Uri ($releaseBase + '/LATEST')
+          if ($latest.Content -is [byte[]]) {
+            $version = [System.Text.Encoding]::UTF8.GetString($latest.Content).Trim()
+          }
+          else {
+            $version = ([string]$latest.Content).Trim()
+          }
+        }
+        else {
+          $releaseJson = Invoke-WebRequest -UseBasicParsing -Uri $LatestReleaseApi
+          $version = ($releaseJson.Content | ConvertFrom-Json).tag_name
+        }
         if ([string]::IsNullOrWhiteSpace($version)) {
           Fail 'Could not read the latest release version.'
         }

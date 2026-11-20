@@ -55,6 +55,14 @@ if [ -z "$version" ]; then
     version=${found##*/}
     version=${version#ocbox-}
     version=${version%.tgz}
+  elif [ "$release_base" != "$DEFAULT_RELEASE_BASE" ]; then
+    command -v curl >/dev/null 2>&1 ||
+      fail "curl is required to read the latest release version."
+    tag=$(curl -fsSL "$release_base/LATEST") ||
+      fail "Could not read the latest release version from ${release_base}."
+    version=$(printf '%s' "$tag" | tr -d '[:space:]')
+    [ -n "$version" ] || fail "Could not read the latest release version."
+    version=${version#v}
   else
     command -v curl >/dev/null 2>&1 ||
       fail "curl is required to download the latest release."
@@ -95,7 +103,7 @@ fetch_asset() {
 fetch_asset "$tarball_name" "$tmp_dir/$tarball_name"
 fetch_asset "SHA256SUMS" "$tmp_dir/SHA256SUMS"
 
-expected=$(awk -v name="$tarball_name" '{ file=$2; sub(/^\*/, "", file); if (file == name) { print $1; exit } }' "$tmp_dir/SHA256SUMS")
+expected=$(awk -v name="$tarball_name" '{ file=$2; sub(/^\*/, "", file); sub(/\r$/, "", file); if (file == name) { print $1; exit } }' "$tmp_dir/SHA256SUMS")
 [ -n "$expected" ] || fail "SHA256SUMS does not list ${tarball_name}."
 
 if command -v sha256sum >/dev/null 2>&1; then

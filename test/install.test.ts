@@ -1,7 +1,8 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,7 +71,95 @@ async function makeReleaseFixture(root: string): Promise<string> {
     .update(await readFile(tarball))
     .digest('hex')
   await writeFile(join(release, 'SHA256SUMS'), `${hash}  ocbox-${packageVersion}.tgz\n`)
+  await writeFile(join(release, 'LATEST'), `${packageVersion}\n`)
   return release
+}
+
+interface ProcessResult {
+  status: number | null
+  stdout: string
+  stderr: string
+}
+
+// The mirror runs in this process, so the install must run asynchronously; a
+// blocking spawnSync would stop the server from answering the request.
+function runProcess(
+  command: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number },
+): Promise<ProcessResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env: options.env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => child.kill(), options.timeout)
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk
+    })
+    child.stderr?.setEncoding('utf8')
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk
+    })
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', (status) => {
+      clearTimeout(timer)
+      resolve({ status, stdout, stderr })
+    })
+  })
+}
+
+interface HttpMirror {
+  origin: string
+  requests: string[]
+  close: () => Promise<void>
+}
+
+async function makeHttpMirror(release: string): Promise<HttpMirror> {
+  const requests: string[] = []
+  const server = createServer((request, response) => {
+    const path = decodeURIComponent(request.url ?? '/')
+    requests.push(path)
+    const name = path.replace(/^\//, '')
+    if (name === '' || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+      response.statusCode = 404
+      response.end()
+      return
+    }
+    readFile(join(release, name)).then(
+      (body) => {
+        response.statusCode = 200
+        response.end(body)
+      },
+      () => {
+        response.statusCode = 404
+        response.end()
+      },
+    )
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve()
+    })
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    server.close()
+    throw new Error('the mirror did not bind a TCP port')
+  }
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      }),
+  }
 }
 
 function unixInstallEnv(home: string, release: string): NodeJS.ProcessEnv {
@@ -155,6 +244,55 @@ describe('install.sh', () => {
       const result = spawnSync('sh', [join(repoRoot, 'install.sh')], {
         encoding: 'utf8',
         env,
+        timeout: 120_000,
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim().split(/\r?\n/).at(-1)).toBe(packageVersion)
+    },
+  )
+
+  it.skipIf(process.platform === 'win32' || !hasSh)(
+    'reads the release version from a non-default HTTP mirror when OCBOX_VERSION is unset',
+    async () => {
+      const root = await makeTemporaryRoot()
+      const release = await makeReleaseFixture(root)
+      await writeFile(join(release, 'LATEST'), `v${packageVersion}\n`)
+      const home = join(root, 'home')
+      await mkdir(home, { recursive: true })
+      const mirror = await makeHttpMirror(release)
+
+      try {
+        const env = unixInstallEnv(home, mirror.origin)
+        delete env['OCBOX_VERSION']
+        const result = await runProcess('sh', [join(repoRoot, 'install.sh')], {
+          env,
+          timeout: 120_000,
+        })
+
+        expect(result.status).toBe(0)
+        expect(result.stdout.trim().split(/\r?\n/).at(-1)).toBe(packageVersion)
+        expect(mirror.requests).toContain('/LATEST')
+        expect(mirror.requests).toContain(`/ocbox-${packageVersion}.tgz`)
+      } finally {
+        await mirror.close()
+      }
+    },
+  )
+
+  it.skipIf(process.platform === 'win32' || !hasSh)(
+    'accepts a SHA256SUMS file with CRLF line endings',
+    async () => {
+      const root = await makeTemporaryRoot()
+      const release = await makeReleaseFixture(root)
+      const sums = await readFile(join(release, 'SHA256SUMS'), 'utf8')
+      await writeFile(join(release, 'SHA256SUMS'), sums.replace(/\n/g, '\r\n'))
+      const home = join(root, 'home')
+      await mkdir(home, { recursive: true })
+
+      const result = spawnSync('sh', [join(repoRoot, 'install.sh')], {
+        encoding: 'utf8',
+        env: unixInstallEnv(home, release),
         timeout: 120_000,
       })
 
@@ -254,6 +392,33 @@ describe('install.ps1', () => {
       expect(result.stderr).toBe('')
     }
   })
+
+  it.skipIf(!hasPwsh)(
+    'reads the release version from a non-default HTTP mirror when OCBOX_VERSION is unset (PowerShell)',
+    async () => {
+      const root = await makeTemporaryRoot()
+      const release = join(root, 'mirror')
+      await mkdir(release, { recursive: true })
+      await writeFile(join(release, 'LATEST'), `v${packageVersion}\n`)
+      const mirror = await makeHttpMirror(release)
+      const env: NodeJS.ProcessEnv = { ...process.env, OCBOX_RELEASE_BASE: mirror.origin }
+      delete env['OCBOX_VERSION']
+
+      try {
+        const result = await runProcess(
+          'pwsh',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(repoRoot, 'install.ps1')],
+          { env, timeout: 120_000 },
+        )
+
+        expect(result.status).not.toBe(0)
+        expect(mirror.requests).toContain('/LATEST')
+        expect(mirror.requests).toContain(`/ocbox-${packageVersion}.tgz`)
+      } finally {
+        await mirror.close()
+      }
+    },
+  )
 
   it.skipIf(!hasPwsh)(
     'keeps the caller session alive when an irm | iex install fails',
