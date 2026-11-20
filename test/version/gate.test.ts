@@ -33,9 +33,19 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   process.exitCode = 0
   resetVersionGate()
+  const root = await mkdtemp(join(tmpdir(), 'ocbox-gate-'))
+  roots.push(root)
+  // Keep credential/logout tests away from the developer's real store and from
+  // any other test file that shares this worker's environment.
+  process.env['HOME'] = join(root, 'home')
+  process.env['XDG_CONFIG_HOME'] = join(root, 'config')
+  process.env['XDG_STATE_HOME'] = join(root, 'state-home')
+  process.env['APPDATA'] = join(root, 'appdata')
+  process.env['LOCALAPPDATA'] = join(root, 'localappdata')
+  process.env['USERPROFILE'] = join(root, 'userprofile')
   stdoutSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
   stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
 })
