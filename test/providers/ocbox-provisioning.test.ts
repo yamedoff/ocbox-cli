@@ -137,8 +137,6 @@ describe('hosted asynchronous lifecycle', () => {
               message: 'Box admission was refused',
               retryable: false,
               reason: admissionCode,
-              limitName: 'boxes_per_account',
-              limitValue: 1,
             },
           }),
         )
@@ -154,7 +152,11 @@ describe('hosted asynchronous lifecycle', () => {
     provider.bindLifecycleStore(store)
     await expect(
       provider.create(operationContext() as never, createRequest as never),
-    ).rejects.toMatchObject({ message: ADMISSION_MESSAGES[admissionCode] })
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: ADMISSION_MESSAGES[admissionCode],
+      providerCode: admissionCode,
+    })
     expect(
       (await store.load()).hostedMappings[scope]?.[SandboxIdSchema.parse(LOCAL_IDS.sandbox)],
     ).toBeDefined()
