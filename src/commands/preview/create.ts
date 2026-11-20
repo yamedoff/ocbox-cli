@@ -13,7 +13,7 @@ export default class PreviewCreate extends OcboxCommand {
     ...mutationFlags,
     session: Flags.string({
       required: true,
-      description: 'Hosted Session ID; defaults to the selected Session',
+      description: 'Hosted Session ID',
     }),
     port: Flags.integer({
       required: true,
