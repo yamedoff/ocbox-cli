@@ -1,11 +1,24 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { installedLayout } from '../../src/release/install.js'
+import { delimiter, join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { OcboxError } from '../../src/errors/index.js'
+import { installedLayout, installReleaseTarball } from '../../src/release/install.js'
 import { runUpdate } from '../../src/release/update.js'
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -13,12 +26,14 @@ const roots: string[] = []
 let root: string
 let release: string
 let tarballName: string
-let checksum: string
 let installCounter = 0
 
 function unixEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env }
+  // A developer or CI pin must never decide which release these tests install.
+  delete environment['OCBOX_VERSION']
   return {
-    ...process.env,
+    ...environment,
     HOME: join(root, 'home'),
     npm_config_audit: 'false',
     npm_config_cache: join(root, 'npm-cache'),
@@ -28,8 +43,12 @@ function unixEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   }
 }
 
-async function makeTarball(version: string): Promise<void> {
-  const source = join(root, `fixture-${version}`)
+async function makeTarball(
+  version: string,
+  directory: string = release,
+  name: string = `ocbox-${version}.tgz`,
+): Promise<void> {
+  const source = join(root, `fixture-${version}-${++installCounter}`)
   await mkdir(join(source, 'dist'), { recursive: true })
   await writeFile(
     join(source, 'package.json'),
@@ -44,17 +63,17 @@ async function makeTarball(version: string): Promise<void> {
     join(source, 'dist', 'index.js'),
     `#!/usr/bin/env node\nconsole.log('${version}')\n`,
   )
-  execFileSync(npmCommand, ['pack', '--pack-destination', release], {
+  execFileSync(npmCommand, ['pack', '--pack-destination', directory], {
     cwd: source,
     stdio: 'pipe',
     shell: process.platform === 'win32',
   })
-  await rename(join(release, `opencloudbox-${version}.tgz`), join(release, tarballName))
-  checksum = createHash('sha256')
-    .update(await readFile(join(release, tarballName)))
+  await rename(join(directory, `opencloudbox-${version}.tgz`), join(directory, name))
+  const checksum = createHash('sha256')
+    .update(await readFile(join(directory, name)))
     .digest('hex')
-  await writeFile(join(release, 'SHA256SUMS'), `${checksum}  ${tarballName}\n`)
-  await writeFile(join(release, 'LATEST'), `${version}\n`)
+  await writeFile(join(directory, 'SHA256SUMS'), `${checksum}  ${name}\n`)
+  await writeFile(join(directory, 'LATEST'), `${version}\n`)
 }
 
 async function makeInstalled(version: string): Promise<{ packageRoot: string; prefix: string }> {
@@ -230,6 +249,175 @@ describe('ocbox update', () => {
     expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version).toBe(
       '0.2.0',
     )
+  })
+
+  it('rejects a pnpm global store path resolved through its symlink', async () => {
+    const globalRoot = join(root, `pnpm-global-${++installCounter}`)
+    const storePackage = join(
+      globalRoot,
+      '.pnpm',
+      'opencloudbox@0.1.0',
+      'node_modules',
+      'opencloudbox',
+    )
+    await mkdir(storePackage, { recursive: true })
+    await writeFile(
+      join(storePackage, 'package.json'),
+      JSON.stringify({ name: 'opencloudbox', version: '0.1.0' }),
+    )
+    const linkParent = join(globalRoot, 'node_modules')
+    await mkdir(linkParent, { recursive: true })
+    const link = join(linkParent, 'opencloudbox')
+    await symlink(storePackage, link, 'dir')
+    const resolved = await realpath(link)
+
+    expect(() => installedLayout(resolved)).toThrow(/can only replace an installed ocbox/)
+  })
+
+  it('does not replace a newer CLI with an older release', async () => {
+    const { packageRoot } = await makeInstalled('0.2.0')
+    const older = join(root, `release-older-${++installCounter}`)
+    await mkdir(older, { recursive: true })
+    await makeTarball('0.1.0', older)
+
+    const result = await runUpdate({
+      currentVersion: '0.2.0',
+      packageRoot,
+      environment: unixEnvironment({ OCBOX_RELEASE_BASE: older }),
+    })
+
+    expect(result.updated).toBe(false)
+    expect(result.updateAvailable).toBe(false)
+    expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version).toBe(
+      '0.2.0',
+    )
+  })
+
+  it('lets an explicit OCBOX_VERSION pin win over the update direction', async () => {
+    const { packageRoot } = await makeInstalled('0.2.0')
+    const pinned = join(root, `release-pinned-${++installCounter}`)
+    await mkdir(pinned, { recursive: true })
+    await makeTarball('0.1.0', pinned)
+
+    const result = await runUpdate({
+      currentVersion: '0.2.0',
+      packageRoot,
+      environment: unixEnvironment({
+        OCBOX_RELEASE_BASE: pinned,
+        OCBOX_VERSION: '0.1.0',
+      }),
+    })
+
+    expect(result.latestVersion).toBe('0.1.0')
+    expect(result.updated).toBe(true)
+    expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version).toBe(
+      '0.1.0',
+    )
+  })
+
+  it('installs a local release whose tarball keeps the v prefix', async () => {
+    const { packageRoot } = await makeInstalled('0.1.0')
+    const prefixed = join(root, `release-prefixed-${++installCounter}`)
+    await mkdir(prefixed, { recursive: true })
+    await makeTarball('0.2.0', prefixed, 'ocbox-v0.2.0.tgz')
+
+    const result = await runUpdate({
+      currentVersion: '0.1.0',
+      packageRoot,
+      environment: unixEnvironment({ OCBOX_RELEASE_BASE: prefixed }),
+    })
+
+    expect(result.latestVersion).toBe('v0.2.0')
+    expect(result.updated).toBe(true)
+    expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version).toBe(
+      '0.2.0',
+    )
+  })
+
+  it('sweeps a stale backup left by an earlier update', async () => {
+    const { packageRoot, prefix } = await makeInstalled('0.1.0')
+    const stale = join(prefix, 'lib', 'node_modules', 'opencloudbox.ocbox-old-999999')
+    await mkdir(stale, { recursive: true })
+    await writeFile(join(stale, 'old.txt'), 'old')
+    const mirror = await makeMirror(release)
+    try {
+      await runUpdate({
+        currentVersion: '0.1.0',
+        packageRoot,
+        environment: unixEnvironment({ OCBOX_RELEASE_BASE: mirror.origin }),
+        fetch: globalThis.fetch,
+      })
+      await expect(stat(stale)).rejects.toThrow()
+    } finally {
+      await mirror.close()
+    }
+  })
+
+  it('reports a local npm failure as INTERNAL with a bounded stderr tail', async () => {
+    const { prefix } = await makeInstalled('0.1.0')
+    const bin = join(root, `fake-npm-${++installCounter}`)
+    await mkdir(bin, { recursive: true })
+    const fakeNpm = join(bin, 'npm')
+    await writeFile(
+      fakeNpm,
+      '#!/bin/sh\necho "npm ERR! code E404" >&2\necho "token=supersecret" >&2\nexit 1\n',
+    )
+    await chmod(fakeNpm, 0o755)
+    const environment = unixEnvironment({
+      PATH: `${bin}${delimiter}${process.env['PATH'] ?? ''}`,
+    })
+
+    const error = await installReleaseTarball(
+      join(root, 'unused.tgz'),
+      { packageRoot: join(prefix, 'lib', 'node_modules', 'opencloudbox'), prefix },
+      '0.2.0',
+      environment,
+    ).catch((failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('INTERNAL')
+    expect((error as OcboxError).message).toContain('npm ERR! code E404')
+    expect((error as OcboxError).message).not.toContain('supersecret')
+  })
+
+  it('reports an unreachable release source as a typed failure', async () => {
+    const { packageRoot } = await makeInstalled('0.1.0')
+    const error = await runUpdate({
+      currentVersion: '0.1.0',
+      packageRoot,
+      environment: unixEnvironment({ OCBOX_RELEASE_BASE: 'https://release.example.test' }),
+      fetch: vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+    }).catch((failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('PROVIDER_UNAVAILABLE')
+    expect((error as OcboxError).message).toBe('Could not reach the release source.')
+  })
+
+  it('does not inherit a developer OCBOX_VERSION pin', async () => {
+    const previous = process.env['OCBOX_VERSION']
+    process.env['OCBOX_VERSION'] = '9.9.9'
+    try {
+      const { packageRoot } = await makeInstalled('0.1.0')
+      const mirror = await makeMirror(release)
+      try {
+        const result = await runUpdate({
+          check: true,
+          currentVersion: '0.1.0',
+          packageRoot,
+          environment: unixEnvironment({ OCBOX_RELEASE_BASE: mirror.origin }),
+          fetch: globalThis.fetch,
+        })
+        expect(result.latestVersion).toBe('0.2.0')
+      } finally {
+        await mirror.close()
+      }
+    } finally {
+      if (previous === undefined) delete process.env['OCBOX_VERSION']
+      else process.env['OCBOX_VERSION'] = previous
+    }
   })
 
   it('rejects a package directory that is not a global npm install', () => {

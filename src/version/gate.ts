@@ -6,7 +6,10 @@ import { isVersionOlder, parseVersion } from './version.js'
 
 /** Path the hosted API answers with its client-compatibility contract. */
 export const API_META_PATH = '/v1/meta'
-export const API_META_TIMEOUT_MILLISECONDS = 1_500
+export const API_META_TIMEOUT_MILLISECONDS = 500
+
+/** Distinguishes a gate refusal from a genuine missing server capability. */
+export const CLI_OUTDATED_REASON_CODE = 'cli_outdated'
 
 export interface VersionGateOptions {
   readonly apiUrl?: string | undefined
@@ -45,15 +48,6 @@ export function outdatedVersionMessage(currentVersion: string, minimumVersion: s
   )
 }
 
-function loopbackHost(apiUrl: string): boolean {
-  try {
-    const host = new URL(apiUrl).hostname.toLowerCase()
-    return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1'
-  } catch {
-    return false
-  }
-}
-
 function apiBase(apiUrl: string): string {
   // The issuer is normally an origin, but tolerate a base that already ends in
   // `/v1`, exactly as the sizes request does.
@@ -73,9 +67,7 @@ export async function checkCliVersionGate(
 ): Promise<VersionGateResult> {
   const currentVersion = options.currentVersion ?? cliVersion()
   const apiUrl = options.apiUrl ?? DEFAULT_API_URL
-  // A loopback API is the local test harness, which publishes no compatibility
-  // contract; asking it would add a request to every offline command.
-  if (loopbackHost(apiUrl) || parseVersion(currentVersion) === undefined) {
+  if (parseVersion(currentVersion) === undefined) {
     outdated = undefined
     return { status: 'skipped', currentVersion }
   }
@@ -130,9 +122,21 @@ export function assertCliVersionSupported(): void {
   if (outdated === undefined) return
   throw new OcboxError({
     code: 'CAPABILITY_UNSUPPORTED',
-    message: outdated.message,
+    // The startup notice already prints the full sentence; a short transport
+    // error here keeps one clear line instead of repeating it.
+    message: 'Update ocbox before using the hosted API; run: ocbox update',
+    details: { reasonCode: CLI_OUTDATED_REASON_CODE },
     requestId: newRequestId(),
   })
+}
+
+/** True for the gate's own refusal, which is not a missing server capability. */
+export function isCliOutdatedError(error: unknown): boolean {
+  return (
+    error instanceof OcboxError &&
+    error.code === 'CAPABILITY_UNSUPPORTED' &&
+    error.details?.['reasonCode'] === CLI_OUTDATED_REASON_CODE
+  )
 }
 
 /** Resolves the API base from the raw command line before oclif parses flags. */

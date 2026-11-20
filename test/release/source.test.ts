@@ -7,6 +7,7 @@ import {
   CHECKSUM_FILE_NAME,
   LATEST_RELEASE_API_URL,
   RELEASE_BASE_URL,
+  RELEASE_TARBALL_PREFIX,
   releaseTarballName,
 } from '../../src/release/source.js'
 
@@ -32,5 +33,17 @@ describe('release source of truth', () => {
     expect(powerShell).toContain(`$DefaultReleaseBase = '${RELEASE_BASE_URL}'`)
     expect(powerShell).toContain(`$LatestReleaseApi = '${LATEST_RELEASE_API_URL}'`)
     expect(powerShell).toContain(`'${CHECKSUM_FILE_NAME}'`)
+  })
+
+  it('keeps the install scripts and pack-release on the same tarball prefix', async () => {
+    const shell = await readFile(join(repoRoot, 'install.sh'), 'utf8')
+    const powerShell = await readFile(join(repoRoot, 'install.ps1'), 'utf8')
+    const pack = await readFile(join(repoRoot, 'scripts', 'pack-release.mjs'), 'utf8')
+
+    expect(shell).toContain(`${RELEASE_TARBALL_PREFIX}*.tgz`)
+    expect(shell).toContain(`tarball_name="${RELEASE_TARBALL_PREFIX}\${version}.tgz"`)
+    expect(powerShell).toContain(`-Filter '${RELEASE_TARBALL_PREFIX}*.tgz'`)
+    expect(powerShell).toContain(`$tarballName = "${RELEASE_TARBALL_PREFIX}$version.tgz"`)
+    expect(pack).toContain(`const name = \`${RELEASE_TARBALL_PREFIX}\${pkg.version}.tgz\``)
   })
 })

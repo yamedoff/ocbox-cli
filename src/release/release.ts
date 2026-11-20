@@ -94,7 +94,9 @@ export async function latestReleaseVersion(
       )
     }
     const name = tarballs[0] as string
-    const version = normalizeVersion(name.slice('ocbox-'.length, -'.tgz'.length))
+    // Keep the exact filename-derived version: install.sh accepts a local
+    // `ocbox-v0.2.0.tgz`, so the tarball name must stay byte-for-byte the same.
+    const version = name.slice('ocbox-'.length, -'.tgz'.length).trim()
     if (version === '') {
       throw releaseError('CONFIG_INVALID', 'Could not determine the release version.')
     }

@@ -4,8 +4,15 @@ const INFORMATIONAL_FLAGS = new Set(['--help', '-h', '--version', '-v'])
 
 /** Help and version never contact the API; a bare invocation prints help. */
 export function isInformationalInvocation(argv: readonly string[]): boolean {
+  const commandTokens: string[] = []
+  for (const token of argv) {
+    if (token === '--') break
+    commandTokens.push(token)
+  }
   return (
-    argv.length === 0 || argv[0] === 'help' || argv.some((token) => INFORMATIONAL_FLAGS.has(token))
+    commandTokens.length === 0 ||
+    commandTokens[0] === 'help' ||
+    commandTokens.some((token) => INFORMATIONAL_FLAGS.has(token))
   )
 }
 
@@ -15,6 +22,9 @@ export function isInformationalInvocation(argv: readonly string[]): boolean {
  */
 export async function runStartupVersionGate(argv: readonly string[]): Promise<void> {
   if (isInformationalInvocation(argv)) return
+  // Offline test harnesses opt out explicitly; a loopback API is a real
+  // deployment and still gets the gate.
+  if (process.env['OCBOX_DISABLE_VERSION_GATE'] === '1') return
   try {
     const gate = await checkCliVersionGate({ apiUrl: apiUrlFromArgv(argv) })
     if (gate.status === 'outdated' && gate.message !== undefined) {

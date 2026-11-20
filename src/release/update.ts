@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { newRequestId } from '../auth/errors.js'
 import { OcboxError } from '../errors/index.js'
 import { cliVersion } from '../version/current.js'
-import { compareVersions } from '../version/version.js'
+import { compareVersions, normalizeVersion } from '../version/version.js'
 import {
   currentPackageRoot,
   type InstalledLayout,
@@ -59,21 +59,36 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
       ? {}
       : { timeoutMilliseconds: options.timeoutMilliseconds }),
   }
-  const latestVersion = await latestReleaseVersion(source, {
-    ...fetchOptions,
-    requestedVersion: requestedReleaseVersion(environment),
-  })
+  const requestedVersion = requestedReleaseVersion(environment)
+  let latestVersion: string
+  try {
+    latestVersion = await latestReleaseVersion(source, {
+      ...fetchOptions,
+      requestedVersion,
+    })
+  } catch (error) {
+    if (error instanceof OcboxError) throw error
+    throw new OcboxError({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: 'Could not reach the release source.',
+      requestId: newRequestId(),
+    })
+  }
   const comparison = compareVersions(latestVersion, currentVersion)
   const updateAvailable = comparison !== undefined && comparison > 0
   if (options.check === true) {
     return { currentVersion, latestVersion, updateAvailable, updated: false }
   }
-  if (latestVersion === currentVersion) {
-    return { currentVersion, latestVersion, updateAvailable: false, updated: false }
+  // Never replace a working CLI with an older release. An explicit
+  // OCBOX_VERSION pin wins, exactly as it does in the install scripts.
+  const pinned = requestedVersion !== undefined && requestedVersion !== ''
+  if (comparison === 0 || (!pinned && !updateAvailable)) {
+    return { currentVersion, latestVersion, updateAvailable, updated: false }
   }
 
   const layout = installedLayout(options.packageRoot ?? currentPackageRoot())
   const tarballName = releaseTarballName(latestVersion)
+  const expectedVersion = normalizeVersion(latestVersion)
   let workDirectory: string
   try {
     workDirectory = await mkdtemp(join(tmpdir(), 'ocbox-update-'))
@@ -93,7 +108,7 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
     // Verify the checksum before npm ever reads the tarball.
     await verifyReleaseChecksum(tarballPath, expected)
     const install = options.installTarball ?? installReleaseTarball
-    await install(tarballPath, layout, latestVersion, environment)
+    await install(tarballPath, layout, expectedVersion, environment)
   } catch (error) {
     if (error instanceof OcboxError) throw error
     throw new OcboxError({

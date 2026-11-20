@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { newRequestId } from '../auth/errors.js'
 import { OcboxError } from '../errors/index.js'
+import { redactForOutput } from '../security/redaction.js'
 
 const execFileAsync = promisify(execFile)
 const PACKAGE_NAME = 'opencloudbox'
@@ -19,7 +20,21 @@ export interface InstalledLayout {
 }
 
 function installError(message: string): OcboxError {
-  return new OcboxError({ code: 'PROVIDER_UNAVAILABLE', message, requestId: newRequestId() })
+  return new OcboxError({ code: 'INTERNAL', message, requestId: newRequestId() })
+}
+
+/** A bounded, redacted tail of npm's stderr for a failed local install. */
+function npmStderrTail(error: unknown): string {
+  if (error === null || typeof error !== 'object' || !('stderr' in error)) return ''
+  const stderr = (error as { stderr?: unknown }).stderr
+  if (typeof stderr !== 'string') return ''
+  const redacted = stderr
+    .split(/\r?\n/)
+    .map((line) => redactForOutput(line))
+    .filter((line): line is string => typeof line === 'string')
+    .join(' ')
+  const tail = redacted.replaceAll(/\s+/g, ' ').trim().slice(-400)
+  return tail === '' ? '' : `: ${tail}`
 }
 
 /** The installed package directory of the currently running CLI. */
@@ -43,7 +58,15 @@ export function currentPackageRoot(): string {
  */
 export function installedLayout(packageRoot: string): InstalledLayout {
   const nodeModules = dirname(packageRoot)
-  if (basename(nodeModules) !== 'node_modules' || basename(packageRoot) !== PACKAGE_NAME) {
+  // A pnpm global install resolves through its symlink into the virtual store
+  // (`…/global/5/.pnpm/opencloudbox@0.1.0/node_modules/opencloudbox`). Renaming
+  // that package would silently change every project pinned to that version.
+  const inPnpmStore = packageRoot.split(/[\\/]+/).includes('.pnpm')
+  if (
+    inPnpmStore ||
+    basename(nodeModules) !== 'node_modules' ||
+    basename(packageRoot) !== PACKAGE_NAME
+  ) {
     throw new OcboxError({
       code: 'CONFIG_INVALID',
       message:
@@ -99,8 +122,8 @@ async function npmInstall(
       timeout: INSTALL_TIMEOUT_MILLISECONDS,
       windowsHide: true,
     })
-  } catch {
-    throw installError('npm install failed.')
+  } catch (error) {
+    throw installError(`npm install failed${npmStderrTail(error)}.`)
   }
 }
 
@@ -152,6 +175,25 @@ export async function installReleaseTarball(
   }
 }
 
+/** Removes backups a previous update could not delete on Windows. */
+async function sweepStaleBackups(target: string): Promise<void> {
+  const directory = dirname(target)
+  let names: string[]
+  try {
+    names = await readdir(directory)
+  } catch {
+    return
+  }
+  const prefix = `${PACKAGE_NAME}.ocbox-old-`
+  await Promise.all(
+    names
+      .filter((name) => name.startsWith(prefix))
+      .map((name) =>
+        rm(join(directory, name), { recursive: true, force: true }).catch(() => undefined),
+      ),
+  )
+}
+
 async function replaceInstalledPackage(target: string, replacement: string): Promise<void> {
   const backup = `${target}.ocbox-old-${process.pid}`
   await rm(backup, { recursive: true, force: true }).catch(() => undefined)
@@ -165,4 +207,5 @@ async function replaceInstalledPackage(target: string, replacement: string): Pro
   // Windows can keep the old running image locked until this process exits;
   // leaving the backup behind is harmless and never blocks the new version.
   await rm(backup, { recursive: true, force: true }).catch(() => undefined)
+  await sweepStaleBackups(target)
 }

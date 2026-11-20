@@ -37,8 +37,8 @@ export function isVersionOlder(current: string, minimum: string): boolean {
   return comparison !== undefined && comparison < 0
 }
 
-/** Strips a leading `v`, matching the install scripts' `version=${version#v}`. */
+/** Strips a leading lowercase `v`, matching the install scripts' `version=${version#v}`. */
 export function normalizeVersion(value: string): string {
   const trimmed = value.trim()
-  return /^v\d/i.test(trimmed) ? trimmed.slice(1) : trimmed
+  return /^v\d/.test(trimmed) ? trimmed.slice(1) : trimmed
 }
