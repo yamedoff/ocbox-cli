@@ -143,6 +143,27 @@ describe('install.sh', () => {
   )
 
   it.skipIf(process.platform === 'win32' || !hasSh)(
+    'discovers the only local release tarball when OCBOX_VERSION is unset',
+    async () => {
+      const root = await makeTemporaryRoot()
+      const release = await makeReleaseFixture(root)
+      const home = join(root, 'home')
+      await mkdir(home, { recursive: true })
+      const env = unixInstallEnv(home, release)
+      delete env['OCBOX_VERSION']
+
+      const result = spawnSync('sh', [join(repoRoot, 'install.sh')], {
+        encoding: 'utf8',
+        env,
+        timeout: 120_000,
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim().split(/\r?\n/).at(-1)).toBe(packageVersion)
+    },
+  )
+
+  it.skipIf(process.platform === 'win32' || !hasSh)(
     'refuses a tampered checksum without installing',
     async () => {
       const root = await makeTemporaryRoot()
