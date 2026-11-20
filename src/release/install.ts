@@ -24,8 +24,17 @@ function installError(message: string): OcboxError {
 
 /** The installed package directory of the currently running CLI. */
 export function currentPackageRoot(): string {
-  const localRequire = createRequire(import.meta.url)
-  return dirname(localRequire.resolve(`${PACKAGE_NAME}/package.json`))
+  try {
+    const localRequire = createRequire(import.meta.url)
+    return dirname(localRequire.resolve(`${PACKAGE_NAME}/package.json`))
+  } catch {
+    throw new OcboxError({
+      code: 'CONFIG_INVALID',
+      message:
+        'ocbox update can only replace an installed ocbox; reinstall with the install script.',
+      requestId: newRequestId(),
+    })
+  }
 }
 
 /**
@@ -124,12 +133,20 @@ export async function installReleaseTarball(
   expectedVersion: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  const stagingPrefix = await mkdtemp(join(layout.prefix, '.ocbox-update-'))
+  let stagingPrefix: string
+  try {
+    stagingPrefix = await mkdtemp(join(layout.prefix, '.ocbox-update-'))
+  } catch {
+    throw installError('ocbox update could not write to the install prefix.')
+  }
   try {
     await npmInstall(tarball, stagingPrefix, environment)
     const stagedPackage = await findInstalledPackage(stagingPrefix)
     await verifyInstalledPackage(stagedPackage, expectedVersion)
     await replaceInstalledPackage(layout.packageRoot, stagedPackage)
+  } catch (error) {
+    if (error instanceof OcboxError) throw error
+    throw installError('ocbox update could not replace the installed copy.')
   } finally {
     await rm(stagingPrefix, { recursive: true, force: true }).catch(() => undefined)
   }

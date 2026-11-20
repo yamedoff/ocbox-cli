@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CliOAuthClient } from '../../src/auth/oauth-client.js'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import AuthLogout from '../../src/commands/auth/logout.js'
 import Sizes from '../../src/commands/sizes.js'
@@ -136,6 +137,32 @@ describe('API minimum version gate', () => {
     expect(process.exitCode ?? 0).toBe(0)
     expect(output(stderrSpy)).toBe('')
     expect(() => assertCliVersionSupported()).toThrow(/run: ocbox update/)
+  })
+
+  it('refuses the token exchange for an outdated CLI before it sends the request', async () => {
+    await checkCliVersionGate({
+      apiUrl: 'https://api.example.test',
+      currentVersion: '0.1.0',
+      fetch: vi.fn(async () => jsonResponse({ minCliVersion: '0.2.0' })),
+    })
+    const fetch = vi.fn()
+    const client = new CliOAuthClient({
+      apiBase: 'https://api.example.test',
+      tokenEndpoint: 'https://api.example.test/v1/auth/cli/token',
+      revocationEndpoint: 'https://api.example.test/v1/auth/cli/revoke',
+      clientId: 'ocb_cli',
+      fetch,
+      timeoutMilliseconds: 1_000,
+    })
+
+    await expect(
+      client.exchangeAuthorizationCode({
+        code: 'code',
+        redirectUri: 'http://127.0.0.1/callback',
+        codeVerifier: 'v'.repeat(43),
+      }),
+    ).rejects.toThrow(/run: ocbox update/)
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('prints the notice once at startup and skips informational invocations', async () => {

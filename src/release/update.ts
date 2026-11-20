@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { newRequestId } from '../auth/errors.js'
+import { OcboxError } from '../errors/index.js'
 import { cliVersion } from '../version/current.js'
 import { compareVersions } from '../version/version.js'
 import {
@@ -72,7 +74,16 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
 
   const layout = installedLayout(options.packageRoot ?? currentPackageRoot())
   const tarballName = releaseTarballName(latestVersion)
-  const workDirectory = await mkdtemp(join(tmpdir(), 'ocbox-update-'))
+  let workDirectory: string
+  try {
+    workDirectory = await mkdtemp(join(tmpdir(), 'ocbox-update-'))
+  } catch {
+    throw new OcboxError({
+      code: 'INTERNAL',
+      message: 'ocbox update could not create a temporary directory.',
+      requestId: newRequestId(),
+    })
+  }
   try {
     const tarballPath = join(workDirectory, tarballName)
     const checksumPath = join(workDirectory, CHECKSUM_FILE_NAME)
@@ -83,6 +94,13 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
     await verifyReleaseChecksum(tarballPath, expected)
     const install = options.installTarball ?? installReleaseTarball
     await install(tarballPath, layout, latestVersion, environment)
+  } catch (error) {
+    if (error instanceof OcboxError) throw error
+    throw new OcboxError({
+      code: 'INTERNAL',
+      message: 'ocbox update failed.',
+      requestId: newRequestId(),
+    })
   } finally {
     await rm(workDirectory, { recursive: true, force: true }).catch(() => undefined)
   }
