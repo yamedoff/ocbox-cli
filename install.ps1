@@ -124,7 +124,8 @@ try {
       Fail 'npm install failed.'
     }
 
-    $binDir = Join-Path $prefix 'bin'
+    # Windows global installs place the command shims in the prefix itself.
+    $binDir = $prefix
     $ocboxCommand = Join-Path $binDir 'ocbox.cmd'
     if (-not (Test-Path -LiteralPath $ocboxCommand -PathType Leaf)) {
       Fail "The ocbox command was not installed in $binDir."

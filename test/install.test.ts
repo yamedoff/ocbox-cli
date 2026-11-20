@@ -241,7 +241,13 @@ describe('install.ps1', () => {
           )
           expect(installed.status).toBe(0)
           expect(installed.stdout.trim().split(/\r?\n/).at(-1)).toBe(packageVersion)
-          expect(existsSync(join(localAppData, 'ocbox', 'bin', 'ocbox.cmd'))).toBe(true)
+          expect(existsSync(join(localAppData, 'ocbox', 'ocbox.cmd'))).toBe(true)
+          const userPath = execFileSync(
+            command,
+            ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('Path', 'User')"],
+            { encoding: 'utf8' },
+          )
+          expect(userPath).toContain(join(localAppData, 'ocbox'))
 
           await writeFile(
             join(release, 'SHA256SUMS'),
