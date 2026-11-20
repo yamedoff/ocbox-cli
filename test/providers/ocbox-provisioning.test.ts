@@ -189,7 +189,7 @@ describe('hosted asynchronous lifecycle', () => {
       provider.create(operationContext() as never, createRequest as never),
     ).rejects.toMatchObject({
       code: 'USAGE_LIMIT',
-      message: ADMISSION_MESSAGES.user_active_limit,
+      message: ADMISSION_MESSAGES['user_active_limit'],
       providerCode: 'user_active_limit',
     })
   })
