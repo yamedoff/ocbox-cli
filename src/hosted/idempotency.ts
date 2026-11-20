@@ -9,7 +9,7 @@ export function idempotencyKey(value: string | undefined): string {
   if (!parsed.success) {
     throw new OcboxError({
       code: 'CONFIG_INVALID',
-      message: 'Invalid idempotency key; use 16–200 transport-safe characters',
+      message: 'Invalid idempotency key; use 16–128 transport-safe characters',
       requestId: newRequestId(),
     })
   }
