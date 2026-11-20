@@ -8,6 +8,7 @@ import { RequestIdSchema } from '../../domain/ids.js'
 import { IdempotencyKeySchema } from '../../domain/ids.js'
 import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
+import { admissionError } from './requested-spec.js'
 import {
   DEFAULT_RETRY_POLICY,
   Deadline,
@@ -177,6 +178,8 @@ function terminalFailureOf(operation: HostedOperation): OcboxError | null {
     })
   }
   if (operation.state === 'failed') {
+    const admission = admissionError(operation.error?.reason, toRequestId(operation.requestId))
+    if (admission !== undefined) return admission
     return mapApiFailureToOcboxError({
       operation: `operation:${operation.kind}`,
       requestId: operation.requestId,

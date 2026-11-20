@@ -132,7 +132,12 @@ describe('hosted asynchronous lifecycle', () => {
         return jsonResponse(
           hostedOperationFixture({
             state: 'failed',
-            error: { code: 'admission_closed', message: 'opaque denial' },
+            error: {
+              code: 'SERVICE_UNAVAILABLE',
+              message: 'Box admission was refused',
+              retryable: false,
+              reason: admissionCode,
+            },
           }),
         )
       }
@@ -147,10 +152,48 @@ describe('hosted asynchronous lifecycle', () => {
     provider.bindLifecycleStore(store)
     await expect(
       provider.create(operationContext() as never, createRequest as never),
-    ).rejects.toMatchObject({ message: ADMISSION_MESSAGES[admissionCode] })
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: ADMISSION_MESSAGES[admissionCode],
+      providerCode: admissionCode,
+    })
     expect(
       (await store.load()).hostedMappings[scope]?.[SandboxIdSchema.parse(LOCAL_IDS.sandbox)],
     ).toBeDefined()
+  })
+
+  it('reports the measured refused create operation as the admission denial', async () => {
+    const { api } = await seededApi(async (input, init) => {
+      if (init?.method === 'POST')
+        return jsonResponse(
+          hostedOperationFixture({ state: 'pending', session: provisioningSession() }),
+          202,
+        )
+      if (String(input).includes('/operations/'))
+        return jsonResponse(
+          hostedOperationFixture({
+            kind: 'session.create',
+            state: 'failed',
+            error: {
+              code: 'SERVICE_UNAVAILABLE',
+              message: 'Box admission was refused',
+              retryable: false,
+              reason: 'user_active_limit',
+              limitName: 'boxes_per_account',
+              limitValue: 1,
+            },
+          }),
+        )
+      return jsonResponse({ id: HOSTED_PROJECT })
+    })
+    const { provider } = providerFor(api)
+    await expect(
+      provider.create(operationContext() as never, createRequest as never),
+    ).rejects.toMatchObject({
+      code: 'USAGE_LIMIT',
+      message: ADMISSION_MESSAGES['user_active_limit'],
+      providerCode: 'user_active_limit',
+    })
   })
 
   it('bounds provisioning even when the operation already succeeded', async () => {
