@@ -33,6 +33,14 @@ export interface ApiCallMetadata {
   readonly status: number
 }
 
+/** The project session list query; `includeDestroyed` postdates the pin. */
+export interface SessionListQuery {
+  readonly projectId: string
+  readonly cursor?: string | undefined
+  readonly limit?: number | undefined
+  readonly includeDestroyed?: boolean | undefined
+}
+
 /** The read-only GPU check query, in the units the hosted route names. */
 export interface GpuCheckQuery {
   readonly gpuType: string
@@ -131,6 +139,41 @@ export class OcboxApiClient {
     if (query.cpu !== undefined) url.searchParams.set('cpu', String(query.cpu))
     if (query.memoryMib !== undefined) url.searchParams.set('memoryMib', String(query.memoryMib))
     if (query.diskGib !== undefined) url.searchParams.set('diskGib', String(query.diskGib))
+    const response = await this.#transport.fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Lists one project's Sessions. The pinned generated client predates the
+   * `includeDestroyed` query parameter, so this route is requested through the
+   * same authenticated transport and failure mapping as `listSizes`.
+   */
+  async listProjectSessions(
+    query: SessionListQuery,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(`${base}/v1/projects/${encodeURIComponent(query.projectId)}/sessions`)
+    if (query.cursor !== undefined) url.searchParams.set('cursor', query.cursor)
+    if (query.limit !== undefined) url.searchParams.set('limit', String(query.limit))
+    if (query.includeDestroyed !== undefined)
+      url.searchParams.set('includeDestroyed', String(query.includeDestroyed))
     const response = await this.#transport.fetch(url, {
       method: 'GET',
       headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },

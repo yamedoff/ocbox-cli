@@ -14,6 +14,8 @@ import GpuCheck from '../../src/commands/gpu/check.js'
 import OperationCancel from '../../src/commands/operation/cancel.js'
 import OperationGet from '../../src/commands/operation/get.js'
 import PreviewCreate from '../../src/commands/preview/create.js'
+import SessionGet from '../../src/commands/session/get.js'
+import SessionList from '../../src/commands/session/list.js'
 import UsageList from '../../src/commands/usage/list.js'
 import WalletGet from '../../src/commands/wallet/get.js'
 import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
@@ -134,6 +136,92 @@ function execution(overrides: Record<string, unknown> = {}): Record<string, unkn
     ...overrides,
   }
 }
+
+function session(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'ses_1',
+    createdAt: now(),
+    updatedAt: now(),
+    projectId: 'prj_1',
+    requestedSpec: { cpu: 2, memoryMib: 2048 },
+    effectiveSpec: { cpu: 2, memoryMib: 2048 },
+    normalizedState: 'running',
+    rawState: 'RUNNING',
+    sandboxes: [],
+    primarySandboxId: null,
+    ...overrides,
+  }
+}
+
+describe('session list command', () => {
+  it('lists a project from the hosted route and follows the cursor', async () => {
+    const calls: { path: string; query: Record<string, string> }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = new URL(String(input))
+        calls.push({ path: url.pathname, query: Object.fromEntries(url.searchParams) })
+        return jsonResponse({
+          data: [session(), session({ id: 'ses_2', normalizedState: 'paused' })],
+          nextCursor: 'next-session',
+        })
+      }),
+    )
+
+    await SessionList.run(
+      [
+        ...runArguments(),
+        '--project-id',
+        'prj_1',
+        '--limit',
+        '10',
+        '--include-destroyed',
+        '--json',
+      ],
+      { root: process.cwd() },
+    )
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(calls).toEqual([
+      {
+        path: '/v1/projects/prj_1/sessions',
+        query: { includeDestroyed: 'true', limit: '10' },
+      },
+    ])
+    const printed = JSON.parse(output(stdoutSpy))
+    expect(printed.data.sessions).toHaveLength(2)
+    expect(printed.data.sessions[0]).toMatchObject({ id: 'ses_1', normalizedState: 'running' })
+    expect(printed.data.nextCursor).toBe('next-session')
+  })
+})
+
+describe('session get command', () => {
+  it('reads a hosted Session created over MCP and shows its failure reason', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        calls.push(new URL(String(input)).pathname)
+        return jsonResponse(
+          session({
+            normalizedState: 'stopped',
+            failure: {
+              reasonCode: 'api_box_state_conflict',
+              nextStep: 'Start the box again before running a command.',
+            },
+          }),
+        )
+      }),
+    )
+
+    await SessionGet.run([...runArguments(), 'ses_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(calls).toEqual(['/v1/sessions/ses_1'])
+    expect(output(stdoutSpy)).toContain('ses_1  stopped  project=prj_1')
+    expect(output(stdoutSpy)).toContain('Reason api_box_state_conflict.')
+  })
+})
 
 describe('gpu check command', () => {
   it('sends the GPU query in the MCP units and prints the answer', async () => {
@@ -283,6 +371,72 @@ describe('execution get command', () => {
     expect(printed.data.cursor).toBe('exe_1')
     expect(printed.data.result).toBeUndefined()
   })
+
+  it('shows the product reason code of a failed execution', async () => {
+    const failure = {
+      code: 'GPU_BUDGET_EXHAUSTED',
+      message: 'The GPU budget for this account is exhausted',
+      reasonCode: 'gpu_budget_exhausted',
+      retryable: false,
+      nextStep: 'Choose a smaller box or wait for the budget window to reset.',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/v1/executions/exe_1') {
+          return jsonResponse(
+            execution({
+              state: 'failed',
+              exitCode: 1,
+              failureKind: 'infrastructure',
+              failure,
+            }),
+          )
+        }
+        return jsonResponse({ kind: 'infrastructure', error: failure })
+      }),
+    )
+
+    await ExecutionGet.run([...runArguments(), 'exe_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toBe(
+      'Execution exe_1: failed, exit 1\nReason gpu_budget_exhausted.\n',
+    )
+  })
+
+  it('keeps the execution when the result is not ready yet', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/v1/executions/exe_1') {
+          return jsonResponse(execution({ state: 'completed', exitCode: 0 }))
+        }
+        return jsonResponse(
+          {
+            error: {
+              code: 'EXECUTION_NOT_COMPLETE',
+              message: 'The execution result is not ready yet',
+              reasonCode: 'api_execution_not_complete',
+              nextStep: 'Poll the execution again.',
+            },
+            requestId: 'request-1',
+          },
+          409,
+        )
+      }),
+    )
+
+    await ExecutionGet.run([...runArguments(), 'exe_1', '--json'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const printed = JSON.parse(output(stdoutSpy))
+    expect(printed.data.execution.state).toBe('completed')
+    expect(printed.data.result).toBeUndefined()
+    expect(printed.data.cursor).toBeNull()
+  })
 })
 
 describe('operation get command', () => {
@@ -312,6 +466,34 @@ describe('operation get command', () => {
     expect(calls).toEqual(['/v1/operations/op_1'])
     expect(output(stdoutSpy)).toBe(
       'Operation op_1: failed (session.start, 40%)\nReason provider_timeout.\n',
+    )
+  })
+
+  it('shows a product failure reason code and its next step', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          operation({
+            state: 'failed',
+            progress: 100,
+            error: {
+              code: 'GPU_BUDGET_EXHAUSTED',
+              message: 'The GPU budget for this account is exhausted',
+              reasonCode: 'gpu_budget_exhausted',
+              retryable: false,
+              nextStep: 'Choose a smaller box or wait for the budget window to reset.',
+            },
+          }),
+        ),
+      ),
+    )
+
+    await OperationGet.run([...runArguments(), 'op_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toBe(
+      'Operation op_1: failed (session.start, 100%)\nReason gpu_budget_exhausted.\n',
     )
   })
 })
@@ -447,31 +629,96 @@ describe('usage list command', () => {
     }
   }
 
-  it('pages usage and filters by session id', async () => {
+  it('pages until the filtered session has events and keeps the flags', async () => {
     const calls: { path: string; query: Record<string, string> }[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: unknown) => {
         const url = new URL(String(input))
         calls.push({ path: url.pathname, query: Object.fromEntries(url.searchParams) })
-        return jsonResponse({
-          data: [usageEvent(), usageEvent({ eventId: 'evt_2', sessionId: 'ses_2' })],
-          nextCursor: 'next-page',
-        })
+        if (url.pathname === '/v1/sessions/ses_1') return jsonResponse(session())
+        const cursor = url.searchParams.get('cursor')
+        if (cursor === 'page-1') {
+          return jsonResponse({
+            data: [usageEvent({ eventId: 'evt_2', sessionId: 'ses_2' })],
+            nextCursor: 'page-2',
+          })
+        }
+        return jsonResponse({ data: [usageEvent({ eventId: 'evt_3' })], nextCursor: 'next-page' })
       }),
     )
 
     await UsageList.run(
-      [...runArguments(), '--session-id', 'ses_1', '--cursor', 'page-1', '--limit', '10', '--json'],
+      [...runArguments(), '--session-id', 'ses_1', '--cursor', 'page-1', '--limit', '10'],
       { root: process.cwd() },
     )
 
     expect(process.exitCode ?? 0).toBe(0)
-    expect(calls).toEqual([{ path: '/v1/billing/usage', query: { cursor: 'page-1', limit: '10' } }])
-    const printed = JSON.parse(output(stdoutSpy))
-    expect(printed.data.usage).toHaveLength(1)
-    expect(printed.data.usage[0].eventId).toBe('evt_1')
-    expect(printed.data.nextCursor).toBe('next-page')
+    expect(calls).toEqual([
+      { path: '/v1/sessions/ses_1', query: {} },
+      { path: '/v1/billing/usage', query: { cursor: 'page-1', limit: '10' } },
+      { path: '/v1/billing/usage', query: { cursor: 'page-2', limit: '10' } },
+    ])
+    expect(output(stdoutSpy)).toContain('evt_3')
+    expect(output(stdoutSpy)).toContain(
+      'More: ocbox usage list --session-id ses_1 --limit 10 --cursor next-page',
+    )
+  })
+
+  it('reports an unknown Session instead of an empty page', async () => {
+    const paths: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        paths.push(new URL(String(input)).pathname)
+        return jsonResponse(
+          {
+            error: {
+              code: 'SESSION_NOT_FOUND',
+              message: 'The Session was not found',
+              reasonCode: 'api_session_not_found',
+              nextStep: 'List the project Sessions and use an existing Session ID.',
+            },
+            requestId: 'request-1',
+          },
+          404,
+        )
+      }),
+    )
+
+    await UsageList.run([...runArguments(), '--session-id', 'ses_missing'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(paths).toEqual(['/v1/sessions/ses_missing'])
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+  })
+
+  it('prints the cursor and flags when no page matches within the bound', async () => {
+    let usagePages = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = new URL(String(input))
+        if (url.pathname === '/v1/sessions/ses_1') return jsonResponse(session())
+        usagePages += 1
+        return jsonResponse({
+          data: [usageEvent({ sessionId: 'ses_2' })],
+          nextCursor: `cursor-${usagePages}`,
+        })
+      }),
+    )
+
+    await UsageList.run([...runArguments(), '--session-id', 'ses_1', '--limit', '10'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(usagePages).toBe(20)
+    expect(output(stdoutSpy)).toBe(
+      'No usage events\nMore: ocbox usage list --session-id ses_1 --limit 10 --cursor cursor-20\n',
+    )
   })
 })
 

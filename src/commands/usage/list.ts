@@ -21,10 +21,13 @@ export default class UsageList extends OcboxCommand {
         flags,
         'usage.listed',
         (result) => {
-          if (result.usage.length === 0) return 'No usage events'
-          const lines = result.usage.map(usageLine)
+          const lines =
+            result.usage.length === 0 ? ['No usage events'] : result.usage.map(usageLine)
           if (result.nextCursor !== null) {
-            lines.push(`More: ocbox usage list --cursor ${result.nextCursor}`)
+            const session =
+              flags['session-id'] === undefined ? '' : ` --session-id ${flags['session-id']}`
+            const limit = flags.limit === undefined ? '' : ` --limit ${flags.limit}`
+            lines.push(`More: ocbox usage list${session}${limit} --cursor ${result.nextCursor}`)
           }
           return lines.join('\n')
         },

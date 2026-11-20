@@ -43,6 +43,8 @@ export default defineConfig({
     'commands/pause': 'src/commands/pause.ts',
     'commands/preview/create': 'src/commands/preview/create.ts',
     'commands/providers': 'src/commands/providers.ts',
+    'commands/session/get': 'src/commands/session/get.ts',
+    'commands/session/list': 'src/commands/session/list.ts',
     'commands/start': 'src/commands/start.ts',
     'commands/status': 'src/commands/status.ts',
     'commands/stop': 'src/commands/stop.ts',

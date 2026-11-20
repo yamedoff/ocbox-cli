@@ -44,7 +44,7 @@ export const paginationFlags = {
 }
 export const mutationFlags = {
   'idempotency-key': Flags.string({
-    description: 'Stable retry key (16–200 transport-safe characters); defaults to a UUID',
+    description: 'Stable retry key (16–128 transport-safe characters); defaults to a UUID',
   }),
 }
 export const nameFlag = {

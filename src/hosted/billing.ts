@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { OcboxApiClient } from '../api/client/index.js'
 import { parseHostedResponse } from './response.js'
+import { getSession } from './session.js'
 
 const microcredits = z.string().regex(/^(0|[1-9][0-9]*)$/)
 const signedMicrocredits = z.string().regex(/^-?(0|[1-9][0-9]*)$/)
@@ -40,32 +41,51 @@ export interface ListUsageInput {
   readonly limit?: number | undefined
 }
 
-/** One page of owner-scoped usage events; an optional sessionId filters the page. */
+/** A Session filter walks at most this many pages so one call stays bounded. */
+export const MAX_USAGE_PAGES = 20
+
+/**
+ * Owner-scoped usage events. The REST route has no sessionId filter, so an
+ * optional sessionId is applied here while walking pages until a match is found
+ * or the cursor ends; the Session is validated first, like the MCP tool.
+ */
 export async function listUsage(
   api: OcboxApiClient,
   input: ListUsageInput,
   signal?: AbortSignal,
 ): Promise<{ readonly usage: readonly BillingUsage[]; readonly nextCursor: string | null }> {
-  const response = await api.generated.listBillingUsage({
-    query: {
-      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-      ...(input.limit === undefined ? {} : { limit: input.limit }),
-    },
-    ...(signal === undefined ? {} : { signal }),
-  })
-  const { resource } = parseHostedResponse(
-    api,
-    'usage.list',
-    response,
-    [200],
-    BillingUsagePageSchema,
-    'usage',
-  )
-  const usage =
-    input.sessionId === undefined
-      ? resource.data
-      : resource.data.filter((event) => event.sessionId === input.sessionId)
-  return { usage, nextCursor: resource.nextCursor }
+  if (input.sessionId !== undefined) await getSession(api, input.sessionId, signal)
+  let cursor = input.cursor
+  for (let page = 1; ; page += 1) {
+    const response = await api.generated.listBillingUsage({
+      query: {
+        ...(cursor === undefined ? {} : { cursor }),
+        ...(input.limit === undefined ? {} : { limit: input.limit }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const { resource } = parseHostedResponse(
+      api,
+      'usage.list',
+      response,
+      [200],
+      BillingUsagePageSchema,
+      'usage',
+    )
+    const usage =
+      input.sessionId === undefined
+        ? resource.data
+        : resource.data.filter((event) => event.sessionId === input.sessionId)
+    if (
+      input.sessionId === undefined ||
+      usage.length > 0 ||
+      resource.nextCursor === null ||
+      page >= MAX_USAGE_PAGES
+    ) {
+      return { usage, nextCursor: resource.nextCursor }
+    }
+    cursor = resource.nextCursor
+  }
 }
 
 /** The derived wallet projection; balances are computed, never stored. */

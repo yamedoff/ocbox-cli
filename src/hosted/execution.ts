@@ -2,29 +2,8 @@ import { z } from 'zod'
 import type { OcboxApiClient } from '../api/client/index.js'
 import { OcboxError } from '../errors/index.js'
 import { parseHostedResponse } from './response.js'
+import { SafeErrorSchema, safeErrorReason } from './safe-error.js'
 
-const safeError = z.strictObject({
-  code: z.string().min(1).max(64),
-  message: z.string().min(1).max(1024),
-  retryAfterSeconds: z.number().int().nonnegative().optional(),
-  reason: z
-    .enum([
-      'provider_region_unavailable',
-      'provider_toolbox_unreachable',
-      'provider_timeout',
-      'provider_refused',
-      'provider_error',
-      'user_active_limit',
-      'global_capacity',
-      'admission_closed',
-      'budget_exhausted',
-      'spec_not_allowed',
-      'admission_unavailable',
-      'workspace_busy',
-      'source_apply_revoked',
-    ])
-    .optional(),
-})
 export const ExecutionSchema = z.strictObject({
   id: z.string().min(1),
   createdAt: z.iso.datetime({ offset: true }),
@@ -35,7 +14,8 @@ export const ExecutionSchema = z.strictObject({
   command: z.string().min(1),
   exitCode: z.number().int().nullable(),
   failureKind: z.enum(['command', 'infrastructure']).nullable(),
-  failure: safeError.nullable(),
+  failure: SafeErrorSchema.nullable(),
+  hold: SafeErrorSchema.optional(),
   truncated: z.boolean(),
   outputBytes: z.number().int().nonnegative(),
   outputLimitBytes: z.number().int().positive(),
@@ -56,7 +36,7 @@ const commandResult = z.strictObject({
 })
 const infrastructureResult = z.strictObject({
   kind: z.literal('infrastructure'),
-  error: safeError,
+  error: SafeErrorSchema,
 })
 const cancelledResult = z.strictObject({ kind: z.literal('cancelled') })
 export const ExecutionResultSchema = z.discriminatedUnion('kind', [
@@ -128,7 +108,7 @@ export function executionLine(view: ExecutionView): string {
   const exit = execution.exitCode === null ? '' : `, exit ${execution.exitCode}`
   const line = `Execution ${execution.id}: ${execution.state}${exit}`
   const reason =
-    execution.failure?.reason ??
-    (view.result?.kind === 'infrastructure' ? view.result.error.reason : undefined)
+    safeErrorReason(execution.failure) ??
+    (view.result?.kind === 'infrastructure' ? safeErrorReason(view.result.error) : undefined)
   return reason === undefined ? line : `${line}\nReason ${reason}.`
 }

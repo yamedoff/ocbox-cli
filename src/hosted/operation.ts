@@ -2,6 +2,7 @@ import type { z } from 'zod'
 import type { OcboxApiClient } from '../api/client/index.js'
 import { HostedOperationSchema } from '../metadata/client.js'
 import { parseHostedResponse } from './response.js'
+import { safeErrorReason } from './safe-error.js'
 
 export type OperationRecord = z.infer<typeof HostedOperationSchema>
 
@@ -56,6 +57,6 @@ export async function cancelOperation(
 /** One line per operation: state, kind, progress and the stored failure reason. */
 export function operationLine(operation: OperationRecord): string {
   const line = `Operation ${operation.id}: ${operation.state} (${operation.kind}, ${operation.progress}%)`
-  const reason = operation.error?.reason
+  const reason = safeErrorReason(operation.error)
   return reason === undefined ? line : `${line}\nReason ${reason}.`
 }
