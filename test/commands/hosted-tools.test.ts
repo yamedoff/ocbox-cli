@@ -412,7 +412,20 @@ describe('execution get command', () => {
       vi.fn(async (input: unknown) => {
         const path = new URL(String(input)).pathname
         if (path === '/v1/executions/exe_1') {
-          return jsonResponse(execution({ state: 'completed', exitCode: 0 }))
+          return jsonResponse(
+            execution({
+              state: 'failed',
+              exitCode: 1,
+              failureKind: 'infrastructure',
+              failure: {
+                code: 'BOX_STOPPED',
+                message: 'The box stopped before the command finished',
+                reasonCode: 'box_stopped',
+                retryable: true,
+                nextStep: 'Start the box again and retry the command.',
+              },
+            }),
+          )
         }
         return jsonResponse(
           {
@@ -433,7 +446,7 @@ describe('execution get command', () => {
 
     expect(process.exitCode ?? 0).toBe(0)
     const printed = JSON.parse(output(stdoutSpy))
-    expect(printed.data.execution.state).toBe('completed')
+    expect(printed.data.execution.state).toBe('failed')
     expect(printed.data.result).toBeUndefined()
     expect(printed.data.cursor).toBeNull()
   })
