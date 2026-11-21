@@ -4,6 +4,12 @@
 
 The CLI is an application on the developer's machine. It authenticates, keeps a local project/Session selection, uploads source and runs commands through the public API. It also installs owned coding-agent hooks. It contains client orchestration, not the hosted service implementation.
 
+## Installing the CLI
+
+`install.sh` and `install.ps1` install a published release into `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on Windows). They resolve the version from `OCBOX_VERSION`, a local `OCBOX_RELEASE_BASE`, or the base's `LATEST` file (the GitHub release API is used only for the default base), then download `ocbox-<version>.tgz` and `SHA256SUMS` and refuse a checksum mismatch. `pnpm run pack:release` builds the CLI and writes that tarball, `SHA256SUMS` and `LATEST` under `dist/release`.
+
+Verified against ocbox-cli @ 23d094b
+
 ## Inside
 
 The map has one active application building with fourteen areas: commands, auth, lifecycle, execution, sync, agents, state, hosted API, provider contract, domain validation, project configuration, output, typed errors, and redaction with path safety. The old Local state building is deprecated and kept for its human notes. Coding agents remain an outside caller.

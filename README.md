@@ -9,6 +9,25 @@ source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle comman
 
 Requires Node.js ≥22.
 
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.ps1 | iex
+```
+
+These commands work once the first release is published; until then install with `npm i -g opencloudbox`.
+
+The install scripts place `ocbox` in `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on
+Windows), verify the release checksum, and add the bin folder to PATH (printing
+the line to add on macOS and Linux when it is not already there). To install
+from npm instead:
+
 ```sh
 npm i -g opencloudbox
 ocbox --help
