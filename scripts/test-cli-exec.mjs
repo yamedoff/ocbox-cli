@@ -16,7 +16,12 @@ function run(args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [cli, ...args], {
       cwd: options.cwd,
-      env: { ...process.env, NO_COLOR: '1', ...options.env },
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        OCBOX_DISABLE_VERSION_GATE: '1',
+        ...options.env,
+      },
       windowsHide: true,
     })
     const stdout = []

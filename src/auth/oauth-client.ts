@@ -2,6 +2,7 @@ import { serverAuthReason } from './server-reasons.js'
 import { z } from 'zod'
 import type { CliTokenPair } from '../api/generated/client.js'
 import { OcboxError } from '../errors/index.js'
+import { assertCliVersionSupported } from '../version/gate.js'
 import { normalizeIssuer, validateEndpointOverride } from './config.js'
 import { newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
@@ -279,6 +280,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
   }
 
   async revoke(input: RevokeInput): Promise<void> {
+    assertCliVersionSupported()
     const timeout = withTimeout(input.signal, this.#options.timeoutMilliseconds)
     try {
       if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
@@ -316,6 +318,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
     body: Readonly<Record<string, string>>,
     signal: AbortSignal | undefined,
   ): Promise<CliTokenPair> {
+    assertCliVersionSupported()
     const timeout = withTimeout(signal, this.#options.timeoutMilliseconds)
     try {
       if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)

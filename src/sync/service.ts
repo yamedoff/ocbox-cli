@@ -12,6 +12,7 @@ import {
 } from '../errors/index.js'
 import { findSensitiveMaterial } from '../security/redaction.js'
 import { ExclusiveFileLock } from '../state/exclusive-file-lock.js'
+import { isCliOutdatedError } from '../version/gate.js'
 import { encodeSyncArchive, SyncArchiveError } from './archive.js'
 import {
   createVerifiedBaseline,
@@ -329,7 +330,12 @@ async function recoveryStatusFor(
   try {
     return await createTransferAdapter(context.providerName, targetRoot).recoveryStatus()
   } catch (error) {
-    if (error instanceof OcboxError && error.code === 'CAPABILITY_UNSUPPORTED') return null
+    if (
+      error instanceof OcboxError &&
+      error.code === 'CAPABILITY_UNSUPPORTED' &&
+      !isCliOutdatedError(error)
+    )
+      return null
     throw error
   }
 }

@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { OcboxError } from '../errors/index.js'
 import { CasPlanRefused } from '../providers/ocbox/cas.js'
+import { isCliOutdatedError } from '../version/gate.js'
 import {
   CAS_LIMITS,
   type CasBlob,
@@ -165,7 +166,12 @@ export async function runCasPush(
         return unchangedView(context, previous === undefined)
       }
     } catch (error) {
-      if (!(error instanceof OcboxError) || error.code !== 'CAPABILITY_UNSUPPORTED') throw error
+      if (
+        !(error instanceof OcboxError) ||
+        error.code !== 'CAPABILITY_UNSUPPORTED' ||
+        isCliOutdatedError(error)
+      )
+        throw error
     }
   }
 
@@ -274,7 +280,9 @@ export async function runCasPush(
       } catch (error) {
         const fallback =
           (error instanceof CasPlanRefused && error.code === 'SYNC_INTEGRITY') ||
-          (error instanceof OcboxError && error.code === 'CAPABILITY_UNSUPPORTED')
+          (error instanceof OcboxError &&
+            error.code === 'CAPABILITY_UNSUPPORTED' &&
+            !isCliOutdatedError(error))
         if (!fallback) throw error
       }
     }

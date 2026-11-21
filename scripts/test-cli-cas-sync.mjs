@@ -10,6 +10,7 @@ import { promisify } from 'node:util'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const infrastructure = await import(pathToFileURL(join(repo, 'dist/infrastructure.js')).href)
+const { version: cliVersion } = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'))
 const root = await mkdtemp(join(tmpdir(), 'ocbox-cas-e2e-'))
 const source = join(root, 'source'),
   state = join(root, 'state'),
@@ -130,6 +131,13 @@ const server = createServer(async (req, res) => {
         concurrent--
       }
       return
+    }
+    if (path === '/v1/meta') {
+      // The startup version gate probes meta before any credential is loaded,
+      // so this one route is unauthenticated; every other request needs a Bearer token.
+      assert.equal(req.method, 'GET')
+      assert.equal(req.headers.authorization, undefined)
+      return send({ minCliVersion: cliVersion })
     }
     assert.match(req.headers.authorization ?? '', /^Bearer /)
     const body = bytes.length ? JSON.parse(bytes) : undefined

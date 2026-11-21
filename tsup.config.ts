@@ -55,6 +55,7 @@ export default defineConfig({
     'commands/sync/pull': 'src/commands/sync/pull.ts',
     'commands/sync/push': 'src/commands/sync/push.ts',
     'commands/sync/recover': 'src/commands/sync/recover.ts',
+    'commands/update': 'src/commands/update.ts',
     'commands/use': 'src/commands/use.ts',
     contracts: 'src/contracts.ts',
     index: 'src/index.ts',
