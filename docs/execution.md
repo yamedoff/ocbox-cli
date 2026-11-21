@@ -51,10 +51,15 @@ is the backpressure boundary and output floods do not create an unbounded buffer
 The first Ctrl-C requests provider cancellation. A second Ctrl-C returns 130
 without waiting for a stuck cancellation request and does not destroy the Session.
 Timeout and cancellation are typed terminal outcomes. If cancellation fails but a
-remote terminal result arrives, that result remains authoritative. `exec` prints
-the CLI execution ID that `cancel` reports for the same run. A cancellation
-observed through the event stream or Execution state is the `cancelled` outcome,
-not an infrastructure timeout.
+remote terminal result arrives, that result remains authoritative. When the
+provider accepts the command, human mode writes one stderr line,
+`execution <id> started; reattach with: ocbox execution get <id>`, and never adds
+it to the program's stdout. `--json` carries the same `executionId` in its result
+envelope. The printed ID is the CLI execution ID that `cancel` reports for the
+same run. If the event stream is lost after acceptance, the human error names
+the ID and the same reattach command. A cancellation observed through the event
+stream or Execution state is the `cancelled` outcome, not an infrastructure
+timeout.
 
 | Outcome                                    |          CLI exit | Structured discriminator |
 | ------------------------------------------ | ----------------: | ------------------------ |
