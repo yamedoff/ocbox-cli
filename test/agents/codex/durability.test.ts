@@ -188,6 +188,32 @@ describe('crash-safe orphan recovery (F4)', () => {
     await expect(readFile(paths.userHooksPath, 'utf8')).rejects.toThrow()
   })
 
+  it('refuses to overwrite a target edited after planning', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ocbox-codex-'))
+    temps.push(root)
+    const paths = resolveCodexPaths({
+      platform: process.platform === 'win32' ? 'win32' : 'linux',
+      homeDirectory: root,
+      environment: {},
+      stateDirectory: join(root, 'state'),
+    })
+    const original = hooksJson({ SessionStart: [userGroup] })
+    await mkdir(paths.codexHome, { recursive: true })
+    await writeFile(paths.userHooksPath, original)
+    const plan = planCodexSetup({ ...setupInput(), paths, baseHooksText: original })
+    expect(plan.ok).toBe(true)
+    const concurrent = hooksJson({
+      PreToolUse: [owned('sess-user').group],
+      SessionStart: [userGroup],
+    })
+    await writeFile(paths.userHooksPath, concurrent)
+
+    await expect(
+      applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem),
+    ).rejects.toMatchObject({ code: 'CODEX_APPLY_CONFLICT' })
+    expect(await readFile(paths.userHooksPath, 'utf8')).toBe(concurrent)
+  })
+
   it('self-heals a stale session hook on the next setup even without a manifest', () => {
     const stale = hooksJson({
       PreToolUse: [owned('sess-old').group],

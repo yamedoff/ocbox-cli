@@ -65,6 +65,7 @@ interface Harness {
   readonly credentials: MemoryCredentialStore
   readonly metadata: MemoryMetadataRepository
   readonly exchangeCalls: ExchangeAuthorizationCodeInput[]
+  readonly refreshCalls: Array<{ refreshToken: string }>
   readonly revokeCalls: Array<{ token: string }>
   readonly open: ReturnType<typeof vi.fn>
 }
@@ -72,6 +73,7 @@ interface Harness {
 function harness(
   options: {
     exchange?: (input: ExchangeAuthorizationCodeInput) => Promise<ReturnType<typeof tokenPair>>
+    refresh?: (refreshToken: string) => Promise<ReturnType<typeof tokenPair>>
     revoke?: () => Promise<void>
     openResult?: boolean
   } = {},
@@ -79,13 +81,17 @@ function harness(
   const credentials = new MemoryCredentialStore()
   const metadata = new MemoryMetadataRepository()
   const exchangeCalls: ExchangeAuthorizationCodeInput[] = []
+  const refreshCalls: Array<{ refreshToken: string }> = []
   const revokeCalls: Array<{ token: string }> = []
   const oauthPort: CliOAuthClientPort = {
     exchangeAuthorizationCode: async (input) => {
       exchangeCalls.push(input)
       return options.exchange === undefined ? tokenPair('a') : options.exchange(input)
     },
-    refresh: () => Promise.resolve(tokenPair('b')),
+    refresh: async (input) => {
+      refreshCalls.push({ refreshToken: input.refreshToken })
+      return options.refresh === undefined ? tokenPair('b') : options.refresh(input.refreshToken)
+    },
     revoke: async (input) => {
       revokeCalls.push({ token: input.token })
       if (options.revoke !== undefined) await options.revoke()
@@ -106,7 +112,15 @@ function harness(
     metadataStore: metadata,
     oauth: () => oauthPort,
   })
-  return { credentials, exchangeCalls, metadata, open, revokeCalls, service }
+  return {
+    credentials,
+    exchangeCalls,
+    metadata,
+    open,
+    refreshCalls,
+    revokeCalls,
+    service,
+  }
 }
 
 describe('auth session service', () => {
@@ -215,7 +229,10 @@ describe('auth session service', () => {
     const h = harness()
     await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a'), TEST_NOW))
 
-    await expect(h.service.status()).rejects.toMatchObject({ code: 'INVALID_STATE' })
+    await expect(h.service.status()).rejects.toMatchObject({
+      code: 'INVALID_STATE',
+      details: { reasonCode: 'cli_auth_metadata_missing' },
+    })
     // Status is read-only for an orphaned secret; explicit logout owns cleanup.
     await expect(h.credentials.get(TEST_KEY)).resolves.toMatchObject({
       accessToken: 'a'.repeat(48),
@@ -241,7 +258,7 @@ describe('auth session service', () => {
     await expect(h.credentials.get(TEST_KEY)).resolves.not.toBeNull()
   })
 
-  it('clears stale metadata when the credential is missing and reports logout on expiry', async () => {
+  it('clears stale metadata when the credential is missing', async () => {
     const h = harness()
     h.metadata.value = AuthMetadataSchema.parse({
       audience: 'cli',
@@ -256,7 +273,10 @@ describe('auth session service', () => {
     const missing = await h.service.status()
     expect(missing.loggedIn).toBe(false)
     expect(h.metadata.value).toBeNull()
+  })
 
+  it('refreshes an expired access token and reports the session as signed in', async () => {
+    const h = harness()
     await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', -1), TEST_NOW))
     h.metadata.value = AuthMetadataSchema.parse({
       audience: 'cli',
@@ -268,9 +288,47 @@ describe('auth session service', () => {
       scopes: ['source:read'],
       updatedAt: new Date(TEST_NOW - 2_000).toISOString(),
     })
-    const expired = await h.service.status()
-    expect(expired.expired).toBe(true)
-    expect(expired.loggedIn).toBe(false)
+
+    const status = await h.service.status()
+    expect(status.loggedIn).toBe(true)
+    expect(status.expired).toBe(false)
+    expect(status.reasonCode).toBeUndefined()
+    expect(status.accessTokenExpiresAt).toBe(new Date(TEST_NOW + 900_000).toISOString())
+    expect(h.refreshCalls).toEqual([{ refreshToken: 'A'.repeat(48) }])
+    await expect(h.credentials.get(TEST_KEY)).resolves.toMatchObject({
+      accessToken: 'b'.repeat(48),
+    })
+  })
+
+  it('reports logged out with a reason code when the refresh is rejected', async () => {
+    const h = harness({
+      refresh: () =>
+        Promise.reject(
+          new OcboxError({
+            code: 'AUTH_REQUIRED',
+            details: { reasonCode: 'auth_oauth_refresh_expired' },
+            message: 'The refresh credential has expired',
+            requestId: newRequestId(),
+          }),
+        ),
+    })
+    await h.credentials.set(TEST_KEY, credentialFromTokenPair(tokenPair('a', -1), TEST_NOW))
+    h.metadata.value = AuthMetadataSchema.parse({
+      audience: 'cli',
+      clientId: 'ocb_cli',
+      expiresAt: new Date(TEST_NOW - 1_000).toISOString(),
+      identity: TEST_KEY,
+      issuer: 'https://api.example.test',
+      schemaVersion: 1,
+      scopes: ['source:read'],
+      updatedAt: new Date(TEST_NOW - 2_000).toISOString(),
+    })
+
+    const status = await h.service.status()
+    expect(status.loggedIn).toBe(false)
+    expect(status.expired).toBe(true)
+    expect(status.reasonCode).toBe('auth_oauth_refresh_expired')
+    expect(h.refreshCalls).toHaveLength(1)
   })
 
   it('always clears local material on logout even when revocation fails', async () => {
@@ -288,7 +346,12 @@ describe('auth session service', () => {
     })
 
     const result = await h.service.logout()
-    expect(result).toEqual({ loggedOut: true, revocationAttempted: true, revoked: false })
+    expect(result).toEqual({
+      loggedOut: true,
+      revocationAttempted: true,
+      revoked: false,
+      revocationReason: 'remote_failed',
+    })
     expect(h.revokeCalls).toHaveLength(1)
     expect(h.credentials.values.size).toBe(0)
     expect(h.metadata.value).toBeNull()
@@ -347,6 +410,7 @@ describe('auth session service', () => {
       loggedOut: true,
       revocationAttempted: false,
       revoked: false,
+      revocationReason: 'endpoint_invalid',
     })
     expect(oauthBuilt).toBe(false)
     expect(credentials.values.size).toBe(0)
@@ -810,8 +874,22 @@ describe('auth session gate wiring', () => {
       }),
     })
     const result = await service.logout()
-    expect(result).toEqual({ loggedOut: true, revocationAttempted: true, revoked: false })
+    expect(result).toEqual({
+      loggedOut: true,
+      revocationAttempted: true,
+      revoked: false,
+      revocationReason: 'remote_failed',
+    })
     expect(credentials.values.size).toBe(0)
     expect(metadata.value).toBeNull()
   })
+})
+
+it('reports why revocation was skipped when no credential exists', async () => {
+  const h = harness()
+  expect(await h.service.logout()).toMatchObject({
+    revocationAttempted: false,
+    revocationReason: 'no_local_credential',
+  })
+  expect(h.revokeCalls).toHaveLength(0)
 })

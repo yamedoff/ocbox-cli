@@ -89,7 +89,8 @@ function validateTarget(target: ExecutionTarget, arguments_: ParsedExecArguments
   }
   if (
     arguments_.command.mode === 'shell' &&
-    target.sandbox.specification.effective?.operatingSystem !== 'linux'
+    target.sandbox.specification.effective !== null &&
+    target.sandbox.specification.effective.operatingSystem !== 'linux'
   ) {
     throw new ExecutionContextError('Explicit shell mode requires a Bash-compatible Linux image')
   }

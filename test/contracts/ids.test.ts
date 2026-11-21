@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BindingIdSchema,
   ExecutionIdSchema,
+  IdempotencyKeySchema,
   OperationIdSchema,
   ProjectIdSchema,
   ProviderSandboxIdSchema,
@@ -31,8 +32,15 @@ describe('identity and timestamp primitives', () => {
 
   it('accepts ULIDs and keeps provider-native IDs opaque', () => {
     expect(SessionIdSchema.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV')
-    expect(ProviderSandboxIdSchema.parse('daytona/native:id/123')).toBe('daytona/native:id/123')
+    expect(ProviderSandboxIdSchema.parse('provider/native:id/123')).toBe('provider/native:id/123')
     expect(ProviderSandboxIdSchema.safeParse('provider id with spaces').success).toBe(false)
+  })
+
+  it('keeps idempotency keys within the transport boundary', () => {
+    const longest = 'a'.repeat(128)
+    expect(IdempotencyKeySchema.parse(longest)).toBe(longest)
+    expect(IdempotencyKeySchema.safeParse('a'.repeat(129)).success).toBe(false)
+    expect(IdempotencyKeySchema.safeParse('a'.repeat(15)).success).toBe(false)
   })
 
   it('requires canonical UTC millisecond timestamps', () => {

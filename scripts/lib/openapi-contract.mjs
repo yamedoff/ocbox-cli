@@ -275,6 +275,7 @@ function renderOperation(route) {
   lines.push(`        body: parsed as ${outputType(route)},`)
   lines.push("        requestId: response.headers.get('x-request-id'),")
   lines.push("        replay: response.headers.get('idempotency-replayed') === 'true',")
+  lines.push("        retryAfter: response.headers.get('retry-after'),")
   lines.push('        status: response.status,')
   lines.push('      }')
   lines.push('    },')
@@ -316,6 +317,7 @@ export function generateClient({ document, provenance, sha256 }) {
   lines.push('  readonly body: ResponseType')
   lines.push('  readonly requestId: string | null')
   lines.push('  readonly replay: boolean')
+  lines.push('  readonly retryAfter?: string | null')
   lines.push('}')
   lines.push('')
 

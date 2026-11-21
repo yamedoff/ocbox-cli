@@ -1232,6 +1232,15 @@ export async function applyCodexChangePlan(
   const applied: PlannedFileChange[] = []
   try {
     for (const change of plan.files) {
+      const current = await fileSystem.readFile(change.file)
+      if (current !== change.before) {
+        throw new CodexAdapterError({
+          code: 'CODEX_APPLY_CONFLICT',
+          message: `The Codex adapter refused to write ${change.file} because it changed after planning`,
+          remediation:
+            'Re-run setup without --yes to rebuild the plan from the current files, then apply it.',
+        })
+      }
       if (change.existedBefore && change.backupPath !== null && change.before !== null) {
         await fileSystem.writeFileAtomic(change.backupPath, change.before)
       }
@@ -1242,7 +1251,7 @@ export async function applyCodexChangePlan(
       }
       applied.push(change)
     }
-  } catch {
+  } catch (error) {
     const failures: unknown[] = []
     for (const change of [...applied].reverse()) {
       try {
@@ -1263,6 +1272,7 @@ export async function applyCodexChangePlan(
           'Restore the affected files from the timestamped .ocbox-backup copies before retrying.',
       })
     }
+    if (error instanceof CodexAdapterError && error.code === 'CODEX_APPLY_CONFLICT') throw error
     throw new CodexAdapterError({
       code: 'CODEX_APPLY_FAILED',
       message: 'The Codex adapter write failed; all owned changes were rolled back exactly',

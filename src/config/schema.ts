@@ -6,8 +6,9 @@ import {
   OperatingSystemSchema,
   ProviderRuntimeClassSchema,
   SandboxSourceSpecSchema,
-  SandboxSpecSchema,
   type SandboxSpec,
+  SandboxSpecSchema,
+  SecretReferenceIdSchema,
 } from '../domain/spec.js'
 import {
   findSensitiveMaterial,
@@ -32,22 +33,58 @@ const AllowedHostSchema = z
 
 export const ProviderConfigSchema = z.strictObject({
   name: z.string().regex(PROVIDER_NAME_PATTERN),
-  runtimeClass: ProviderRuntimeClassSchema,
-  region: z.string().regex(REGION_PATTERN),
+  runtimeClass: ProviderRuntimeClassSchema.default('container'),
+  region: z.string().regex(REGION_PATTERN).default('local'),
 })
 
 export const ResourceConfigSchema = z.strictObject({
-  cpuMillicores: z.number().int().positive().safe(),
-  memoryBytes: z.number().int().positive().safe(),
-  diskBytes: z.number().int().positive().safe(),
+  cpuMillicores: z.number().int().positive().safe().default(1000),
+  memoryBytes: z.number().int().positive().safe().default(2147483648),
+  diskBytes: z.number().int().positive().safe().default(10737418240),
 })
+
+const HOSTED_SECRET_REFERENCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
+/**
+ * A hosted secret reference id is an opaque server id, never a secret value.
+ * The canonical spec carries it in the OpenCloudBox namespace so the domain
+ * contract keeps accepting only non-secret locators.
+ */
+const ConfigSecretReferenceIdSchema = z
+  .string()
+  .regex(
+    HOSTED_SECRET_REFERENCE_ID_PATTERN,
+    'Secret reference ids must be opaque hosted ids, never secret values',
+  )
+  .refine(
+    (id) => SecretReferenceIdSchema.safeParse(`ocbox:${id}`).success,
+    'Secret reference ids must be opaque ids, never secret values',
+  )
+
+const SecretReferenceIdsConfigSchema = z
+  .array(ConfigSecretReferenceIdSchema)
+  .max(32)
+  .default([])
+  .superRefine((references, context) => {
+    if (new Set(references).size !== references.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Secret reference ids must be unique',
+      })
+    }
+  })
 
 export const SandboxConfigSchema = z.strictObject({
   operatingSystem: OperatingSystemSchema,
   architecture: ArchitectureSchema,
-  image: ImageReferenceSchema,
+  image: ImageReferenceSchema.default({ kind: 'template', reference: 'fake-node-24' }),
   environmentName: z.string().regex(REGION_PATTERN).default('development'),
-  resources: ResourceConfigSchema,
+  secretReferenceIds: SecretReferenceIdsConfigSchema,
+  resources: ResourceConfigSchema.default({
+    cpuMillicores: 1000,
+    memoryBytes: 2147483648,
+    diskBytes: 10737418240,
+  }),
 })
 
 export const NetworkConfigSchema = z
@@ -139,6 +176,7 @@ export const NonSecretEnvironmentSchema = z
 /** Canonical, versioned project configuration stored in `opencloudbox.toml`. */
 export const ProjectConfigSchema = z.strictObject({
   schemaVersion: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
+  projectId: z.string().trim().min(1).optional(),
   provider: ProviderConfigSchema,
   sandbox: SandboxConfigSchema,
   network: NetworkConfigSchema,
@@ -169,7 +207,7 @@ export function toSandboxSpec(config: ProjectConfig): SandboxSpec {
     environment: {
       name: config.sandbox.environmentName,
       variableNames: Object.keys(config.env).sort(),
-      secretReferenceIds: [],
+      secretReferenceIds: config.sandbox.secretReferenceIds.map((id) => `ocbox:${id}`),
     },
     source: config.source,
     providerClass: config.provider.runtimeClass,

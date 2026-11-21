@@ -4,7 +4,7 @@ import { OcboxError } from '../errors/index.js'
 export interface ProviderDiagnostic {
   readonly name: string
   readonly available: boolean
-  readonly auth: 'not_required' | 'configured' | 'required'
+  readonly auth: 'not_required' | 'configured' | 'required' | 'ok'
   readonly capabilities: Awaited<ReturnType<SandboxProvider['capabilities']>> | null
   readonly errorCode: 'PROVIDER_UNAVAILABLE' | null
 }

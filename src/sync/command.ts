@@ -4,12 +4,15 @@ import { createInterface } from 'node:readline/promises'
 import {
   createLifecycleService,
   loadProjectConfig,
-  resolveStateDirectory,
   type RuntimeFlags,
+  resolveAccountStateDirectory,
+  resolveStateDirectory,
 } from '../cli/runtime.js'
 import { RequestIdSchema } from '../domain/ids.js'
 import { OcboxError } from '../errors/index.js'
-import { InvalidIgnoreRuleError, type IgnoreRule } from './exclusions.js'
+import { LifecycleStore } from '../lifecycle/index.js'
+import { createOcboxProvider } from '../providers/ocbox/factory.js'
+import { type IgnoreRule, InvalidIgnoreRuleError } from './exclusions.js'
 import { cliRules } from './ignore-rules.js'
 import type { SyncContext } from './service.js'
 
@@ -22,15 +25,25 @@ export interface SyncCommandFlags extends RuntimeFlags {
 }
 
 /**
- * Resolves the Session through the T4/T5 lifecycle service (never creating or
- * replacing one) and derives the local root plus the provider/fake workspace
- * root. The remote root defaults to a state-directory location so the v0.1
- * local/fake target works without an explicit flag.
+ * Resolves the selected Session through lifecycle status. Hosted uploads use
+ * the bound provider's persisted mapping; the offline fake workspace defaults
+ * under the state directory.
  */
-export async function resolveSyncContext(flags: SyncCommandFlags): Promise<SyncContext> {
+export async function resolveSyncContext(
+  flags: SyncCommandFlags,
+  signal?: AbortSignal,
+): Promise<SyncContext> {
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
-  const view = await (await createLifecycleService(flags)).status(flags.session)
+  const lifecycleStateDirectory = await resolveAccountStateDirectory(
+    flags,
+    stateDirectory,
+    config.provider.name === 'ocbox',
+    signal,
+  )
+  const view = await (await createLifecycleService(flags, signal, lifecycleStateDirectory)).status(
+    flags.session,
+  )
   const sessionId = view.session.id
   const projectId = view.session.projectId
   const localRoot = resolve(process.cwd(), flags['local-dir'] ?? '.')
@@ -39,7 +52,37 @@ export async function resolveSyncContext(flags: SyncCommandFlags): Promise<SyncC
     configuredRemote !== undefined && configuredRemote.length > 0
       ? resolve(process.cwd(), configuredRemote)
       : join(stateDirectory, 'sync', projectId, sessionId, 'remote')
+  let casTransport: SyncContext['casTransport']
+  let casReadTransport: SyncContext['casReadTransport']
+  if (config.provider.name === 'ocbox') {
+    if (configuredRemote)
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message:
+          '--remote-dir is available only for the fake provider; hosted source uses the project workspace',
+        requestId: RequestIdSchema.parse(randomUUID()),
+      })
+    if (view.sandbox === null)
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source upload requires a running hosted sandbox; run ocbox start',
+        requestId: RequestIdSchema.parse(randomUUID()),
+      })
+    const provider = createOcboxProvider({
+      stateDirectory,
+      apiUrl: flags['api-url'],
+      projectId: flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId,
+    })
+    provider.bindLifecycleStore(new LifecycleStore(lifecycleStateDirectory, projectId))
+    const sandboxId = view.sandbox.id
+    const sourceTransport = await provider.sourceCasTransport(sandboxId, signal)
+    casTransport = sourceTransport
+    casReadTransport = sourceTransport
+  }
   return {
+    signal,
+    ...(casTransport ? { casTransport } : {}),
+    ...(casReadTransport ? { casReadTransport } : {}),
     providerName: config.provider.name,
     projectId,
     sessionId,

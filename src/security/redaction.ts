@@ -12,6 +12,12 @@ export const REDACTED_LOCAL_PATH = '[LOCAL_PATH]'
 
 const SENSITIVE_KEY =
   /(?:secret|credential|password|passphrase|token|authorization|cookie|api[_-]?key|private[_-]?key)/i
+/**
+ * Public metadata whose names mention secrets but whose values are not secret:
+ * opaque secret-reference locators and the provider's supported exposure modes.
+ * Their string values still pass through the value-level credential checks.
+ */
+const PUBLIC_METADATA_KEY = /^(?:secretExposureModes|secretReferenceIds)$/
 const COMMAND_OUTPUT_KEY =
   /^(?:command|argv|stdout|stderr|command[_-]?output|raw[_-]?output|source[_-]?content)$/i
 const PROVIDER_BYOK_NAME =
@@ -37,6 +43,13 @@ export interface SensitiveMaterialFinding {
 
 function normalizedKey(key: string): string {
   return key.replaceAll(/[^A-Za-z0-9_-]/g, '_')
+}
+
+/** True when the key names a field that carries credential material. */
+function isSensitiveKey(key: string): boolean {
+  const normalized = normalizedKey(key)
+  if (PUBLIC_METADATA_KEY.test(normalized)) return false
+  return SENSITIVE_KEY.test(normalized)
 }
 
 /** True when an environment variable name conventionally carries provider credentials. */
@@ -76,7 +89,7 @@ export function findSensitiveMaterial(
   for (const [key, item] of Object.entries(value)) {
     const itemPath = [...path, key]
     if (COMMAND_OUTPUT_KEY.test(key)) findings.push({ kind: 'command-output', path: itemPath })
-    if (SENSITIVE_KEY.test(normalizedKey(key))) {
+    if (isSensitiveKey(key)) {
       findings.push({ kind: 'credential-field', path: itemPath })
     }
     if (isProviderCredentialEnvironmentName(key)) {
@@ -118,7 +131,7 @@ export function redactForOutput(value: unknown, seen: ReadonlySet<object> = new 
 
   const output: Record<string, JsonValue> = {}
   for (const [key, item] of Object.entries(value)) {
-    if (COMMAND_OUTPUT_KEY.test(key) || SENSITIVE_KEY.test(normalizedKey(key))) {
+    if (COMMAND_OUTPUT_KEY.test(key) || isSensitiveKey(key)) {
       output[key] = REDACTED_VALUE
     } else {
       output[key] = redactForOutput(item, nextSeen)

@@ -269,6 +269,20 @@ describe('claude-code setup/doctor/remove lifecycle', () => {
     expect(files.store.has(manifestPathForTarget(target))).toBe(false)
   })
 
+  it('points an invalid Session at the real listing command', async () => {
+    const files = memoryFiles()
+    const layout = projectLayout('fake-root')
+    await expect(
+      planSetup({
+        layout,
+        scope: 'project',
+        sessionId: 'sess-1',
+        claudeVersionRaw: PINNED,
+        files,
+      }),
+    ).rejects.toThrow(/run "ocbox ls"/)
+  })
+
   it('reports an invalid Session as unhealthy in doctor (N2)', async () => {
     const files = memoryFiles()
     const layout = projectLayout('fake-root')

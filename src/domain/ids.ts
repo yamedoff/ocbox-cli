@@ -38,7 +38,7 @@ export const ProviderSandboxIdSchema = z
 export const IdempotencyKeySchema = z
   .string()
   .min(16)
-  .max(200)
+  .max(128)
   .regex(/^[A-Za-z0-9._:-]+$/, 'Idempotency keys must use a transport-safe alphabet')
   .brand<'IdempotencyKey'>()
 

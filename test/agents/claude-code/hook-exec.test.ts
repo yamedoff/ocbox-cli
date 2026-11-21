@@ -58,7 +58,7 @@ describe('claude-code hook exec invoker fails closed (N2)', () => {
     const invoke = createClaudeHookInvoker({ 'state-dir': 'unused' }, output)
     const result = await invoke(['exec', '--session', 'sess-1', '--shell', 'echo hi'])
     expect(result.started).toBe(false)
-    expect(result.exitCode).toBe(125)
+    expect(result.exitCode).toBe(1)
   })
 
   it('blocks the local tool call with a guard denial through the real hook entrypoint', async () => {

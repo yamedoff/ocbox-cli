@@ -11,8 +11,7 @@ export {
   toExecEvents,
   toExecResult,
 } from './executions.js'
-export { prepareSourceChunks, sha256Hex, uploadPreparedSource } from './source.js'
-export type { PreparedSource, SourceChunk, UploadSourceOptions } from './source.js'
+export { sha256Hex } from './source.js'
 export type {
   CollectedExecution,
   HostedExecutionCheckpoint,

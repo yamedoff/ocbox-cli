@@ -11,8 +11,19 @@ import { z } from 'zod'
 export const HostedSafeErrorSchema = z
   .strictObject({
     code: z.string().min(1).max(64),
-    message: z.string().min(1).max(512),
+    message: z.string().min(1).max(1024),
+    reason: z.string().optional(),
+    reasonCode: z.string().max(128).optional(),
+    retryable: z.boolean().optional(),
     retryAfterSeconds: z.number().int().min(0).optional(),
+    nextStep: z.string().max(1024).optional(),
+    executionId: z.string().max(128).optional(),
+    runningExecutionIds: z.array(z.string().max(128)).max(16).readonly().optional(),
+    limit: z.number().int().min(1).max(16).optional(),
+    limitName: z.string().max(128).optional(),
+    limitValue: z.number().int().min(1).optional(),
+    planId: z.string().max(128).optional(),
+    snapshotId: z.string().max(128).optional(),
   })
   .readonly()
 
@@ -66,7 +77,7 @@ export const HostedSandboxBindingSchema = z
     ordinal: z.number().int().min(0),
     role: z.literal('primary'),
     active: z.boolean(),
-    state: z.enum(['running', 'stopped']),
+    state: z.enum(['running', 'stopped', 'destroyed']),
     sandboxId: z.string().min(1),
     boundAt: z.string().min(1),
     releasedAt: z.string().min(1).nullable(),
@@ -83,6 +94,7 @@ export const HostedSessionSchema = z
     effectiveSpec: z.record(z.string(), z.unknown()),
     normalizedState: z.enum([
       'created',
+      'provisioning',
       'starting',
       'running',
       'pausing',
@@ -91,10 +103,18 @@ export const HostedSessionSchema = z
       'stopped',
       'destroying',
       'destroyed',
+      'failed',
     ]),
     rawState: z.string().min(1),
     sandboxes: z.array(HostedSandboxBindingSchema).readonly(),
     primarySandboxId: z.string().min(1).nullable(),
+    failure: z
+      .strictObject({
+        reasonCode: z.string().min(1),
+        nextStep: z.string().min(1),
+      })
+      .readonly()
+      .exactOptional(),
   })
   .readonly()
 
@@ -160,6 +180,12 @@ export const HostedCommandResultSchema = z
     truncated: z.boolean(),
     outputBytes: z.number().int().min(0),
     outputLimitBytes: z.number().int().min(1),
+    encoding: z
+      .strictObject({
+        stdout: z.enum(['utf-8', 'utf-8-lossy']),
+        stderr: z.enum(['utf-8', 'utf-8-lossy']),
+      })
+      .readonly(),
   })
   .readonly()
 

@@ -1,0 +1,22 @@
+name: map check
+on:
+  pull_request:
+  push:
+    branches: ["codex/recovery-ci-validation"] # the branch the map syncs from (install.mjs --branch sets this)
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      # Errors fail the build (drifted line ranges, renamed ids, broken references).
+      # Coverage and depth warnings are listed in the job summary: fix them or explain them in the PR.
+      - name: Test dependency ownership
+        run: node --test tools/map/dependencies.test.mjs
+      - name: Check map.json
+        run: node tools/map/cli.mjs check
+      - name: Map report
+        if: always()
+        run: node tools/map/cli.mjs report >> "$GITHUB_STEP_SUMMARY"

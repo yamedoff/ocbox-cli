@@ -1,10 +1,14 @@
+import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
 import { createLifecycleService } from '../cli/runtime.js'
 import { sessionViewLine } from '../cli/views.js'
 
 export default class ListSessions extends OcboxCommand {
   static override description = 'List Sessions and their primary Sandbox bindings'
-  static override flags = runtimeFlags
+  static override flags = {
+    ...runtimeFlags,
+    all: Flags.boolean({ description: 'Include destroyed Sessions' }),
+  }
 
   async run(): Promise<void> {
     const { flags } = await this.parse(ListSessions)
@@ -12,7 +16,7 @@ export default class ListSessions extends OcboxCommand {
       flags,
       'sessions.listed',
       (views) => (views.length === 0 ? 'No Sessions' : views.map(sessionViewLine).join('\n')),
-      async () => (await createLifecycleService(flags)).list(),
+      async () => (await createLifecycleService(flags)).list(flags.all === true),
     )
   }
 }

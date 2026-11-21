@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: OpenCloudBox hosted API
   version: 0.1.0
-  description: Runtime-neutral v1 contract. Every unsafe method requires an Idempotency-Key header.
+  description: Runtime-neutral v1 contract. Every unsafe method requires an Idempotency-Key header, except operations marked `x-idempotency: none` (auth, CLI/GitHub protocol, webhook, and source-resolve operations with their own single-use semantics).
 servers:
   - url: /v1
 security:
@@ -10,41 +10,96 @@ security:
 tags:
   - name: Projects
   - name: Environments
+  - name: Sizes
   - name: Sessions
   - name: Operations
   - name: Executions
   - name: Source
   - name: Previews
+  - name: Secrets
   - name: Auth
   - name: CLIAuth
   - name: GitHubApp
+  - name: Billing
 x-error-codes:
-  INVALID_REQUEST: 400
-  UNAUTHENTICATED: 401
-  FORBIDDEN: 403
-  NOT_FOUND: 404
-  METHOD_NOT_ALLOWED: 405
-  IDEMPOTENCY_CONFLICT: 409
-  IDEMPOTENCY_IN_PROGRESS: 409
-  OPERATION_NOT_CANCELLABLE: 409
-  SESSION_STATE_CONFLICT: 409
+  ACCOUNT_HOLD: 409
+  CSRF_TOKEN_INVALID: 403
+  DODO_LIVE_DISABLED: 403
+  DODO_SIGNATURE_INVALID: 401
   EXECUTION_NOT_CANCELLABLE: 409
   EXECUTION_NOT_COMPLETE: 409
-  SOURCE_CHUNK_CONFLICT: 409
-  VALIDATION_ERROR: 422
-  INVALID_CURSOR: 422
+  FORBIDDEN: 403
+  IDEMPOTENCY_CONFLICT: 409
+  IDEMPOTENCY_IN_PROGRESS: 409
   IDEMPOTENCY_KEY_REQUIRED: 422
+  INSUFFICIENT_CREDITS: 409
+  INTERNAL_ERROR: 500
+  INVALID_CLIENT: 401
+  INVALID_CURSOR: 422
+  INVALID_GRANT: 400
+  INVALID_REQUEST: 400
+  METHOD_NOT_ALLOWED: 405
+  NOT_FOUND: 404
+  SESSION_NOT_FOUND: 404
+  PROJECT_NOT_FOUND: 404
+  ENVIRONMENT_NOT_FOUND: 404
+  EXECUTION_NOT_FOUND: 404
+  OPERATION_NOT_FOUND: 404
+  SOURCE_PLAN_REQUIRED: 404
+  OPERATION_NOT_CANCELLABLE: 409
+  PAYLOAD_TOO_LARGE: 413
+  PAYMENT_CONFLICT: 409
+  PAYMENT_VERIFICATION_REQUIRED: 409
+  RATE_CARD_DISABLED: 409
+  RATE_LIMITED: 429
+  SERVICE_UNAVAILABLE: 503
+  SESSION_STATE_CONFLICT: 409
+  SOURCE_CHUNK_CONFLICT: 409
   SOURCE_INCOMPLETE: 422
   SOURCE_INTEGRITY_FAILED: 422
   SOURCE_LIMIT_EXCEEDED: 422
-  PAYLOAD_TOO_LARGE: 413
-  RATE_LIMITED: 429
-  SERVICE_UNAVAILABLE: 503
-  INTERNAL_ERROR: 500
-  INVALID_CLIENT: 401
-  CSRF_TOKEN_INVALID: 403
-  INVALID_GRANT: 400
+  UNAUTHENTICATED: 401
+  VALIDATION_ERROR: 422
 paths:
+  /sizes:
+    get:
+      operationId: listSizes
+      tags: [Sizes]
+      summary: List the box sizes the caller's plan offers.
+      description: Returns the catalog sizes the authenticated owner's plan offers, in the order the plan lists them. Each size carries its id, GPU type and count, CPU, memory, disk, maximum lifetime and hourly price. Provider names, provider snapshots, organizations, regions and spot detail are never returned. Next: create a session with requestedSpec.sizeId from this list; its requestedSpec.lifetimeSeconds must not exceed the size's maxLifetimeSeconds.
+      responses:
+        '200':
+          $ref: '#/components/responses/BoxSizePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /gpu-check:
+    get:
+      operationId: checkGpuSpec
+      tags: [Sizes]
+      summary: Check whether a GPU box can be created now.
+      description: Read-only. Answers with the matching size and price, or with every problem, what is available now and alternatives the caller's plan offers. Nothing is reserved.
+      parameters:
+        - $ref: '#/components/parameters/GpuType'
+        - $ref: '#/components/parameters/GpuCount'
+        - $ref: '#/components/parameters/GpuLifetimeSeconds'
+        - $ref: '#/components/parameters/GpuCpu'
+        - $ref: '#/components/parameters/GpuMemoryMib'
+        - $ref: '#/components/parameters/GpuDiskGib'
+      responses:
+        '200':
+          $ref: '#/components/responses/GpuCheck'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /projects:
     get:
       operationId: listProjects
@@ -53,6 +108,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/ProjectOrder'
       responses:
         '200':
           $ref: '#/components/responses/ProjectPage'
@@ -143,9 +199,16 @@ paths:
       operationId: deleteProject
       tags: [Projects]
       summary: Destroy a project asynchronously.
+      description: Accepts an optional confirmation body. A project that still has a box that is not destroyed is refused with 409 `SESSION_STATE_CONFLICT`; destroy every box of the project before deleting it. `confirmInUse: true` is accepted for compatibility: it never releases a box and does not allow deleting a project whose boxes are not all destroyed.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteConfirmationRequest'
       responses:
         '202':
           $ref: '#/components/responses/Operation'
@@ -260,9 +323,17 @@ paths:
     delete:
       operationId: deleteEnvironment
       tags: [Environments]
+      summary: Destroy an environment asynchronously.
+      description: Accepts an optional confirmation body. `confirmInUse: true` is accepted for compatibility: it acknowledges deleting the secrets of the environment while live sessions still reference them. It never releases a live box: the boxes of the project keep running until their owner destroys them.
       parameters:
         - $ref: '#/components/parameters/EnvironmentId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteConfirmationRequest'
       responses:
         '202':
           $ref: '#/components/responses/Operation'
@@ -282,10 +353,12 @@ paths:
     get:
       operationId: listSessions
       tags: [Sessions]
+      description: Lists the sessions of a project. Destroyed sessions are left out unless includeDestroyed=true; because a call reads at most 100 stored rows, a page can be short or empty, so follow nextCursor until it is null. This is the only REST session list; there is no owner-level list route.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeDestroyed'
       responses:
         '200':
           $ref: '#/components/responses/SessionPage'
@@ -302,6 +375,7 @@ paths:
     post:
       operationId: createSession
       tags: [Sessions]
+      description: Accepts a durable create intent and admission. Returns within an 8 second provisioning budget with an operation and session snapshot; a fast completion uses the same 202 shape. Poll the operation Location or getSession until running or terminal failure. The hosted session starts in provisioning.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -313,7 +387,16 @@ paths:
               $ref: '#/components/schemas/CreateSessionRequest'
       responses:
         '202':
-          $ref: '#/components/responses/Operation'
+          description: Accepted session create (may already be complete). The top-level id is the operation id.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Relative URL of the operation to poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreateResponse'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -440,6 +523,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SessionIdQuery'
       responses:
         '200':
           $ref: '#/components/responses/OperationPage'
@@ -493,6 +577,7 @@ paths:
   /sessions/{sessionId}/executions:
     post:
       operationId: createExecution
+      description: Accept a command and return its durable execution ID at acceptance. The default answer is the accepted execution with state pending; pass wait true to wait up to the server completion window for a short command to finish. Pending means launch is starting. Poll getExecution until running or terminal; replay with the same idempotency key returns the same execution without advancing launch. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -523,6 +608,7 @@ paths:
   /executions/{executionId}:
     get:
       operationId: getExecution
+      description: Advance at most one bounded launch or supervision stage and return the current execution. Continue polling pending and running states. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -540,6 +626,7 @@ paths:
   /executions/{executionId}/events:
     get:
       operationId: listExecutionEvents
+      description: Return the retained execution events in sequence. Output events carry command output, which is text; a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -561,6 +648,7 @@ paths:
   /executions/{executionId}/result:
     get:
       operationId: getExecutionResult
+      description: Return the terminal result of an execution. Command output is text and a final newline may be added.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -580,6 +668,7 @@ paths:
   /executions/{executionId}/cancel:
     post:
       operationId: cancelExecution
+      description: Persist cancellation intent promptly. Before dispatch the execution becomes cancelled; after a dispatch fence polls adopt and cancel the launched command, then drain output. A 202 may still be pending or running. Poll getExecution until terminal.
       tags: [Executions]
       parameters:
         - $ref: '#/components/parameters/ExecutionId'
@@ -593,6 +682,324 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/plan:
+    post:
+      operationId: planSourceCas
+      summary: CAS v2 plan for object-owned boxes
+      description: Requires a sesdo_ session. Source bytes transfer directly to private EU object storage; retry the identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasPlanRequest'
+      responses:
+        '200':
+          description: Source plan or terminal apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/apply:
+    post:
+      operationId: applySourceCas
+      summary: CAS v2 apply for object-owned boxes
+      description: Requires a sesdo_ session. Source bytes transfer directly to private EU object storage; retry the identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasApplyRequest'
+      responses:
+        '200':
+          description: Source plan or terminal apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/files:
+    post:
+      operationId: pushSourceFiles
+      summary: Push a small source tree in one call
+      description: Requires a ses_ session. The files are the whole project tree; send every project file each time. Files an earlier push wrote that the request leaves out are removed from the box, while files created in the box by commands are kept. The server builds the canonical CAS v2 manifest and pages, stores the blobs itself, applies the tree and returns the apply state. At most 200 files and 2 MiB decoded in total; use planSourceCas/applySourceCas for larger trees. Retry the identical request key and body after response loss.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceFilesPushRequest'
+      responses:
+        '200':
+          description: The applied source receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+        '202':
+          description: Apply pending; repeat this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSourceResult'
+  /sessions/{sessionId}/source/cas/check:
+    post:
+      operationId: checkSourceCas
+      summary: CAS v3 check for object-owned boxes
+      description: Requires a sesdo_ session. Asks whether the box still holds the tree the client has; the answer is terminal in the same request and names the paths an agent edited inside the box.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasCheckRequest'
+      responses:
+        '200':
+          description: The terminal answer: unchanged or changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasCheckResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/snapshot:
+    post:
+      operationId: createSourceSnapshot
+      summary: Read or refresh a source snapshot for object-owned boxes
+      description: Requires a ses_ session. Without refresh, returns the cached snapshot and its first page, or refuses with snapshot_missing when none is cached; with refresh true, runs a fresh snapshot and returns pending until it is terminal. Replay the identical request key and body after response loss. A legacy box is refused with source_snapshot_requires_cas.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasSnapshotRequest'
+      responses:
+        '200':
+          description: Cached or terminal snapshot receipt and its first page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSnapshotResult'
+        '202':
+          description: Snapshot pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSnapshotResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/snapshot/page:
+    post:
+      operationId: readSourceSnapshotPage
+      summary: Read one page of a cached source snapshot
+      description: Requires a ses_ session and a snapshotId returned by createSourceSnapshot. Returns the immutable page, bounded by maxPageBytes. A legacy box is refused with source_snapshot_requires_cas.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasSnapshotPageRequest'
+      responses:
+        '200':
+          description: The requested snapshot page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasSnapshotPageResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/fast:
+    post:
+      operationId: fastApplySourceCas
+      summary: CAS v3 fast apply for object-owned boxes
+      description: Requires a sesdo_ session. Applies the changed files of the client's tree without the v2 cycle; the answer is terminal in the same request and names the blobs the store still lacks.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasFastApplyRequest'
+      responses:
+        '200':
+          description: The terminal answer: awaiting the blobs to upload, or the apply receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasFastApplyResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions/{sessionId}/source/cas/pull:
+    post:
+      operationId: createSourcePull
+      summary: Pull named source files from a CAS v2 box into the store
+      description: Requires a ses_ session and a snapshotId returned by createSourceSnapshot. Names one or more snapshot paths; the Session checks which part blobs the store lacks, uploads only those through short-lived PUT capabilities, verifies the box tree still matches the snapshot, and returns short-lived GET capabilities for the blobs. Each reply carries as many GET capabilities as fit under maxPageBytes and nextCursor when more remain; repeat the same pull (same idempotency key and paths) with that cursor until nextCursor is null. An unchanged tree uploads zero bytes; a file changed after the snapshot fails with source_tree_changed and leaves the store untouched. Replay the identical request key and body after response loss. A legacy box is refused with source_snapshot_requires_cas.
+      tags: [Source]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CasPullRequest'
+      responses:
+        '200':
+          description: The pull receipt and GET capabilities for the named blobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasPullResult'
+        '202':
+          description: Pull pending; replay this same request to observe completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasPullResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '422':
           $ref: '#/components/responses/ValidationError'
         '429':
@@ -684,12 +1091,15 @@ paths:
     post:
       operationId: verifySourceChecksum
       tags: [Source]
+      description: Freeze the uploaded archive. Returns verification if already applied, otherwise a durable source.apply operation. Poll GET /operations/{id} until terminal, then replay checksum for verification. Polls advance one bounded stage; destroy revokes apply.
       parameters:
         - $ref: '#/components/parameters/ManifestId'
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           $ref: '#/components/responses/SourceVerification'
+        '202':
+          $ref: '#/components/responses/Operation'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
@@ -754,12 +1164,548 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /environments/{environmentId}/secret-references:
+    get:
+      operationId: listSecretReferences
+      tags: [Secrets]
+      summary: List workload secret metadata for an environment. Values are never returned.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReferencePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: createSecretReference
+      tags: [Secrets]
+      summary: Write a workload secret once to the provider store. The value transits a single no-store request and only metadata is persisted.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSecretReferenceRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /environments/{environmentId}/configuration:
+    get:
+      operationId: getEnvironmentConfiguration
+      tags: [Secrets]
+      summary: Read non-secret environment variables, policy, and ordered secret references.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentConfiguration'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      operationId: updateEnvironmentConfiguration
+      tags: [Secrets]
+      summary: Replace non-secret environment variables and secret ordering. Reserved credential names are rejected.
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEnvironmentConfigurationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentConfiguration'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}:
+    get:
+      operationId: getSecretReference
+      tags: [Secrets]
+      summary: Read workload secret metadata. Values cannot be retrieved.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteSecretReference
+      tags: [Secrets]
+      summary: Revoke a workload secret at the provider. Failed provider deletion stays delete_pending until reconciliation verifies removal.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteSecretReferenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}/rotate:
+    post:
+      operationId: rotateSecretReference
+      tags: [Secrets]
+      summary: Rotate a workload secret with a one-time no-store value relay. Version changes are atomic.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateSecretReferenceRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /secret-references/{secretReferenceId}/reconcile:
+    post:
+      operationId: reconcileSecretReference
+      tags: [Secrets]
+      summary: Reconcile a delete_pending reference against the provider without replaying secret material.
+      parameters:
+        - $ref: '#/components/parameters/SecretReferenceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/SecretReference'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/wallet:
+    get:
+      operationId: getBillingWallet
+      tags: [Billing]
+      summary: Read the derived wallet projection. Balances are computed, never stored.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingWallet'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/lots:
+    get:
+      operationId: listBillingLots
+      tags: [Billing]
+      summary: List expiring credit lots with issue and expiry dates.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLotPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/ledger:
+    get:
+      operationId: listBillingLedger
+      tags: [Billing]
+      summary: List immutable balanced ledger entries for wallet reconstruction.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLedgerPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/grants/onboarding:
+    post:
+      operationId: grantOnboardingCredits
+      tags: [Billing]
+      summary: Issue the exactly-once 1,000-credit onboarding grant expiring in 30 days.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingLot'
+        '201':
+          $ref: '#/components/responses/BillingLot'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations:
+    post:
+      operationId: createBillingReservation
+      tags: [Billing]
+      summary: Atomically reserve the greater of 15 minutes at the active rate or the minimum.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBillingReservationRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/BillingReservation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations/{reservationId}/settle:
+    post:
+      operationId: settleBillingReservation
+      tags: [Billing]
+      summary: Burn one minute of settled usage and refill below five projected minutes.
+      parameters:
+        - $ref: '#/components/parameters/BillingReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettleBillingReservationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingSettlement'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reservations/{reservationId}/release:
+    post:
+      operationId: releaseBillingReservation
+      tags: [Billing]
+      summary: Release or expire unused reservation amounts idempotently.
+      parameters:
+        - $ref: '#/components/parameters/BillingReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingReservation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/usage:
+    get:
+      operationId: listBillingUsage
+      tags: [Billing]
+      summary: List owner-scoped, paginated usage attribution from server values only.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingUsagePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      operationId: ingestBillingUsage
+      tags: [Billing]
+      summary: Ingest an immutable usage event. Direct BYOK is non-billable.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBillingUsageRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/BillingUsage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/rate-cards:
+    get:
+      operationId: listBillingRateCards
+      tags: [Billing]
+      summary: List versioned rate cards. Production rates stay disabled without approval.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingRateCardPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/reconciliation:
+    get:
+      operationId: getBillingReconciliation
+      tags: [Billing]
+      summary: Rebuild the wallet from the ledger and report quarantine status.
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingReconciliation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/checkout:
+    post:
+      operationId: createBillingCheckout
+      tags: [Billing]
+      summary: Create a server-priced Dodo test-mode checkout attempt for a fixed credit pack.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBillingCheckoutRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingCheckout'
+        '201':
+          $ref: '#/components/responses/BillingCheckout'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/checkout/{attemptId}:
+    get:
+      operationId: getBillingCheckout
+      tags: [Billing]
+      summary: Poll an opaque checkout attempt. URL parameters never grant credits.
+      parameters:
+        - $ref: '#/components/parameters/BillingAttemptId'
+      responses:
+        '200':
+          $ref: '#/components/responses/BillingCheckout'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/webhooks/dodo:
+    post:
+      operationId: handleDodoWebhook
+      tags: [Billing]
+      summary: Verify a Dodo webhook over raw bytes before parsing and reduce it idempotently.
+      x-idempotency: none
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          $ref: '#/components/responses/DodoWebhookAck'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/WebhookForbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /billing/payments/reconcile:
+    post:
+      operationId: reconcileBillingPayments
+      tags: [Billing]
+      summary: Reconcile the authenticated owner's payment attempts idempotently.
+      description: Owner-scoped; plans, queries the provider, mutates, and counts only attempts, grants, and refund intents attributed to the authenticated owner. Global/operator reconciliation is internal and not reachable from the tenant surface.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/PaymentReconciliation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /auth/magic-links:
     post:
       operationId: requestMagicLink
       x-idempotency: none
       tags: [Auth]
       summary: Request an email magic-link login. Enumeration-safe and rate limited.
+      description: 'Mints a short-lived browser login binding cookie (ocb_login_bind, HttpOnly, the session SameSite policy, Secure) and persists only its SHA-256 digest on the single-use token record. The matching cookie is required by /auth/magic-links/consume, so a link requested in one browser cannot establish a session in another (login CSRF / session fixation).'
       security: []
       requestBody:
         required: true
@@ -784,6 +1730,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Consume a magic-link token and establish a web session. Single use and expiry bound.
+      description: 'Requires the ocb_login_bind cookie issued by /auth/magic-links to match the digest persisted with the token, in addition to the single-use token and expiry checks. Cross-site requests are refused and the binding cookie is cleared on success.'
       security: []
       requestBody:
         required: true
@@ -808,6 +1755,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Begin GitHub OAuth web sign-in and receive the redirect target plus opaque state.
+      description: 'Mints a short-lived browser login binding cookie (ocb_login_bind, HttpOnly, the session SameSite policy, Secure) and persists only its SHA-256 digest on the single-use state record. Cross-site requests are refused.'
       security: []
       requestBody:
         required: true
@@ -830,6 +1778,7 @@ paths:
       x-idempotency: none
       tags: [Auth]
       summary: Complete GitHub OAuth web sign-in by exchanging state and provider code for a session.
+      description: 'Requires the ocb_login_bind cookie issued by /auth/github/start to match the digest persisted with the state, in addition to the single-use state and provider-code checks. Cross-site requests are refused and the binding cookie is cleared on success.'
       security: []
       requestBody:
         required: true
@@ -891,6 +1840,23 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/WebSessionRenewed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/me:
+    get:
+      operationId: getAuthMe
+      tags: [Auth]
+      summary: Read the identity of the presented bearer token.
+      description: 'Answers the subject, audience, scopes and expiry of the caller''s own CLI or MCP access credential. It never answers another account''s identity and never echoes the token or any secret.'
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          $ref: '#/components/responses/AuthIdentity'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '429':
@@ -1046,6 +2012,61 @@ components:
       in: cookie
       name: ocb_session
   parameters:
+    GpuType:
+      name: gpuType
+      in: query
+      required: true
+      description: GPU type id, as listed by GET /v1/sizes.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[a-z][a-z0-9_-]{0,63}$'
+    GpuCount:
+      name: gpuCount
+      in: query
+      required: true
+      description: GPUs wanted in one box.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 64
+    GpuLifetimeSeconds:
+      name: lifetimeSeconds
+      in: query
+      required: false
+      description: Box lifetime wanted, in seconds.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 86400
+    GpuCpu:
+      name: cpu
+      in: query
+      required: false
+      description: vCPU count wanted. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 64
+    GpuMemoryMib:
+      name: memoryMib
+      in: query
+      required: false
+      description: Memory wanted, in MiB. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 262144
+    GpuDiskGib:
+      name: diskGib
+      in: query
+      required: false
+      description: Disk wanted, in GiB. It applies only where custom GPU shapes are enabled for the account and is otherwise reported as not allowed.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1024
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1060,7 +2081,7 @@ components:
       name: cursor
       in: query
       required: false
-      description: Opaque tenant-bound pagination cursor from a previous page.
+      description: Opaque tenant-bound pagination cursor from a previous page. MCP tool cursors use the tighter 256-char bound.
       schema:
         type: string
         minLength: 1
@@ -1074,6 +2095,32 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    IncludeDestroyed:
+      name: includeDestroyed
+      in: query
+      required: false
+      description: Include destroyed sessions. Defaults to false; destroyed sessions are left out of the list and its pages. Only GET /v1/projects/{projectId}/sessions supports this filter.
+      schema:
+        type: string
+        enum: ['true', 'false']
+        default: 'false'
+    ProjectOrder:
+      name: order
+      in: query
+      required: false
+      description: Listing direction. Defaults to newest-first; `oldest` returns the creation order.
+      schema:
+        type: string
+        enum: [newest, oldest]
+        default: newest
+    SessionIdQuery:
+      name: sessionId
+      in: query
+      required: false
+      description: Restrict an account listing to one owned parent session.
+      schema:
+        type: string
+        minLength: 1
     ProjectId:
       name: projectId
       in: path
@@ -1131,6 +2178,27 @@ components:
       schema:
         type: string
         minLength: 1
+    SecretReferenceId:
+      name: secretReferenceId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    BillingReservationId:
+      name: reservationId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    BillingAttemptId:
+      name: attemptId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
     InstallationId:
       name: installationId
       in: path
@@ -1145,6 +2213,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Project'
+    GpuCheck:
+      description: Whether the GPU box can be created now, and what would work if not.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GpuCheck'
+    BoxSizePage:
+      description: The box sizes the caller's plan offers, in plan order.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BoxSizePage'
     ProjectPage:
       description: Opaque cursor page of projects.
       content:
@@ -1188,7 +2268,7 @@ components:
           schema:
             $ref: '#/components/schemas/OperationPage'
     Execution:
-      description: Execution resource.
+      description: Durable execution resource. Pending includes accepted commands whose launch is starting; running includes cancellation awaiting confirmation.
       content:
         application/json:
           schema:
@@ -1235,6 +2315,29 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Preview'
+    SecretReference:
+      description: Workload secret metadata. Values are never returned.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecretReference'
+      headers:
+        Cache-Control:
+          description: Sensitive write responses are never cached.
+          schema:
+            type: string
+    SecretReferencePage:
+      description: Opaque cursor page of workload secret metadata.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecretReferencePage'
+    EnvironmentConfiguration:
+      description: Non-secret environment configuration with ordered secret references.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EnvironmentConfiguration'
     Unauthenticated:
       description: Missing or invalid actor credentials.
       content:
@@ -1283,6 +2386,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Unexpected server error with no internal state exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    WebhookForbidden:
+      description: The configured payment environment forbids this webhook, such as disabled live handling.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     InvalidGrant:
       description: Expired, replayed, or invalid credential or grant (RFC 6749 style, generic).
       content:
@@ -1301,6 +2416,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MagicLinkAccepted'
+    AuthIdentity:
+      description: The presented token's own subject, audience, scopes and expiry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthIdentity'
     WebSession:
       description: Current web session binding.
       content:
@@ -1311,7 +2432,7 @@ components:
       description: New web session issued with Set-Cookie and CSRF token.
       headers:
         Set-Cookie:
-          description: HttpOnly, SameSite=Lax, Secure, Path=/ session cookie.
+          description: "HttpOnly, Secure, Path=/ session cookie; SameSite=Lax by default, SameSite=None in the explicit cross-origin hosting mode."
           schema:
             type: string
       content:
@@ -1322,7 +2443,7 @@ components:
       description: Rotated web session id with a replacement Set-Cookie header.
       headers:
         Set-Cookie:
-          description: Replacement HttpOnly, SameSite=Lax, Secure, Path=/ session cookie.
+          description: "Replacement HttpOnly, Secure, Path=/ session cookie; SameSite=Lax by default, SameSite=None in the explicit cross-origin hosting mode."
           schema:
             type: string
       content:
@@ -1367,12 +2488,619 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/GithubSourceResolution'
+    BillingWallet:
+      description: Derived wallet projection. No mutable authoritative balance exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingWallet'
+    BillingLot:
+      description: Traceable expiring credit lot with issue and expiry dates.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLot'
+    BillingLotPage:
+      description: Opaque cursor page of credit lots.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLotPage'
+    BillingLedgerPage:
+      description: Opaque cursor page of immutable ledger entries.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingLedgerPage'
+    BillingReservation:
+      description: Atomic credit reservation with settlement checkpoints.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingReservation'
+    BillingSettlement:
+      description: One-minute settlement checkpoint with refill status.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingSettlement'
+    BillingUsage:
+      description: Immutable attributed usage event.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingUsage'
+    BillingUsagePage:
+      description: Opaque cursor page of owner-scoped usage attribution.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingUsagePage'
+    BillingRateCardPage:
+      description: Opaque cursor page of versioned rate cards.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingRateCardPage'
+    BillingReconciliation:
+      description: Ledger reconstruction with quarantine and alert status.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingReconciliation'
+    BillingCheckout:
+      description: Opaque server-priced checkout attempt. Polling never grants credits.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillingCheckout'
+    DodoWebhookAck:
+      description: Verified webhook acknowledgement with safe duplicate replay.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DodoWebhookAck'
+    PaymentReconciliation:
+      description: Polling repair summary for unresolved Dodo attempts.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaymentReconciliation'
   schemas:
+    SourceFilesPushRequest:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, content]
+            properties:
+              path:
+                type: string
+                minLength: 1
+                maxLength: 4096
+                description: Safe relative path; no `..`, absolute path or symlink.
+              content:
+                type: string
+                maxLength: 2796204
+                description: Base64-encoded file bytes, not a path or archive.
+              mode:
+                type: integer
+                enum: [420, 493]
+        sessionId:
+          type: string
+          pattern: '^ses_[a-f0-9]{30}$'
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+    CasPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [version, manifest, page]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        manifest:
+          type: object
+          additionalProperties: false
+          required: [syncId, pageHashes, fileCount, totalBytes]
+          properties:
+            syncId:
+              type: string
+              pattern: '^[a-f0-9]{32}$'
+            pageHashes:
+              type: array
+              minItems: 1
+              maxItems: 512
+              items:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            fileCount:
+              type: integer
+              minimum: 0
+              maximum: 100000
+            totalBytes:
+              type: integer
+              minimum: 0
+              maximum: 2147483648
+        page:
+          type: object
+          additionalProperties: false
+          required: [index, files, blobs]
+          properties:
+            index:
+              type: integer
+              minimum: 0
+              maximum: 511
+            files:
+              type: array
+              maxItems: 512
+              items:
+                type: object
+                description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The Session validates topology, paths, bounds and slice integrity.'
+                additionalProperties: true
+            blobs:
+              type: array
+              maxItems: 4096
+              items:
+                type: object
+                additionalProperties: false
+                required: [hash, size]
+                properties:
+                  hash:
+                    type: string
+                    pattern: '^[a-f0-9]{64}$'
+                  size:
+                    type: integer
+                    minimum: 0
+                    maximum: 16777216
+    CasApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [version, planId]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        planId:
+          type: string
+          pattern: '^casdo_[a-f0-9]{30}$'
+    CasCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the client's source tree.
+        changedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+          description: The paths the client's tree changed since the tree it last pushed.
+    CasCheckResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, changedPaths, changedCount, editedPaths, editedCount, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [unchanged, changed]
+        changedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The paths the client's tree changed since the tree the box applied.
+        changedCount:
+          type: integer
+          minimum: 0
+          description: How many paths the client's tree changed.
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The paths an agent edited inside the box; never empty when the state is changed because of an edit.
+        editedCount:
+          type: integer
+          minimum: 0
+          description: How many owned paths no longer match the applied manifest.
+        replayed:
+          type: boolean
+          description: The answer replays the receipt of the same request key.
+    CasFastApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [version, fingerprint, files, blobs]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the client's whole tree after the change.
+        files:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}. The delta is validated with the v2 page rules, so it is a tree the v2 applier would also accept.'
+            additionalProperties: true
+        blobs:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+                maximum: 16777216
+        deletedPaths:
+          type: array
+          maxItems: 1024
+          items:
+            type: string
+          description: The owned paths the client's tree no longer has.
+    CasFastApplyResult:
+      type: object
+      additionalProperties: false
+      required: [version, state, fingerprint, missing, writtenFiles, linkedFiles, removedFiles, fetchedBlobs, fetchedBytes, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [3]
+        state:
+          type: string
+          enum: [awaiting_blobs, applied, changed]
+          description: '`changed` names the owned paths an agent edited that the delta does not name and applies nothing; `editedPaths` and `editedCount` are present only on that answer.'
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: The content fingerprint of the tree the box now holds; on a changed answer, the tree it held before the push.
+        missing:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+              url:
+                type: string
+                description: Short-lived PUT capability; never log or persist it.
+        writtenFiles:
+          type: integer
+          minimum: 0
+          description: How many files the box rewrote.
+        linkedFiles:
+          type: integer
+          minimum: 0
+          description: How many files the box carried over with a link.
+        removedFiles:
+          type: integer
+          minimum: 0
+          description: How many owned paths the box deleted.
+        fetchedBlobs:
+          type: integer
+          minimum: 0
+        fetchedBytes:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+          description: The answer replays the receipt of the same request key.
+        editedPaths:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: The owned paths an agent edited that the delta does not name; present only when the state is changed.
+        editedCount:
+          type: integer
+          minimum: 0
+          description: How many owned paths an agent edited that the delta does not name; present only when the state is changed.
+    CasSourceResult:
+      type: object
+      additionalProperties: false
+      required: [version, planId, state, expiresAt, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        planId:
+          type: string
+        state:
+          type: string
+          enum: [uploading, pending, succeeded, failed]
+        expiresAt:
+          type: integer
+        replayed:
+          type: boolean
+        reason:
+          type: string
+        fetchedBlobs:
+          type: integer
+        fetchedBytes:
+          type: integer
+        missing:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+              size:
+                type: integer
+              url:
+                type: string
+                description: Short-lived PUT capability; never log or persist it.
+    CasSnapshotRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        sessionId:
+          type: string
+          pattern: '^ses_[a-f0-9]{30}$'
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        refresh:
+          type: boolean
+        scope:
+          type: string
+          enum: [owned, all]
+    CasSnapshotPageRequest:
+      type: object
+      additionalProperties: false
+      required: [version, snapshotId, index]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        sessionId:
+          type: string
+          pattern: '^ses_[a-f0-9]{30}$'
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        snapshotId:
+          type: string
+          pattern: '^cssnap_[a-f0-9]{30}$'
+        index:
+          type: integer
+          minimum: 0
+          maximum: 511
+    CasSnapshotManifest:
+      type: object
+      additionalProperties: false
+      required: [syncId, pageHashes, fileCount, totalBytes]
+      properties:
+        syncId:
+          type: string
+          pattern: '^[a-f0-9]{32}$'
+        pageHashes:
+          type: array
+          minItems: 1
+          maxItems: 512
+          items:
+            type: string
+            pattern: '^[a-f0-9]{64}$'
+        fileCount:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        totalBytes:
+          type: integer
+          minimum: 0
+          maximum: 2147483648
+    CasSnapshotPage:
+      type: object
+      additionalProperties: false
+      required: [index, files, blobs]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          maximum: 511
+        files:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            description: 'Exact directory {path,type:directory} or file {path,type:file,hash,size,mode,parts:[{hash,offset,size}]}.'
+            additionalProperties: true
+        blobs:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+                maximum: 16777216
+    CasSnapshotResult:
+      type: object
+      additionalProperties: false
+      required: [version, snapshotId, state, expiresAt, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        snapshotId:
+          type: string
+          pattern: '^cssnap_[a-f0-9]{30}$'
+        state:
+          type: string
+          enum: [pending, succeeded, failed]
+        expiresAt:
+          type: integer
+        replayed:
+          type: boolean
+        observedAt:
+          type: integer
+        stale:
+          type: boolean
+        manifest:
+          $ref: '#/components/schemas/CasSnapshotManifest'
+        page:
+          $ref: '#/components/schemas/CasSnapshotPage'
+        reason:
+          type: string
+    CasSnapshotPageResult:
+      type: object
+      additionalProperties: false
+      required: [version, snapshotId, state]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        snapshotId:
+          type: string
+          pattern: '^cssnap_[a-f0-9]{30}$'
+        state:
+          type: string
+          enum: [pending, succeeded, failed]
+        page:
+          $ref: '#/components/schemas/CasSnapshotPage'
+        reason:
+          type: string
+    CasPullRequest:
+      type: object
+      additionalProperties: false
+      required: [version, snapshotId, paths]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        sessionId:
+          type: string
+          pattern: '^ses_[a-f0-9]{30}$'
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        snapshotId:
+          type: string
+          pattern: '^cssnap_[a-f0-9]{30}$'
+        paths:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items:
+            type: string
+            minLength: 1
+            maxLength: 4096
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Opaque cursor from a previous reply's nextCursor; omit for the first page.
+    CasPullResult:
+      type: object
+      additionalProperties: false
+      required: [version, pullId, snapshotId, state, expiresAt, replayed]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+        pullId:
+          type: string
+          pattern: '^caspull_[a-f0-9]{30}$'
+        snapshotId:
+          type: string
+          pattern: '^cssnap_[a-f0-9]{30}$'
+        state:
+          type: string
+          enum: [pending, succeeded, failed]
+        expiresAt:
+          type: integer
+        replayed:
+          type: boolean
+        blobs:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            additionalProperties: false
+            required: [hash, size, url]
+            properties:
+              hash:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+              size:
+                type: integer
+                minimum: 0
+                maximum: 16777216
+              url:
+                type: string
+                description: Short-lived GET capability; never log or persist it.
+        nextCursor:
+          type: [string, 'null']
+          description: Opaque cursor for the next page of GET capabilities; null on the last page.
+        uploadedBlobs:
+          type: integer
+          minimum: 0
+        uploadedBytes:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
     SafeError:
       type: object
       additionalProperties: false
       required: [code, message]
       properties:
+        reasonCode:
+          type: string
+          maxLength: 128
+          pattern: "^[a-z][a-z0-9_]*$"
+        retryable:
+          type: boolean
         code:
           type: string
           minLength: 1
@@ -1380,10 +3108,51 @@ components:
         message:
           type: string
           minLength: 1
-          maxLength: 512
+          maxLength: 1024
         retryAfterSeconds:
           type: integer
           minimum: 0
+        nextStep:
+          type: string
+          maxLength: 1024
+          description: Safe public corrective action naming the next tool or REST call.
+        executionId:
+          type: string
+          maxLength: 128
+          description: The running execution that blocks this request, when the refusal names one.
+        runningExecutionIds:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 128
+          description: Every running execution that fills a box's concurrent-command limit.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: The concurrent-command limit the refusal enforced.
+        limitName:
+          type: string
+          maxLength: 128
+          pattern: "^[a-z][a-z0-9_]*$"
+          description: The stable name of the limit the refusal enforced, when it names a setting.
+        limitValue:
+          type: integer
+          minimum: 1
+          description: The value of the named limit the refusal enforced.
+        planId:
+          type: string
+          maxLength: 128
+          description: The source plan that blocks this request, when the refusal names one.
+        snapshotId:
+          type: string
+          maxLength: 128
+          description: The source snapshot that blocks this request, when the refusal names one.
+        reason:
+          type: string
+          description: Safe provider failure category; contains no provider coordinates or messages.
+          enum: [provider_region_unavailable, provider_toolbox_unreachable, provider_timeout, provider_refused, provider_error, box_stopped, box_destroyed, user_active_limit, global_capacity, admission_closed, budget_exhausted, gpu_budget_exhausted, spec_not_allowed, admission_unavailable, workspace_busy, source_apply_revoked, execution_cleanup_required, activation_pending, execution_limit_reached, manifest_invalid, plan_expired, blob_hash_mismatch, fetch_failed, apply_failed, path_conflict, disk_full, api_provider_storage_unavailable, account_store_full]
     ErrorEnvelope:
       type: object
       additionalProperties: false
@@ -1494,7 +3263,7 @@ components:
             minLength: 1
         status:
           type: string
-          enum: [active, delete_pending, deleted]
+          enum: [active, delete_pending, deleted, failed]
         version:
           type: integer
           minimum: 1
@@ -1519,7 +3288,7 @@ components:
           type: boolean
         state:
           type: string
-          enum: [running, stopped]
+          enum: [running, stopped, destroyed]
         sandboxId:
           type: string
           minLength: 1
@@ -1597,7 +3366,7 @@ components:
         normalizedState:
           type: string
           enum:
-            [created, starting, running, pausing, paused, stopping, stopped, destroying, destroyed]
+            [created, provisioning, starting, running, pausing, paused, stopping, stopped, destroying, destroyed, failed]
         rawState:
           type: string
           minLength: 1
@@ -1610,6 +3379,17 @@ components:
             - type: string
               minLength: 1
             - type: 'null'
+        failure:
+          type: object
+          additionalProperties: false
+          required: [reasonCode, nextStep]
+          properties:
+            reasonCode:
+              type: string
+              minLength: 1
+            nextStep:
+              type: string
+              minLength: 1
     ResourceLink:
       type: object
       additionalProperties: false
@@ -1669,6 +3449,56 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ResourceLink'
             - type: 'null'
+    SessionCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [id, createdAt, updatedAt, kind, projectId, sessionId, state, progress, requestId, error, resource, session]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 64
+        projectId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        sessionId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        state:
+          type: string
+          enum: [pending, running, succeeded, cancelled, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        requestId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/SafeError'
+            - type: 'null'
+        resource:
+          oneOf:
+            - $ref: '#/components/schemas/ResourceLink'
+            - type: 'null'
+        session:
+          $ref: '#/components/schemas/Session'
     Execution:
       type: object
       additionalProperties: false
@@ -1712,6 +3542,8 @@ components:
           oneOf:
             - $ref: '#/components/schemas/SafeError'
             - type: 'null'
+        hold:
+          $ref: '#/components/schemas/SafeError'
         truncated:
           type: boolean
         outputBytes:
@@ -1745,7 +3577,7 @@ components:
     CommandResult:
       type: object
       additionalProperties: false
-      required: [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes]
+      required: [kind, exitCode, stdout, stderr, truncated, outputBytes, outputLimitBytes, encoding]
       properties:
         kind:
           type: string
@@ -1764,6 +3596,18 @@ components:
         outputLimitBytes:
           type: integer
           minimum: 1
+        encoding:
+          type: object
+          additionalProperties: false
+          required: [stdout, stderr]
+          description: How each retained stream was decoded; utf-8-lossy means a replacement happened.
+          properties:
+            stdout:
+              type: string
+              enum: [utf-8, utf-8-lossy]
+            stderr:
+              type: string
+              enum: [utf-8, utf-8-lossy]
     InfrastructureResult:
       type: object
       additionalProperties: false
@@ -1888,6 +3732,137 @@ components:
         expiresAt:
           type: string
           format: date-time
+    BoxSizePrice:
+      type: object
+      additionalProperties: false
+      required: [microUsdPerHour]
+      properties:
+        microUsdPerHour:
+          type: integer
+          minimum: 0
+          description: The size's hourly price in whole micro-USD; never negative.
+    BoxSize:
+      type: object
+      additionalProperties: false
+      required: [id, gpuType, gpuCount, cpuMillicores, memoryBytes, diskBytes, maxLifetimeSeconds, price]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_-]*$'
+        gpuType:
+          type: [string, 'null']
+          maxLength: 64
+          description: The OCB-facing GPU type; null for a CPU size.
+        gpuCount:
+          type: integer
+          minimum: 0
+          maximum: 8
+        cpuMillicores:
+          type: integer
+          minimum: 1
+        memoryBytes:
+          type: integer
+          minimum: 1
+        diskBytes:
+          type: integer
+          minimum: 1
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+          description: The longest life this size may run under the caller's plan.
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+    GpuShape:
+      type: object
+      additionalProperties: false
+      required: [type, count]
+      properties:
+        type:
+          type: string
+          maxLength: 64
+        count:
+          type: integer
+          minimum: 1
+    GpuCheckProblem:
+      type: object
+      additionalProperties: false
+      required: [field, reason, message, requested, availableNow]
+      properties:
+        field:
+          type: string
+          enum: [gpu.type, gpu.count, gpu, lifetimeSeconds, gpuHours, cpu, memory, disk]
+        reason:
+          type: string
+          enum: [size_not_in_plan, lifetime_over_limit, gpu_budget_exhausted, gpu_unavailable, spec_not_allowed]
+        message:
+          type: string
+        requested:
+          type: string
+        availableNow:
+          type: array
+          items:
+            type: string
+    GpuCheckAlternative:
+      type: object
+      additionalProperties: false
+      required: [sizeId, gpu, maxLifetimeSeconds, price, capacityKnown]
+      properties:
+        sizeId:
+          type: string
+        gpu:
+          $ref: '#/components/schemas/GpuShape'
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+        capacityKnown:
+          type: boolean
+    GpuCheck:
+      type: object
+      additionalProperties: false
+      required: [ok, message]
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+        sizeId:
+          type: string
+        gpu:
+          $ref: '#/components/schemas/GpuShape'
+        lifetimeSeconds:
+          type: integer
+          minimum: 1
+        maxLifetimeSeconds:
+          type: integer
+          minimum: 1
+        price:
+          $ref: '#/components/schemas/BoxSizePrice'
+        capacityKnown:
+          type: boolean
+        reason:
+          type: string
+          enum: [size_not_in_plan, lifetime_over_limit, gpu_budget_exhausted, gpu_unavailable, spec_not_allowed]
+        problems:
+          type: array
+          items:
+            $ref: '#/components/schemas/GpuCheckProblem'
+        alternatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/GpuCheckAlternative'
+    BoxSizePage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BoxSize'
     ProjectPage:
       type: object
       additionalProperties: false
@@ -2012,6 +3987,67 @@ components:
       properties:
         requestedSpec:
           type: object
+          additionalProperties: false
+          description: Closed allowlist of non-authoritative runtime knobs. Billing authority is server-side only; BYOK/managed is never client-selectable, so byok and billingMode are not part of this schema and are rejected. The MCP `session_create` requestedSpec is a stricter typed subset (integer cpu/memory, no region); see docs/t13-http-contract.md.
+          properties:
+            lifetimeSeconds:
+              type: integer
+              minimum: 300
+              maximum: 86400
+              description: Optional shorter lifetime in seconds; must also be at or below the size's maxLifetimeSeconds from GET /v1/sizes and the resolved account entitlement. The absolute safety ceiling is one day.
+            gpuType:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: '^[a-z][a-z0-9_-]*$'
+              description: GPU type to create, from GET /v1/sizes. Give it with gpuCount and without sizeId. GET /v1/gpu-check says first whether the box is possible.
+            gpuCount:
+              type: integer
+              minimum: 1
+              maximum: 64
+              description: GPUs in the box. Give it with gpuType.
+            sizeId:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: '^[a-z][a-z0-9_-]*$'
+              description: Optional box size id from GET /v1/sizes. The size fixes the box's snapshot and resources; omit for the plan's default size. A size the plan does not offer is refused with reasonCode size_not_in_plan.
+            diskGib:
+              type: integer
+              minimum: 1
+              maximum: 1024
+              description: Disk in GiB for a GPU box. It applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
+            cpu:
+              type: string
+              minLength: 1
+              maxLength: 64
+              description: vCPU count as a whole number. On a GPU box it applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
+            image:
+              type: string
+              minLength: 1
+              maxLength: 512
+            memory:
+              type: string
+              minLength: 1
+              maxLength: 64
+              description: Memory in MiB as a whole number. On a GPU box it applies only where custom GPU shapes are enabled for the account and is otherwise refused with reasonCode spec_not_allowed.
+            region:
+              type: string
+              minLength: 1
+              maxLength: 64
+            runtime:
+              type: string
+              minLength: 1
+              maxLength: 64
+        secretReferenceIds:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          description: Optional ids of the caller's own active secret references in this project, resolved through the same owner-scoped service as MCP `session_create`. The value is never sent or returned; an id that names no active reference of this owner and project is refused.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
     CreateExecutionRequest:
       type: object
       additionalProperties: false
@@ -2025,6 +4061,9 @@ components:
           type: integer
           minimum: 1
           maximum: 3600
+        wait:
+          type: boolean
+          description: Wait for the command to finish before answering, up to the server completion window (8000 ms on staging). Default false: answer at acceptance with state pending and poll getExecution.
     CreateSourceManifestRequest:
       type: object
       additionalProperties: false
@@ -2051,6 +4090,7 @@ components:
           minLength: 1
           maxLength: 1398104
           pattern: '^[A-Za-z0-9+/]+={0,2}$'
+          description: Canonical base64 chunk payload. The contract bound (1398104 chars) covers the worst-case encoding of one 1 MiB decoded chunk; the transport additionally caps the raw string at 2,000,000 chars and rejects payloads decoding past 1 MiB (MAX_CHUNK_BYTES).
         checksum:
           type: string
           pattern: '^[a-f0-9]{64}$'
@@ -2067,6 +4107,146 @@ components:
           type: integer
           minimum: 60
           maximum: 86400
+    SecretReferencePage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretReference'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    CreateSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [name, provider, exposureMode, value]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 64
+        exposureMode:
+          type: string
+          enum: [process, host]
+        allowedHosts:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            minLength: 1
+            maxLength: 253
+        value:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        headerForm:
+          type: string
+          enum: [basic, bearer]
+          description: 'How the API builds the complete Authorization header value from value before it is saved: basic is Basic base64(username:value) and bearer is Bearer value. The box sends Authorization: $NAME with the saved value. Omit to store value verbatim.'
+        username:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 'Username for headerForm: basic; defaults to x-access-token. Not allowed with headerForm: bearer.'
+        confirmUnrestrictedHosts:
+          type: boolean
+        confirmProcessExposure:
+          type: boolean
+    RotateSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      description: 'If the secret was created with a headerForm, the API applies that saved form to value before storing it.'
+      required: [value]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 32768
+    DeleteSecretReferenceRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        confirmInUse:
+          type: boolean
+    DeleteConfirmationRequest:
+      type: object
+      additionalProperties: false
+      description: Optional confirmation for destructive project/environment deletes that gate on live usage.
+      properties:
+        confirmInUse:
+          type: boolean
+    EnvironmentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [environmentId, projectId, variables, policy, secretOrder, updatedAt]
+      properties:
+        environmentId:
+          type: string
+          minLength: 1
+        projectId:
+          type: string
+          minLength: 1
+        variables:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/NonSecretVariable'
+        policy:
+          $ref: '#/components/schemas/EnvironmentPolicy'
+        secretOrder:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        updatedAt:
+          type: string
+          format: date-time
+    NonSecretVariable:
+      type: object
+      additionalProperties: false
+      required: [name, value]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        value:
+          type: string
+          maxLength: 8192
+    EnvironmentPolicy:
+      type: object
+      additionalProperties: false
+      required: [egressMode, requireHostAllowlist]
+      properties:
+        egressMode:
+          type: string
+          enum: [open]
+        requireHostAllowlist:
+          type: boolean
+          enum: [true]
+    UpdateEnvironmentConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [variables, secretOrder]
+      properties:
+        variables:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/NonSecretVariable'
+        secretOrder:
+          type: array
+          items:
+            type: string
+            minLength: 1
     RequestMagicLinkRequest:
       type: object
       additionalProperties: false
@@ -2077,6 +4257,11 @@ components:
           minLength: 3
           maxLength: 320
           pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+        redirectTo:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "Optional same-origin post-login path. Resolved through the server allowlist at issuance and echoed by the consume response."
     MagicLinkAccepted:
       type: object
       additionalProperties: false
@@ -2131,6 +4316,27 @@ components:
           type: string
           minLength: 1
           maxLength: 512
+    AuthIdentity:
+      type: object
+      additionalProperties: false
+      required: [subject, audience, scopes, expiresAt]
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 128
+        audience:
+          type: string
+          enum: [cli, mcp]
+        scopes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        expiresAt:
+          type: string
+          format: date-time
     WebSession:
       type: object
       additionalProperties: false
@@ -2163,6 +4369,11 @@ components:
           minLength: 32
           maxLength: 256
           pattern: '^[A-Za-z0-9_-]+$'
+        redirectTo:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "Server-resolved post-login path bound to a magic-link token at issuance; present only when the request supplied one."
     StartCliAuthorizationRequest:
       type: object
       additionalProperties: false
@@ -2181,7 +4392,7 @@ components:
         codeChallenge:
           type: string
           minLength: 43
-          maxLength: 128
+          maxLength: 43
           pattern: '^[A-Za-z0-9_-]+$'
         codeChallengeMethod:
           type: string
@@ -2435,5 +4646,440 @@ components:
           minLength: 1
           maxLength: 256
         resolvedAt:
+          type: string
+          format: date-time
+    BillingWallet:
+      type: object
+      additionalProperties: false
+      required: [ownerId, availableMicrocredits, reservedMicrocredits, consumedMicrocredits, expiredMicrocredits, grantedMicrocredits, adjustmentsMicrocredits]
+      properties:
+        ownerId:
+          type: string
+          minLength: 1
+        availableMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        reservedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        consumedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        expiredMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        grantedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        adjustmentsMicrocredits:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)$'
+    BillingLot:
+      type: object
+      additionalProperties: false
+      required: [id, ownerId, source, issuedMicrocredits, remainingMicrocredits, issuedAt, expiresAt]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          enum: [onboarding, purchase, campaign, refund, adjustment]
+        issuedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        remainingMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        issuedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        restrictions:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        externalRef:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+    BillingLotPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingLot'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingLedgerLeg:
+      type: object
+      additionalProperties: false
+      required: [account, amountMicrocredits, sign]
+      properties:
+        account:
+          type: string
+          enum: [wallet, issuance, revenue, forfeiture, adjustment]
+        amountMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        sign:
+          type: integer
+          enum: [1, -1]
+    BillingLedgerEntry:
+      type: object
+      additionalProperties: false
+      required: [id, businessEventId, kind, legs, at, ownerId]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        businessEventId:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum: [grant, purchase, refund, adjustment, correction, capture, expire, release]
+        legs:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/BillingLedgerLeg'
+        at:
+          type: string
+          format: date-time
+        ownerId:
+          type: string
+          minLength: 1
+    BillingLedgerPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingLedgerEntry'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingReservation:
+      type: object
+      additionalProperties: false
+      required: [id, ownerId, state, reservedMicrocredits, remainingMicrocredits, settledMicrocredits, rateCardVersion, rateMicrocreditsPerMinute, createdAt, updatedAt, expiresAt]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum: [active, captured, expired, released]
+        reservedMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        remainingMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        settledMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        rateCardVersion:
+          type: string
+          minLength: 1
+        rateMicrocreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    CreateBillingReservationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        minimumMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        rateCardVersion:
+          type: string
+          minLength: 1
+          maxLength: 32
+        rateMicrocreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+    SettleBillingReservationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+    BillingSettlement:
+      type: object
+      additionalProperties: false
+      required: [reservationId, captureMicrocredits, refilled]
+      properties:
+        reservationId:
+          type: string
+          minLength: 1
+        captureMicrocredits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        refilled:
+          type: boolean
+    BillingUsage:
+      type: object
+      additionalProperties: false
+      required: [eventId, ownerId, billingMode, billable, quantity, unit, source, windowStart, windowEnd, ingestedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        billingMode:
+          type: string
+          enum: [managed, byok]
+          description: Server-authoritative billing mode. `byok` is accepted but ignored: hosted usage is always recorded as `managed`/billable and never becomes non-billable through a client-authored value.
+        billable:
+          type: boolean
+          description: Server-derived billability. Always true for hosted `managed` usage.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        unit:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          minLength: 1
+        windowStart:
+          type: string
+          format: date-time
+        windowEnd:
+          type: string
+          format: date-time
+        ingestedAt:
+          type: string
+          format: date-time
+        providerReportId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        sessionId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+    BillingUsagePage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingUsage'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    IngestBillingUsageRequest:
+      type: object
+      additionalProperties: false
+      required: [eventId, billingMode, quantity, unit, source, windowStart, windowEnd]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        billingMode:
+          type: string
+          enum: [managed, byok]
+          description: Accepted but ignored. The server always ingests as `managed`/billable; send `managed`, and never rely on a `byok` body to change billability.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 32
+        source:
+          type: string
+          minLength: 1
+          maxLength: 64
+        windowStart:
+          type: string
+          format: date-time
+        windowEnd:
+          type: string
+          format: date-time
+        providerReportId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        sessionId:
+          type: string
+          minLength: 1
+          maxLength: 36
+    BillingRateCard:
+      type: object
+      additionalProperties: false
+      required: [version, kind, effectiveFrom, enabled, fixture, microcreditsPerMinute]
+      properties:
+        version:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          minLength: 1
+        effectiveFrom:
+          type: string
+          format: date-time
+        enabled:
+          type: boolean
+        fixture:
+          type: boolean
+        microcreditsPerMinute:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+    BillingRateCardPage:
+      type: object
+      additionalProperties: false
+      required: [data, nextCursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingRateCard'
+        nextCursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+    BillingReconciliation:
+      type: object
+      additionalProperties: false
+      required: [ownerId, quarantined, mismatches, reconciledAt]
+      properties:
+        ownerId:
+          type: string
+          minLength: 1
+        quarantined:
+          type: boolean
+        mismatches:
+          type: array
+          items:
+            type: string
+        alert:
+          oneOf:
+            - type: string
+            - type: 'null'
+        reconciledAt:
+          type: string
+          format: date-time
+    CreateBillingCheckoutRequest:
+      type: object
+      additionalProperties: false
+      required: [credits]
+      properties:
+        credits:
+          type: integer
+          minimum: 1000
+          maximum: 100000
+    BillingCheckout:
+      type: object
+      additionalProperties: false
+      required: [attemptId, ownerId, credits, amountMinorUnits, currency, catalogVersion, status, providerPaymentId, checkoutUrl, createdAt, updatedAt]
+      properties:
+        attemptId:
+          type: string
+          minLength: 1
+        ownerId:
+          type: string
+          minLength: 1
+        credits:
+          type: integer
+          minimum: 1000
+        amountMinorUnits:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+        currency:
+          type: string
+          minLength: 1
+        catalogVersion:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [created, pending, paid, failed, cancelled, verification_required, partially_refunded, refunded, disputed]
+        providerPaymentId:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+        checkoutUrl:
+          oneOf:
+            - type: string
+              format: uri
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DodoWebhookAck:
+      type: object
+      additionalProperties: false
+      required: [received, duplicate]
+      properties:
+        received:
+          type: boolean
+          enum: [true]
+        duplicate:
+          type: boolean
+    PaymentReconciliation:
+      type: object
+      additionalProperties: false
+      required: [checked, repaired, mismatches, reconciledAt]
+      properties:
+        checked:
+          type: integer
+          minimum: 0
+        repaired:
+          type: integer
+          minimum: 0
+        mismatches:
+          type: array
+          items:
+            type: string
+        reconciledAt:
           type: string
           format: date-time

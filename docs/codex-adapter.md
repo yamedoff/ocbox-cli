@@ -142,8 +142,10 @@ ordering, and unrelated tables survive untouched, and only strictly owned or
 verified-legacy fragments are ever removed. `hooks.json` is normalized to
 two-space JSON on write, so it is semantically (not byte-) preserving:
 unrelated hooks and keys are kept, but formatting is not. Every applied change
-records a backup path (`.ocbox-backup`), and applying is crash-safe: a failed
-later write rolls back the earlier writes. `doctor` checks (`config-parse`,
+records a backup path (`.ocbox-backup`), and applying is crash-safe: before
+each write it re-reads the target and refuses with `CODEX_APPLY_CONFLICT` if the
+content no longer matches the plan, and a failed later write rolls back the
+earlier writes. `doctor` checks (`config-parse`,
 `hooks-parse`, `hook-representation`, `orphaned-hooks`, `owned-entries`,
 `selected-session`, `provider-readiness`, `schema-proof`, `hook-contract`,
 `recursion-guard`, `project-trust`) report drift without writing.

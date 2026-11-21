@@ -1,6 +1,8 @@
+import { serverAuthReason } from './server-reasons.js'
 import { z } from 'zod'
 import type { CliTokenPair } from '../api/generated/client.js'
 import { OcboxError } from '../errors/index.js'
+import { assertCliVersionSupported } from '../version/gate.js'
 import { normalizeIssuer, validateEndpointOverride } from './config.js'
 import { newRequestId } from './errors.js'
 import type { FetchPort } from './ports.js'
@@ -40,6 +42,7 @@ export type { CliTokenPair }
 
 interface ErrorEnvelope {
   readonly code?: unknown
+  readonly reasonCode?: unknown
   readonly requestId?: unknown
 }
 
@@ -52,6 +55,7 @@ function errorFromBody(text: string): ErrorEnvelope {
     if (error === null || typeof error !== 'object' || Array.isArray(error)) return {}
     return {
       code: (error as { code?: unknown }).code,
+      reasonCode: (error as { reasonCode?: unknown }).reasonCode,
       requestId: (parsed as { requestId?: unknown }).requestId,
     }
   } catch {
@@ -276,6 +280,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
   }
 
   async revoke(input: RevokeInput): Promise<void> {
+    assertCliVersionSupported()
     const timeout = withTimeout(input.signal, this.#options.timeoutMilliseconds)
     try {
       if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
@@ -313,6 +318,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
     body: Readonly<Record<string, string>>,
     signal: AbortSignal | undefined,
   ): Promise<CliTokenPair> {
+    assertCliVersionSupported()
     const timeout = withTimeout(signal, this.#options.timeoutMilliseconds)
     try {
       if (timeout.didCancel() || timeout.didTimeout()) throw this.#transportError(timeout)
@@ -362,6 +368,7 @@ export class CliOAuthClient implements CliOAuthClientPort {
     const providerCode = providerCodeOf(envelope)
     const headerRequestId = response.headers.get('x-request-id')
     const retryAfter = retryAfterSeconds(response)
+    const reason = serverAuthReason(envelope.reasonCode)
     const details: Record<string, string | number> = {}
     // Index-signature access is required by TS4111 for this redacted details map.
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
@@ -370,10 +377,32 @@ export class CliOAuthClient implements CliOAuthClientPort {
       // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
       details['providerRequestId'] = headerRequestId
     }
+    if (reason !== null) {
+      details['reasonCode'] = reason.reasonCode
+      details['nextStep'] = reason.nextStep
+    }
     const base = {
       ...(providerCode === undefined ? {} : { providerCode }),
       ...(Object.keys(details).length === 0 ? {} : { details }),
       requestId,
+    }
+    if (reason !== null) {
+      const reference =
+        headerRequestId !== null && /^req_[a-f0-9]{12}$/.test(headerRequestId)
+          ? ` Reference ${headerRequestId}.`
+          : ''
+      return new OcboxError({
+        ...base,
+        code:
+          response.status === 429
+            ? 'PROVIDER_RATE_LIMIT'
+            : response.status >= 500
+              ? 'PROVIDER_UNAVAILABLE'
+              : response.status === 403
+                ? 'AUTH_FORBIDDEN'
+                : 'AUTH_REQUIRED',
+        message: `${reason.message} ${reason.nextStep} Reason ${reason.reasonCode}.${reference}`,
+      })
     }
     switch (response.status) {
       case 429:

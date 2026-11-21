@@ -162,18 +162,19 @@ export const SessionSchema = z
 
     if (activeBindings.length === 0) {
       const isProvisioning = session.state === 'creating'
+      const isDestroying = session.state === 'destroying'
       const isVerifiedDeletion =
         session.state === 'destroyed' && session.sandboxDeletionVerifiedAt !== null
       // A create operation can fail before a provider returns a Sandbox. Keep
       // that terminal Session for diagnosis and explicit user selection rather
       // than inventing a binding or silently replacing the failed resource.
       const isFailedBeforeBinding = session.state === 'error' && session.bindings.length === 0
-      if (!isProvisioning && !isVerifiedDeletion && !isFailedBeforeBinding) {
+      if (!isProvisioning && !isDestroying && !isVerifiedDeletion && !isFailedBeforeBinding) {
         context.addIssue({
           code: 'custom',
           path: ['bindings'],
           message:
-            'Zero active bindings is valid only during provisioning, before binding failure, or after verified deletion',
+            'Zero active bindings is valid only during provisioning, destroying, before binding failure, or after verified deletion',
         })
       }
     }

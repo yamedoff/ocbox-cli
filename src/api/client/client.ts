@@ -1,4 +1,9 @@
-import { createClient, type ApiResult, type OpenCloudBoxClient } from '../generated/client.js'
+import {
+  createClient,
+  type ApiResult,
+  type ApiTransport,
+  type OpenCloudBoxClient,
+} from '../generated/client.js'
 import { createAuthenticatedTransport } from '../../auth/hosted-client.js'
 import {
   DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
@@ -28,6 +33,24 @@ export interface ApiCallMetadata {
   readonly status: number
 }
 
+/** The project session list query; `includeDestroyed` postdates the pin. */
+export interface SessionListQuery {
+  readonly projectId: string
+  readonly cursor?: string | undefined
+  readonly limit?: number | undefined
+  readonly includeDestroyed?: boolean | undefined
+}
+
+/** The read-only GPU check query, in the units the hosted route names. */
+export interface GpuCheckQuery {
+  readonly gpuType: string
+  readonly gpuCount: number
+  readonly lifetimeSeconds?: number | undefined
+  readonly cpu?: number | undefined
+  readonly memoryMib?: number | undefined
+  readonly diskGib?: number | undefined
+}
+
 function withoutManagedHeaders(
   headers: Readonly<Record<string, string>> | undefined,
 ): Readonly<Record<string, string>> | undefined {
@@ -48,6 +71,7 @@ function withoutManagedHeaders(
 export class OcboxApiClient {
   readonly #client: OpenCloudBoxClient
   readonly #protocol: HostedProtocolEndpoints
+  readonly #transport: ApiTransport
 
   constructor(options: OcboxApiClientOptions) {
     const headers = withoutManagedHeaders(options.headers)
@@ -58,6 +82,7 @@ export class OcboxApiClient {
       timeoutMilliseconds: options.timeoutMilliseconds ?? DEFAULT_HTTP_TIMEOUT_MILLISECONDS,
     })
     this.#protocol = options.protocol
+    this.#transport = transport
     this.#client = createClient(options.protocol.issuer, {
       transport,
       headers: {
@@ -70,6 +95,103 @@ export class OcboxApiClient {
 
   get generated(): OpenCloudBoxClient {
     return this.#client
+  }
+
+  /**
+   * Reads the box sizes the caller's plan offers. The pinned generated client
+   * predates this route, so it is requested here through the same
+   * authenticated transport and the same failure mapping as every other call.
+   */
+  async listSizes(signal?: AbortSignal): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const response = await this.#transport.fetch(new URL(`${base}/v1/sizes`), {
+      method: 'GET',
+      headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Reads whether a GPU box can be created right now. Like `listSizes`, the
+   * pinned generated client predates this route, so it travels through the same
+   * authenticated transport and the same failure mapping as every other call.
+   */
+  async checkGpuSpec(query: GpuCheckQuery, signal?: AbortSignal): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(`${base}/v1/gpu-check`)
+    url.searchParams.set('gpuType', query.gpuType)
+    url.searchParams.set('gpuCount', String(query.gpuCount))
+    if (query.lifetimeSeconds !== undefined)
+      url.searchParams.set('lifetimeSeconds', String(query.lifetimeSeconds))
+    if (query.cpu !== undefined) url.searchParams.set('cpu', String(query.cpu))
+    if (query.memoryMib !== undefined) url.searchParams.set('memoryMib', String(query.memoryMib))
+    if (query.diskGib !== undefined) url.searchParams.set('diskGib', String(query.diskGib))
+    const response = await this.#transport.fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Lists one project's Sessions. The pinned generated client predates the
+   * `includeDestroyed` query parameter, so this route is requested through the
+   * same authenticated transport and failure mapping as `listSizes`.
+   */
+  async listProjectSessions(
+    query: SessionListQuery,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(`${base}/v1/projects/${encodeURIComponent(query.projectId)}/sessions`)
+    if (query.cursor !== undefined) url.searchParams.set('cursor', query.cursor)
+    if (query.limit !== undefined) url.searchParams.set('limit', String(query.limit))
+    if (query.includeDestroyed !== undefined)
+      url.searchParams.set('includeDestroyed', String(query.includeDestroyed))
+    const response = await this.#transport.fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
   }
 
   get issuer(): string {
@@ -103,6 +225,8 @@ export class OcboxApiClient {
       retryAfterSeconds: envelope.retryAfterSeconds ?? null,
       serverCode: envelope.code,
       serverMessage: envelope.message,
+      reasonCode: envelope.reasonCode,
+      nextStep: envelope.nextStep,
       status: result.status,
     })
   }
