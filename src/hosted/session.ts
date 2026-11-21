@@ -6,7 +6,8 @@ const sandboxBinding = z.strictObject({
   ordinal: z.number().int().nonnegative(),
   role: z.literal('primary'),
   active: z.boolean(),
-  state: z.enum(['running', 'stopped']),
+  // A newer server may publish a state this pin does not know; show it as-is instead of failing.
+  state: z.string().min(1),
   sandboxId: z.string().min(1),
   boundAt: z.iso.datetime({ offset: true }),
   releasedAt: z.iso.datetime({ offset: true }).nullable(),
@@ -22,18 +23,9 @@ export const HostedSessionSchema = z.strictObject({
   projectId: z.string().min(1),
   requestedSpec: z.record(z.string(), z.unknown()),
   effectiveSpec: z.record(z.string(), z.unknown()),
-  normalizedState: z.enum([
-    'created',
-    'provisioning',
-    'starting',
-    'running',
-    'pausing',
-    'paused',
-    'stopping',
-    'stopped',
-    'destroying',
-    'destroyed',
-  ]),
+  // The server's normalized states grow (`failed` postdates the pin); keep every published and
+  // future value as a string so a newer server never breaks `session list`/`session get`.
+  normalizedState: z.string().min(1),
   rawState: z.string().min(1),
   sandboxes: z.array(sandboxBinding),
   primarySandboxId: z.string().min(1).nullable(),

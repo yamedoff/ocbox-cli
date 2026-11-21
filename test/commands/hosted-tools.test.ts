@@ -193,6 +193,85 @@ describe('session list command', () => {
     expect(printed.data.sessions[0]).toMatchObject({ id: 'ses_1', normalizedState: 'running' })
     expect(printed.data.nextCursor).toBe('next-session')
   })
+
+  it('lists a failed box and a destroyed binding from the current server shapes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          data: [
+            session({
+              id: 'ses_failed',
+              normalizedState: 'failed',
+              rawState: 'admission_denied',
+              failure: {
+                reasonCode: 'user_active_limit',
+                nextStep: 'Stop an active Session before starting another.',
+              },
+            }),
+            session({
+              id: 'ses_destroyed',
+              normalizedState: 'destroyed',
+              rawState: 'destroyed',
+              sandboxes: [
+                {
+                  ordinal: 0,
+                  role: 'primary',
+                  active: false,
+                  state: 'destroyed',
+                  sandboxId: 'sbx_1',
+                  boundAt: now(),
+                  releasedAt: now(),
+                },
+              ],
+            }),
+          ],
+          nextCursor: null,
+        }),
+      ),
+    )
+
+    await SessionList.run([...runArguments(), '--project-id', 'prj_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain(
+      'ses_failed  failed  project=prj_1\nReason user_active_limit.',
+    )
+    expect(output(stdoutSpy)).toContain('ses_destroyed  destroyed  project=prj_1')
+  })
+
+  it('passes an unknown future state through as a string', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          data: [
+            session({
+              normalizedState: 'hibernating',
+              sandboxes: [
+                {
+                  ordinal: 0,
+                  role: 'primary',
+                  active: true,
+                  state: 'hibernating',
+                  sandboxId: 'sbx_1',
+                  boundAt: now(),
+                  releasedAt: null,
+                },
+              ],
+              primarySandboxId: 'sbx_1',
+            }),
+          ],
+          nextCursor: null,
+        }),
+      ),
+    )
+
+    await SessionList.run([...runArguments(), '--project-id', 'prj_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain('ses_1  hibernating  project=prj_1 sandbox=sbx_1')
+  })
 })
 
 describe('session get command', () => {
@@ -245,6 +324,89 @@ describe('session get command', () => {
 
     expect(process.exitCode).toBe(1)
     expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+  })
+
+  it('renders a failed box and its admission reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          session({
+            normalizedState: 'failed',
+            rawState: 'admission_denied',
+            failure: {
+              reasonCode: 'user_active_limit',
+              nextStep: 'Stop an active Session before starting another.',
+            },
+          }),
+        ),
+      ),
+    )
+
+    await SessionGet.run([...runArguments(), 'ses_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain('ses_1  failed  project=prj_1\nReason user_active_limit.')
+  })
+
+  it('renders a destroyed box whose primary binding is destroyed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          session({
+            normalizedState: 'destroyed',
+            rawState: 'destroyed',
+            sandboxes: [
+              {
+                ordinal: 0,
+                role: 'primary',
+                active: false,
+                state: 'destroyed',
+                sandboxId: 'sbx_1',
+                boundAt: now(),
+                releasedAt: now(),
+              },
+            ],
+          }),
+        ),
+      ),
+    )
+
+    await SessionGet.run([...runArguments(), 'ses_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain('ses_1  destroyed  project=prj_1')
+  })
+
+  it('passes an unknown future state through as a string', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          session({
+            normalizedState: 'hibernating',
+            sandboxes: [
+              {
+                ordinal: 0,
+                role: 'primary',
+                active: true,
+                state: 'hibernating',
+                sandboxId: 'sbx_1',
+                boundAt: now(),
+                releasedAt: null,
+              },
+            ],
+            primarySandboxId: 'sbx_1',
+          }),
+        ),
+      ),
+    )
+
+    await SessionGet.run([...runArguments(), 'ses_1'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toContain('ses_1  hibernating  project=prj_1 sandbox=sbx_1')
   })
 })
 
