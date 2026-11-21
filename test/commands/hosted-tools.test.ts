@@ -206,7 +206,8 @@ describe('session list command', () => {
               rawState: 'admission_denied',
               failure: {
                 reasonCode: 'user_active_limit',
-                nextStep: 'Stop an active Session before starting another.',
+                nextStep:
+                  'You have reached the number of running boxes for your plan; stop or destroy one (session_list) and retry.',
               },
             }),
             session({
@@ -336,7 +337,8 @@ describe('session get command', () => {
             rawState: 'admission_denied',
             failure: {
               reasonCode: 'user_active_limit',
-              nextStep: 'Stop an active Session before starting another.',
+              nextStep:
+                'You have reached the number of running boxes for your plan; stop or destroy one (session_list) and retry.',
             },
           }),
         ),
