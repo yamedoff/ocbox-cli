@@ -7,6 +7,7 @@ export interface ApiFailureInput {
   readonly status: number
   readonly serverCode?: string | undefined
   readonly serverMessage?: string | undefined
+  readonly reasonCode?: string | undefined
   readonly nextStep?: string | undefined
   readonly requestId?: string | null | undefined
   readonly responseRequestId?: string | null | undefined
@@ -95,6 +96,14 @@ export function mapApiFailureToOcboxError(input: ApiFailureInput): OcboxError {
   ) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['nextStep'] = input.nextStep
+  }
+  if (
+    typeof input.reasonCode === 'string' &&
+    /^[a-z][a-z0-9_]{0,127}$/.test(input.reasonCode) &&
+    RedactedDetailsSchema.safeParse({ reasonCode: input.reasonCode }).success
+  ) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reasonCode'] = input.reasonCode
   }
   if (
     serverRequestId !== null &&

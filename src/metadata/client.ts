@@ -12,6 +12,7 @@ import {
 } from '../auth/runtime.js'
 import { IdempotencyKeySchema, RequestIdSchema } from '../domain/ids.js'
 import { OcboxError } from '../errors/index.js'
+import { SafeErrorSchema } from '../hosted/safe-error.js'
 
 // These schemas mirror the pinned public OpenAPI DTOs. Unknown/private fields
 // fail closed before they can enter CLI JSON or human output.
@@ -39,28 +40,6 @@ export const ProjectPageSchema = z.strictObject({
 export const EnvironmentPageSchema = z.strictObject({
   data: z.array(EnvironmentSchema),
   nextCursor: z.string().nullable(),
-})
-const SafeErrorSchema = z.strictObject({
-  code: z.string().min(1).max(64),
-  message: z.string().min(1).max(1024),
-  retryAfterSeconds: z.number().int().nonnegative().optional(),
-  reason: z
-    .enum([
-      'provider_region_unavailable',
-      'provider_toolbox_unreachable',
-      'provider_timeout',
-      'provider_refused',
-      'provider_error',
-      'user_active_limit',
-      'global_capacity',
-      'admission_closed',
-      'budget_exhausted',
-      'spec_not_allowed',
-      'admission_unavailable',
-      'workspace_busy',
-      'source_apply_revoked',
-    ])
-    .optional(),
 })
 const ResourceLinkSchema = z.strictObject({
   type: z.enum(['project', 'environment', 'session', 'execution', 'sourceManifest', 'preview']),
