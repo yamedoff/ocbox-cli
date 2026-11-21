@@ -318,6 +318,18 @@ describe('sync service', () => {
     expect(renderSyncApplied(result)).toContain(`Next: ${command}`)
   })
 
+  it('does not ask for an install when the pushed lockfile is unchanged', async () => {
+    const { context: sync, local } = await pair()
+    await writeFile(join(local, 'package-lock.json'), '{"lockfileVersion":3}')
+    await runSyncApply(sync, 'push', applyOptions())
+
+    await writeFile(join(local, 'app.js'), 'app')
+    const result = await runSyncApply(sync, 'push', applyOptions())
+
+    expect(result.summary?.installCommand).toBeNull()
+    expect(renderSyncApplied(result)).not.toContain('Next:')
+  })
+
   it('round-trips binary content byte for byte', async () => {
     const { context: sync, local, remote } = await pair()
     const bytes = Uint8Array.of(0, 255, 1, 128, 10, 0, 42)
