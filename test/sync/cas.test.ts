@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import {
   CAS_LIMITS,
   casHash,
   validateCasPages,
+  type CasPage,
   type CasResult,
   type CasTransport,
 } from '../../src/sync/cas-contract.js'
@@ -125,6 +126,70 @@ describe('CAS snapshots and transfer', () => {
       path: 'link',
       reason: 'symlink',
     })
+  })
+
+  it('never reads, packs or plans ignore-matched and secret-looking source files', async () => {
+    const { root, source } = await setup()
+    const { ProjectIdSchema, SessionIdSchema } = await import('../../src/domain/ids.js')
+    const { runSyncApply } = await import('../../src/sync/service.js')
+    const secret = 'SECRET_TOKEN=do-not-upload'
+    await writeFile(join(source, '.gitignore'), '.env\nignored.txt\n')
+    await writeFile(join(source, '.opencloudboxignore'), 'ocb-ignored.txt\n')
+    await writeFile(join(source, '.env'), secret)
+    await writeFile(join(source, 'ignored.txt'), 'gitignore-content')
+    await writeFile(join(source, 'ocb-ignored.txt'), 'opencloudboxignore-content')
+    await writeFile(join(source, 'app.js'), 'console.log(1)\n')
+
+    const groups = await loadIgnoreRuleGroups(source, [])
+    const scan = await scanSourceManifest(source, { ignoreRuleGroups: groups })
+    const excluded = new Map(scan.entries.map((entry) => [entry.path as string, entry] as const))
+    expect(excluded.get('.env')?.exclusionReason).toBe('secret-environment')
+    expect(excluded.get('ignored.txt')?.exclusionReason).toBe('user-rule')
+    expect(excluded.get('ocb-ignored.txt')?.exclusionReason).toBe('user-rule')
+    // A null checksum is the scanner's proof that excluded content was never
+    // opened and hashed for transfer.
+    for (const path of ['.env', 'ignored.txt', 'ocb-ignored.txt'])
+      expect(excluded.get(path)?.sha256).toBeNull()
+
+    const plans: CasPage[] = []
+    const stateDirectory = join(root, 'state')
+    const context = {
+      providerName: 'ocbox',
+      projectId: ProjectIdSchema.parse('11111111-1111-4111-8111-111111111111'),
+      sessionId: SessionIdSchema.parse('22222222-2222-4222-8222-222222222222'),
+      localRoot: source,
+      remoteRoot: join(root, 'remote'),
+      stateDirectory,
+      casTransport: {
+        scope: 'test',
+        sessionId: 'sesdo_test',
+        async call(request: Parameters<CasTransport['call']>[0]): Promise<CasResult> {
+          if (request.operation === 'plan') plans.push(request.page)
+          return { ...baseReceipt, state: 'succeeded' }
+        },
+      },
+    }
+    const view = await runSyncApply(context, 'push', {
+      cliRules: [],
+      delete: false,
+      yes: false,
+      interactive: false,
+      confirm: async () => false,
+    })
+    const planned = plans.flatMap((page) => page.files.map((file) => file.path)).toSorted()
+    expect(planned).toEqual(['.gitignore', '.opencloudboxignore', 'app.js'])
+    expect(view.uploadedFiles?.toSorted()).toEqual(['.gitignore', '.opencloudboxignore', 'app.js'])
+
+    const stateFiles = await readdir(stateDirectory, { recursive: true })
+    const blobPaths = stateFiles.filter((name) => {
+      const segments = name.split(/[\\/]/)
+      const index = segments.indexOf('blobs')
+      return index >= 0 && index < segments.length - 1
+    })
+    const cached = await Promise.all(blobPaths.map((name) => readFile(join(stateDirectory, name))))
+    expect(cached.length).toBeGreaterThan(0)
+    for (const marker of [secret, 'gitignore-content', 'opencloudboxignore-content'])
+      expect(cached.some((bytes) => bytes.includes(marker))).toBe(false)
   })
 
   it('rejects unsigned state tampering and never saves upload capabilities', async () => {
