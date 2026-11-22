@@ -361,7 +361,12 @@ async function hostedLifecycle() {
   const otherOrigin = `http://127.0.0.1:${otherServer.address().port}`
   environment.OCBOX_API_URL = origin
   const credentials = new infrastructure.ProtectedFileCredentialStore(
-    infrastructure.resolveCurrentPlatformPaths(environment).credentialDirectory,
+    infrastructure.resolvePlatformPaths({
+      platform: process.platform,
+      homeDirectory: platformRoot,
+      environment,
+      isWsl: false,
+    }).credentialDirectory,
   )
   const key = { kind: 'hosted-oauth', provider: 'ocbox', accountId: 'default' }
   const metadataStore = new infrastructure.AuthMetadataStore(join(state, 'auth.json'))

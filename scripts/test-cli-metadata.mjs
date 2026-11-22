@@ -317,7 +317,12 @@ try {
     provider: infra.CLI_CREDENTIAL_PROVIDER,
   }
   const store = new infra.ProtectedFileCredentialStore(
-    infra.resolveCurrentPlatformPaths(environment).credentialDirectory,
+    infra.resolvePlatformPaths({
+      platform: process.platform,
+      homeDirectory: platformRoot,
+      environment,
+      isWsl: false,
+    }).credentialDirectory,
   )
   const metadata = new infra.AuthMetadataStore(join(stateRoot, 'auth.json'))
   await store.set(key, credential)

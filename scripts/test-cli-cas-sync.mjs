@@ -318,7 +318,12 @@ async function success(pending, jsonl = false) {
 }
 try {
   const credentials = new infrastructure.ProtectedFileCredentialStore(
-    infrastructure.resolveCurrentPlatformPaths(env).credentialDirectory,
+    infrastructure.resolvePlatformPaths({
+      platform: process.platform,
+      homeDirectory: platform,
+      environment: env,
+      isWsl: false,
+    }).credentialDirectory,
   )
   const identity = { kind: 'hosted-oauth', provider: 'ocbox', accountId: 'default' }
   const credential = {
