@@ -15,9 +15,14 @@ describe('hosted operation waiter', () => {
     let calls = 0
     let elapsed = 0
     const sleeps: number[] = []
-    const { api } = await seededApi(async () => jsonResponse(hostedOperationFixture({
-      kind: 'source.apply', state: ++calls === 12 ? 'succeeded' : 'running',
-    })))
+    const { api } = await seededApi(async () =>
+      jsonResponse(
+        hostedOperationFixture({
+          kind: 'source.apply',
+          state: ++calls === 12 ? 'succeeded' : 'running',
+        }),
+      ),
+    )
     const options = {
       healthyPollMilliseconds: 1000,
       now: () => elapsed,
@@ -33,38 +38,53 @@ describe('hosted operation waiter', () => {
     expect(elapsed).toBeLessThanOrEqual(15_000)
   })
 
-  it.each(['network', '429', '503', 'operation hint'])('resumes steady polling after %s', async (failure) => {
-    let calls = 0
-    let elapsed = 0
-    const sleeps: number[] = []
-    const store = new MemoryOperationCheckpointStore()
-    // A network failure reaches the waiter only after the client's own two retries.
-    const clientRetries = failure === 'network' ? 2 : 0
-    const { api } = await seededApi(async () => {
-      calls += 1
-      if (failure === 'network' && calls >= 2 && calls <= 2 + clientRetries) {
-        throw new TypeError('Connection interrupted')
-      }
-      if (calls === 2) {
-        if (failure === '429') return errorResponse('RATE_LIMITED', 429, REQUEST_ID, 2)
-        if (failure === '503') return errorResponse('SERVICE_UNAVAILABLE', 503, REQUEST_ID)
-        return jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'running',
-          error: { code: 'RETRY_LATER', message: 'Try later', retryAfterSeconds: 3 } }))
-      }
-      return jsonResponse(hostedOperationFixture({ kind: 'source.apply',
-        state: calls === 4 + clientRetries ? 'succeeded' : 'running' }))
-    })
-    await waitForHostedOperation(api, 'op_hosted_1', {
-      healthyPollMilliseconds: 1000, now: () => elapsed, random: () => 0, store,
-      sleep: async (ms) => {
-        sleeps.push(ms)
-        elapsed += ms
-      },
-    })
-    const backoff = failure === '429' ? 2000 : failure === 'operation hint' ? 3000 : 500
-    expect(sleeps).toEqual([1000, backoff, 1000])
-    expect((await store.load('op_hosted_1'))?.attempt).toBe(4)
-  })
+  it.each(['network', '429', '503', 'operation hint'])(
+    'resumes steady polling after %s',
+    async (failure) => {
+      let calls = 0
+      let elapsed = 0
+      const sleeps: number[] = []
+      const store = new MemoryOperationCheckpointStore()
+      // A network failure reaches the waiter only after the client's own two retries.
+      const clientRetries = failure === 'network' ? 2 : 0
+      const { api } = await seededApi(async () => {
+        calls += 1
+        if (failure === 'network' && calls >= 2 && calls <= 2 + clientRetries) {
+          throw new TypeError('Connection interrupted')
+        }
+        if (calls === 2) {
+          if (failure === '429') return errorResponse('RATE_LIMITED', 429, REQUEST_ID, 2)
+          if (failure === '503') return errorResponse('SERVICE_UNAVAILABLE', 503, REQUEST_ID)
+          return jsonResponse(
+            hostedOperationFixture({
+              kind: 'source.apply',
+              state: 'running',
+              error: { code: 'RETRY_LATER', message: 'Try later', retryAfterSeconds: 3 },
+            }),
+          )
+        }
+        return jsonResponse(
+          hostedOperationFixture({
+            kind: 'source.apply',
+            state: calls === 4 + clientRetries ? 'succeeded' : 'running',
+          }),
+        )
+      })
+      await waitForHostedOperation(api, 'op_hosted_1', {
+        healthyPollMilliseconds: 1000,
+        now: () => elapsed,
+        random: () => 0,
+        store,
+        sleep: async (ms) => {
+          sleeps.push(ms)
+          elapsed += ms
+        },
+      })
+      const backoff = failure === '429' ? 2000 : failure === 'operation hint' ? 3000 : 500
+      expect(sleeps).toEqual([1000, backoff, 1000])
+      expect((await store.load('op_hosted_1'))?.attempt).toBe(4)
+    },
+  )
 
   it('honours cancellation during a steady wait', async () => {
     let calls = 0
@@ -75,14 +95,18 @@ describe('hosted operation waiter', () => {
       return jsonResponse(hostedOperationFixture({ kind: 'source.apply', state: 'running' }))
     })
     const sleeps: number[] = []
-    await expect(waitForHostedOperation(api, 'op_hosted_1', {
-      healthyPollMilliseconds: 1000, now: () => elapsed, signal: controller.signal,
-      sleep: async (ms) => {
-        sleeps.push(ms)
-        elapsed += ms
-        controller.abort()
-      },
-    })).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await expect(
+      waitForHostedOperation(api, 'op_hosted_1', {
+        healthyPollMilliseconds: 1000,
+        now: () => elapsed,
+        signal: controller.signal,
+        sleep: async (ms) => {
+          sleeps.push(ms)
+          elapsed += ms
+          controller.abort()
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
     expect(sleeps).toEqual([1000])
     expect(calls).toBe(1)
   })
@@ -91,11 +115,17 @@ describe('hosted operation waiter', () => {
     let calls = 0
     let elapsed = 0
     const sleeps: number[] = []
-    const { api } = await seededApi(async () => jsonResponse(hostedOperationFixture({
-      kind: 'session_start', state: ++calls === 4 ? 'succeeded' : 'running',
-    })))
+    const { api } = await seededApi(async () =>
+      jsonResponse(
+        hostedOperationFixture({
+          kind: 'session_start',
+          state: ++calls === 4 ? 'succeeded' : 'running',
+        }),
+      ),
+    )
     await waitForHostedOperation(api, 'op_hosted_1', {
-      now: () => elapsed, random: () => 0,
+      now: () => elapsed,
+      random: () => 0,
       sleep: async (ms) => {
         sleeps.push(ms)
         elapsed += ms

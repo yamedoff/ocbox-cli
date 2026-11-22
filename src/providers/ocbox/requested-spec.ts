@@ -102,7 +102,8 @@ export function sizeRefusalError(
   reasonCode: string | undefined,
   requestId: RequestId,
 ): OcboxError | undefined {
-  if (reasonCode === undefined || !Object.hasOwn(SIZE_REFUSAL_MESSAGES, reasonCode)) return undefined
+  if (reasonCode === undefined || !Object.hasOwn(SIZE_REFUSAL_MESSAGES, reasonCode))
+    return undefined
   const message = SIZE_REFUSAL_MESSAGES[reasonCode]
   if (message === undefined) return undefined
   return new OcboxError({ code: 'INVALID_SPEC', message, providerCode: reasonCode, requestId })
