@@ -17,7 +17,7 @@ on:
       - .github/workflows/image.yml
   workflow_dispatch:
   schedule:
-    - cron: '17 4 * * 2'
+    - cron: "17 4 * * 2"
 
 permissions:
   contents: read
@@ -76,7 +76,8 @@ jobs:
             --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             --metadata-file runtime-build-metadata.json \
             .
-          jq -e '."containerimage.config.digest" | test("^sha256:[0-9a-f]{64}$")' runtime-build-metadata.json
+          # --load records the manifest digest, not a separate config digest.
+          jq -e '."containerimage.digest" | test("^sha256:[0-9a-f]{64}$")' runtime-build-metadata.json
       - name: Export attested OCI candidate
         run: |
           mkdir -p artifacts
@@ -136,7 +137,7 @@ jobs:
           image-ref: ${{ env.IMAGE_REF }}
           format: json
           output: artifacts/trivy.json
-          exit-code: '1'
+          exit-code: "1"
           severity: CRITICAL
           scanners: vuln,secret
           ignore-unfixed: false
