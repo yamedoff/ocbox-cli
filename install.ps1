@@ -38,7 +38,15 @@ $MinNodeMajor = 22
       Fail "Node.js $MinNodeMajor or newer is required (found $nodeVersion). Install it from https://nodejs.org/ and run this again."
     }
 
-    if ($null -eq (Get-Command npm -ErrorAction SilentlyContinue)) {
+    # Prefer the command shim over npm.ps1: Windows PowerShell 5.1 can resolve
+    # bare `npm` to the PowerShell wrapper, whose status code is not reliable here.
+    $npmCommand = if ($null -ne (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+      'npm.cmd'
+    }
+    else {
+      'npm'
+    }
+    if ($null -eq (Get-Command $npmCommand -ErrorAction SilentlyContinue)) {
       Fail "npm was not found. Install Node.js $MinNodeMajor or newer from https://nodejs.org/ and run this again."
     }
 
@@ -139,7 +147,7 @@ $MinNodeMajor = 22
       $prefix = Join-Path $env:LOCALAPPDATA 'ocbox'
       New-Item -ItemType Directory -Force -Path $prefix | Out-Null
 
-      & npm install -g --prefix $prefix $tarballPath
+      & $npmCommand install -g --prefix $prefix $tarballPath
       if ($LASTEXITCODE -ne 0) {
         Fail 'npm install failed.'
       }
