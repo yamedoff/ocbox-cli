@@ -10,9 +10,15 @@ verifyImageSources(baseline)
 
 const cases = [
   [
-    'loaded image identity must match the verified OCI config',
+    'exported image manifest must match the manifest buildx recorded for --load',
     (sources) => {
       sources.workflow = sources.workflow.replace('sha256sum "$config_path"', 'echo ignored')
+    },
+  ],
+  [
+    'exported image manifest must match the manifest buildx recorded for --load',
+    (sources) => {
+      sources.workflow = sources.workflow.replace('test "$image_manifest_digest" =', 'echo ignored')
     },
   ],
   [

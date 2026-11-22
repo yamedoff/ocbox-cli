@@ -35,8 +35,10 @@ The workflow builds `linux/amd64`, records the final digest and BuildKit
 provenance, emits an SPDX JSON SBOM from the final image, and scans that same image
 for critical vulnerabilities and credential material. The classic loadable image
 is built with provenance disabled, and a second OCI export carries the
-attestations; both builds pin `SOURCE_DATE_EPOCH` to the source commit time and are
-accepted only when their image config digests match. Non-pull-request runs also
+attestations; both builds pin `SOURCE_DATE_EPOCH` to the source commit time. The
+exported image manifest must match the manifest digest buildx recorded for the
+loaded image, and both the manifest and config blob hashes are verified.
+Non-pull-request runs also
 attest and sign the candidate archive through GitHub OIDC, then verify the bundle;
 there is no long-lived signing key. All third-party actions use immutable commit
 SHAs.

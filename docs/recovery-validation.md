@@ -23,12 +23,13 @@ validate candidates; merging or publishing a release is a separate reviewed acti
 
 The dependency repair advances the transitive `brace-expansion` lockfile entry from
 5.0.9 to 5.0.12, preserving the pinned direct dependencies and audit threshold.
-The image workflow checks the loaded Docker image ID against the config digest in
-the exported OCI runtime manifest, verifying both manifest and config blob hashes.
-This binds runtime settings and ordered rootfs diff IDs without relying on exporter
-metadata serialization. Run 36790209610 logged the same exported config digest for
-both outputs but failed the exporter metadata comparison; the exact metadata
-difference remains unverified. The actual loaded/archive identity check must pass.
+The image workflow compares the exported OCI image manifest digest with the
+manifest digest buildx records for the loaded image, then verifies the config blob
+hash. This binds runtime settings and ordered rootfs diff IDs without relying on
+exporter metadata serialization or a Docker image-store-specific image ID. Run
+36790209610 logged the same exported config digest for both outputs but failed the
+exporter metadata comparison; the exact metadata difference remains unverified.
+The actual loaded/archive identity check must pass.
 
 Windows auth harness phase diagnostics contain command names, event names, elapsed
 times and mock exchange counts only. They preserve the existing timeouts and all

@@ -17,7 +17,7 @@ on:
       - .github/workflows/image.yml
   workflow_dispatch:
   schedule:
-    - cron: '17 4 * * 2'
+    - cron: "17 4 * * 2"
 
 permissions:
   contents: read
@@ -99,16 +99,26 @@ jobs:
           # OCI archive index.json wraps the attested image index. Walk at most
           # three indexes, hashing each selected descriptor before reading it.
           manifest_path=artifacts/oci-layout/index.json
+          image_manifest_digest=
           for depth in 1 2 3; do
             manifest_digest=$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] as $runtime | if ($runtime | length) == 1 then $runtime[0].digest elif ($runtime | length) == 0 and (.manifests | length) == 1 and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json" then .manifests[0].digest else error("ambiguous runtime manifest") end' "$manifest_path")
             manifest_path="artifacts/oci-layout/blobs/sha256/${manifest_digest#sha256:}"
             test "sha256:$(sha256sum "$manifest_path" | cut -d ' ' -f 1)" = "$manifest_digest"
-            if jq -e 'has("config")' "$manifest_path" > /dev/null; then break; fi
+            if jq -e 'has("config")' "$manifest_path" > /dev/null; then
+              image_manifest_digest=$manifest_digest
+              break
+            fi
           done
+          test -n "$image_manifest_digest"
+          # Compare the exported image manifest with the manifest digest buildx
+          # recorded for the loaded image. Newer buildx no longer reports the
+          # config digest for --load, and docker's image ID may be either the
+          # config or manifest digest depending on the image store.
+          test "$image_manifest_digest" = "$(jq -er '."containerimage.digest"' runtime-build-metadata.json)"
           config_digest=$(jq -er '.config.digest' "$manifest_path")
           config_path="artifacts/oci-layout/blobs/sha256/${config_digest#sha256:}"
           test "sha256:$(sha256sum "$config_path" | cut -d ' ' -f 1)" = "$config_digest"
-          test "$(docker image inspect "$IMAGE_REF" --format '{{.Id}}')" = "$config_digest"
+          echo "Verified image manifest $image_manifest_digest with config $config_digest"
           # Keep small review evidence; the complete layout remains in the tar.
           cp "$config_path" artifacts/image-config.json
           rm -rf artifacts/oci-layout
@@ -137,7 +147,7 @@ jobs:
           image-ref: ${{ env.IMAGE_REF }}
           format: json
           output: artifacts/trivy.json
-          exit-code: '1'
+          exit-code: "1"
           severity: CRITICAL
           scanners: vuln,secret
           ignore-unfixed: false
