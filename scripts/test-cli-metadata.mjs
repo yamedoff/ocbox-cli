@@ -199,6 +199,7 @@ const server = createServer(async (request, response) => {
         outputBytes: output.length,
         outputLimitBytes: 1048576,
         truncated: false,
+        encoding: { stdout: 'utf-8', stderr: 'utf-8' },
       }
     } else {
       executionResult = {
