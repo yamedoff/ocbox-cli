@@ -17,7 +17,7 @@ on:
       - .github/workflows/image.yml
   workflow_dispatch:
   schedule:
-    - cron: "17 4 * * 2"
+    - cron: '17 4 * * 2'
 
 permissions:
   contents: read
@@ -137,7 +137,7 @@ jobs:
           image-ref: ${{ env.IMAGE_REF }}
           format: json
           output: artifacts/trivy.json
-          exit-code: "1"
+          exit-code: '1'
           severity: CRITICAL
           scanners: vuln,secret
           ignore-unfixed: false
