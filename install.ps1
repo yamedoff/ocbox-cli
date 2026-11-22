@@ -150,7 +150,13 @@ $MinNodeMajor = 22
         Fail "SHA256SUMS does not list $tarballName."
       }
 
-      $actual = (Get-FileHash -LiteralPath $tarballPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      # .NET directly: Get-FileHash lives in a module that is not always loadable (e.g. a reset PSModulePath).
+      $stream = [System.IO.File]::OpenRead($tarballPath)
+      try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $actual = ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+      } finally { $stream.Dispose() }
       if ($actual -ne $expected) {
         Fail "Checksum mismatch for $tarballName. Refusing to install."
       }
