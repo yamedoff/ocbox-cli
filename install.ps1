@@ -20,14 +20,28 @@ $MinNodeMajor = 22
     throw $Message
   }
 
+  # Windows PowerShell 5.1 can turn a native command's stderr into an error
+  # record that the script-wide Stop preference makes fatal. Native commands
+  # are checked through $LASTEXITCODE instead, so keep their stderr non-fatal.
+  function Invoke-Native([scriptblock]$Command) {
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      & $Command
+    }
+    finally {
+      $ErrorActionPreference = $saved
+    }
+  }
+
   try {
     if ($null -eq (Get-Command node -ErrorAction SilentlyContinue)) {
       Fail "Node.js $MinNodeMajor or newer is required. Install it from https://nodejs.org/ and run this again."
     }
 
-    $nodeVersion = (& node -p 'process.versions.node').Trim()
+    $nodeVersion = (Invoke-Native { & node -p 'process.versions.node' }).Trim()
     if ([string]::IsNullOrWhiteSpace($nodeVersion)) {
-      $nodeVersion = (& node --version).Trim()
+      $nodeVersion = (Invoke-Native { & node --version }).Trim()
     }
     $nodeVersion = $nodeVersion.TrimStart('v')
     $nodeMajor = 0
@@ -147,7 +161,8 @@ $MinNodeMajor = 22
       $prefix = Join-Path $env:LOCALAPPDATA 'ocbox'
       New-Item -ItemType Directory -Force -Path $prefix | Out-Null
 
-      & $npmCommand install -g --prefix $prefix $tarballPath
+      $global:LASTEXITCODE = 0
+      Invoke-Native { & $npmCommand install -g --prefix $prefix $tarballPath }
       if ($LASTEXITCODE -ne 0) {
         Fail 'npm install failed.'
       }
@@ -191,7 +206,8 @@ $MinNodeMajor = 22
         $env:Path = $env:Path.TrimEnd(';') + ';' + $binDir
       }
 
-      $installedVersion = & $ocboxCommand --version
+      $global:LASTEXITCODE = 0
+      $installedVersion = Invoke-Native { & $ocboxCommand --version }
       if ($LASTEXITCODE -ne 0) {
         Fail 'The installed ocbox command could not run.'
       }
