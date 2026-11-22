@@ -330,7 +330,6 @@ async function hostedLifecycle() {
         truncated: false,
         outputBytes: 0,
         outputLimitBytes: 1024,
-        encoding: { stdout: 'utf-8', stderr: 'utf-8' },
       })
     return absent()
 
