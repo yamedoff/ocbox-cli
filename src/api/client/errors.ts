@@ -7,8 +7,11 @@ export interface ApiFailureInput {
   readonly status: number
   readonly serverCode?: string | undefined
   readonly serverMessage?: string | undefined
+  readonly reason?: string | undefined
   readonly reasonCode?: string | undefined
   readonly nextStep?: string | undefined
+  readonly limitName?: string | undefined
+  readonly limitValue?: number | undefined
   readonly requestId?: string | null | undefined
   readonly responseRequestId?: string | null | undefined
   readonly retryAfterSeconds?: number | null | undefined
@@ -59,6 +62,126 @@ function validServerRequestId(value: string | null | undefined): string | null {
   return SERVER_REQUEST_ID_PATTERN.test(value) ? value : null
 }
 
+const SAFE_REASON_PATTERN = /^[a-z][a-z0-9_]{0,127}$/
+
+function safeReasonDetail(
+  value: string | undefined,
+  key: 'reason' | 'reasonCode' | 'limitName',
+): string | null {
+  if (typeof value !== 'string' || !SAFE_REASON_PATTERN.test(value)) return null
+  return RedactedDetailsSchema.safeParse({ [key]: value }).success ? value : null
+}
+
+function safeLimitValue(value: number | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) return null
+  return value
+}
+
+/**
+ * Names the enforced limit and its next step in the human message. The writer
+ * still appends a `Next:` line for errors without a limit; this keeps the
+ * guidance together for refusals that carry `limitName`/`limitValue`.
+ */
+function withLimitGuidance(
+  message: string,
+  limitName: string | null,
+  limitValue: number | null,
+  nextStep: string | null,
+): string {
+  if (limitName === null && limitValue === null) return message
+  const limit =
+    limitName !== null && limitValue !== null
+      ? `The ${limitName} limit is ${limitValue}.`
+      : limitName !== null
+        ? `The ${limitName} limit was reached.`
+        : `The limit of ${String(limitValue)} was reached.`
+  const trimmed = message.trim()
+  const base = /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+  const combined = `${base} ${limit}`
+  if (nextStep === null || combined.includes(nextStep)) return combined
+  const withNext = `${combined} Next: ${nextStep}`
+  // The public message is capped at 1000 characters; the writer prints a long
+  // next step on its own line when it cannot fit inside the message.
+  return withNext.length <= 1_000 ? withNext : combined
+}
+
+/** The refusal fields a hosted error envelope may carry. */
+export interface RefusalEnvelope {
+  readonly reason?: string | undefined
+  readonly reasonCode?: string | undefined
+  readonly nextStep?: string | undefined
+  readonly limitName?: string | undefined
+  readonly limitValue?: number | undefined
+}
+
+interface ValidatedRefusalFields {
+  readonly nextStep: string | null
+  readonly reason: string | null
+  readonly reasonCode: string | null
+  readonly limitName: string | null
+  readonly limitValue: number | null
+}
+
+/** Validates and redacts every refusal field a server may supply. */
+function validatedRefusalFields(input: RefusalEnvelope): ValidatedRefusalFields {
+  return {
+    nextStep:
+      typeof input.nextStep === 'string' &&
+      RedactedDetailsSchema.safeParse({ nextStep: input.nextStep }).success
+        ? input.nextStep
+        : null,
+    reason: safeReasonDetail(input.reason, 'reason'),
+    reasonCode: safeReasonDetail(input.reasonCode, 'reasonCode'),
+    limitName: safeReasonDetail(input.limitName, 'limitName'),
+    limitValue: safeLimitValue(input.limitValue),
+  }
+}
+
+/**
+ * Carries a refused create's server envelope onto the admission error the
+ * catalogue already classified. The code, provider code, and friendly message
+ * stay; the validated refusal fields travel as redacted details and the
+ * enforced limit and next step join the human message.
+ */
+export function withRefusalEnvelope(error: OcboxError, envelope: RefusalEnvelope): OcboxError {
+  const refusal = validatedRefusalFields(envelope)
+  const details: Record<string, string | number> = {}
+  if (refusal.nextStep !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['nextStep'] = refusal.nextStep
+  }
+  if (refusal.reason !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reason'] = refusal.reason
+  }
+  if (refusal.reasonCode !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reasonCode'] = refusal.reasonCode
+  }
+  if (refusal.limitName !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitName'] = refusal.limitName
+  }
+  if (refusal.limitValue !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitValue'] = refusal.limitValue
+  }
+  const message = withLimitGuidance(
+    error.message,
+    refusal.limitName,
+    refusal.limitValue,
+    refusal.nextStep,
+  )
+  if (Object.keys(details).length === 0 && message === error.message) return error
+  return new OcboxError({
+    code: error.code,
+    message,
+    requestId: error.requestId,
+    ...(error.providerCode === undefined ? {} : { providerCode: error.providerCode }),
+    ...(Object.keys(details).length === 0 ? {} : { details }),
+  })
+}
+
 /**
  * Maps hosted HTTP/envelope failures to the stable public catalogue.
  * The pinned contract publishes the same catalogue the CLI owns, so a server
@@ -90,20 +213,27 @@ export function mapApiFailureToOcboxError(input: ApiFailureInput): OcboxError {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['retryAfterSeconds'] = retryAfter
   }
-  if (
-    typeof input.nextStep === 'string' &&
-    RedactedDetailsSchema.safeParse({ nextStep: input.nextStep }).success
-  ) {
+  const refusal = validatedRefusalFields(input)
+  const { nextStep, limitName, limitValue } = refusal
+  if (nextStep !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
-    details['nextStep'] = input.nextStep
+    details['nextStep'] = nextStep
   }
-  if (
-    typeof input.reasonCode === 'string' &&
-    /^[a-z][a-z0-9_]{0,127}$/.test(input.reasonCode) &&
-    RedactedDetailsSchema.safeParse({ reasonCode: input.reasonCode }).success
-  ) {
+  if (refusal.reason !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
-    details['reasonCode'] = input.reasonCode
+    details['reason'] = refusal.reason
+  }
+  if (refusal.reasonCode !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reasonCode'] = refusal.reasonCode
+  }
+  if (limitName !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitName'] = limitName
+  }
+  if (limitValue !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitValue'] = limitValue
   }
   if (
     serverRequestId !== null &&
@@ -129,12 +259,18 @@ export function mapApiFailureToOcboxError(input: ApiFailureInput): OcboxError {
     const serverMessage = input.serverMessage
     if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
       try {
-        return new OcboxError({ ...base, message: serverMessage })
+        return new OcboxError({
+          ...base,
+          message: withLimitGuidance(serverMessage, limitName, limitValue, nextStep),
+        })
       } catch {
         // The server message carried unsafe material; never echo it.
       }
     }
-    return new OcboxError({ ...base, message: fallbackMessage })
+    return new OcboxError({
+      ...base,
+      message: withLimitGuidance(fallbackMessage, limitName, limitValue, nextStep),
+    })
   }
 
   if (preserved !== null) {
@@ -276,8 +412,12 @@ export interface ErrorEnvelopeLike {
   readonly error?:
     | {
         readonly code?: unknown
+        readonly reason?: unknown
+        readonly reasonCode?: unknown
         readonly message?: unknown
         readonly nextStep?: unknown
+        readonly limitName?: unknown
+        readonly limitValue?: unknown
         readonly retryAfterSeconds?: unknown
       }
     | undefined
@@ -303,6 +443,8 @@ export function envelopeOf(body: unknown): {
   reasonCode?: string | undefined
   message?: string | undefined
   nextStep?: string | undefined
+  limitName?: string | undefined
+  limitValue?: number | undefined
   requestId?: string | undefined
   retryAfterSeconds?: number | undefined
 } {
@@ -313,6 +455,8 @@ export function envelopeOf(body: unknown): {
     reasonCode?: unknown
     message?: unknown
     nextStep?: unknown
+    limitName?: unknown
+    limitValue?: unknown
     retryAfterSeconds?: unknown
   }
   const retryAfter =
@@ -327,6 +471,8 @@ export function envelopeOf(body: unknown): {
     ...(typeof error.reasonCode === 'string' ? { reasonCode: error.reasonCode } : {}),
     ...(typeof error.message === 'string' ? { message: error.message } : {}),
     ...(typeof error.nextStep === 'string' ? { nextStep: error.nextStep } : {}),
+    ...(typeof error.limitName === 'string' ? { limitName: error.limitName } : {}),
+    ...(typeof error.limitValue === 'number' ? { limitValue: error.limitValue } : {}),
     ...(typeof body.requestId === 'string' ? { requestId: body.requestId } : {}),
     ...(retryAfter === undefined ? {} : { retryAfterSeconds: retryAfter }),
   }
