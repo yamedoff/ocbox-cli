@@ -27,9 +27,8 @@ import {
 
 // No sockets: the production factory, credential stores and file locks run
 // unchanged; only fetch answers locally. Each factory models an independent CLI.
-// Configurable response latency stays below the real 5s lock acquisition limit.
-const requestDelayMilliseconds = Number(process.env['C14_REQUEST_DELAY_MS'] ?? 3000)
-
+// Explicit gates keep the cancellation/streaming overlap deterministic instead
+// of relying on response latency and scheduler timing.
 describe('streaming requests release the authentication gate before response waits', () => {
   let directory: string
   let cancellation: PromiseSettledResult<unknown>
@@ -40,8 +39,6 @@ describe('streaming requests release the authentication gate before response wai
   const command = new AsyncLocalStorage<string>()
 
   beforeAll(async () => {
-    expect(requestDelayMilliseconds).toBeGreaterThanOrEqual(2000)
-    expect(requestDelayMilliseconds).toBeLessThanOrEqual(3000)
     directory = await mkdtemp(join(tmpdir(), 'streaming-auth-lock-'))
     const environment = { ...process.env, XDG_CONFIG_HOME: directory, APPDATA: directory }
     const endpoints = protocolEndpointsFromIssuer('https://api.test')
@@ -94,19 +91,33 @@ describe('streaming requests release the authentication gate before response wai
       return state
     })
     const polling = deferred<void>()
+    const cancellationRequested = deferred<void>()
+    const releaseCancellation = deferred<void>()
+    const polledDuringCancellation = deferred<void>()
+    let firstEventResponse = true
     let collecting = true
     let cancellingNow = false
     let cancelled = false
     vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(input)).pathname
       calls.push(path)
+      if (command.getStore() === 'cancel') cancelRequests += 1
       if (path.endsWith('/events')) {
         polling.resolve()
-        if (cancellingNow) pollsDuringCancel += 1
+        if (cancellingNow) {
+          pollsDuringCancel += 1
+          polledDuringCancellation.resolve()
+        }
+        // Hold the first event page until cancellation has dispatched its HTTP
+        // request, so the second poll provably overlaps the in-flight cancel.
+        if (firstEventResponse) {
+          firstEventResponse = false
+          await cancellationRequested.promise
+        }
       }
-      if (command.getStore() === 'cancel') cancelRequests += 1
-      await delay(requestDelayMilliseconds)
       if (path.endsWith('/cancel')) {
+        cancellationRequested.resolve()
+        await releaseCancellation.promise
         cancelled = true
         return jsonResponse({}, 202)
       }
@@ -163,9 +174,13 @@ describe('streaming requests release the authentication gate before response wai
     )
     await polling.promise
     cancellingNow = true
-    ;[cancellation] = await Promise.allSettled([
-      command.run('cancel', () => cancelling.cancelSandboxExecution(sandboxId, undefined, 30_000)),
-    ])
+    const cancellingRun = command.run('cancel', () =>
+      cancelling.cancelSandboxExecution(sandboxId, undefined, 30_000),
+    )
+    await cancellationRequested.promise
+    await polledDuringCancellation.promise
+    releaseCancellation.resolve()
+    ;[cancellation] = await Promise.allSettled([cancellingRun])
     cancellingNow = false
     collecting = false
     // Abort the real collector through its public cancellation entrypoint.

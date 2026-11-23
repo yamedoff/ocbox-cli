@@ -167,9 +167,10 @@ export function verifyImageSources({
   assert(
     ociStep.includes('sha256sum "$manifest_path"') &&
       ociStep.includes('sha256sum "$config_path"') &&
-      ociStep.includes('docker image inspect "$IMAGE_REF" --format \'{{.Id}}\'') &&
-      ociStep.includes('= "$config_digest"'),
-    'loaded image identity must match the verified OCI config',
+      ociStep.includes('image_manifest_digest=$manifest_digest') &&
+      ociStep.includes('test "$image_manifest_digest" =') &&
+      ociStep.includes('runtime-build-metadata.json'),
+    'exported image manifest must match the manifest buildx recorded for --load',
   )
   assert(dockerfile.includes('ARG SOURCE_DATE_EPOCH='), 'reproducible build epoch default')
   assert(
