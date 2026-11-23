@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { assertErrorRedacted } from '../../src/api/client/client.js'
 import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../src/api/client/errors.js'
 import { OcboxError } from '../../src/errors/index.js'
+import { seededApi } from './doubles.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
 const NEXT_STEP =
@@ -187,6 +188,44 @@ describe('hosted error mapping', () => {
     expect(mapped.message).toBe('Box admission was refused')
     expect(mapped.message).not.toContain('boxes_per_account')
     expect(mapped.message).not.toMatch(/\blimit\b/i)
+  })
+
+  it('passes a refused create envelope through the client boundary', async () => {
+    const { api } = await seededApi(async () => new Response('{}', { status: 500 }))
+    const body = {
+      error: {
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Box admission was refused',
+        reason: 'user_active_limit',
+        reasonCode: 'user_active_limit',
+        nextStep: NEXT_STEP,
+        limitName: 'boxes_per_account',
+        limitValue: 1,
+      },
+      requestId: REQUEST_ID,
+    }
+    let caught: unknown
+    try {
+      api.assertSuccess(
+        'createSession',
+        { body, replay: false, requestId: REQUEST_ID, status: 503 },
+        [200, 201, 202],
+      )
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(OcboxError)
+    const error = caught as OcboxError
+    expect(error.details).toEqual({
+      operation: 'createSession',
+      reason: 'user_active_limit',
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+    })
+    expect(error.message).toContain('boxes_per_account')
+    expect(error.message).toContain(`Next: ${NEXT_STEP}`)
   })
 
   it('drops malformed refusal fields instead of throwing', () => {
