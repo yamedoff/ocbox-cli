@@ -300,6 +300,12 @@ export class WarmSessionServer {
       if (handled) return
       buffer += chunk.toString('utf8')
       if (Buffer.byteLength(buffer) > this.#maxRequestBytes) {
+        if (this.#platform === 'win32') {
+          // An unauthenticated client must not get even an error frame back.
+          handled = true
+          socket.destroy()
+          return
+        }
         finish(errorResponse(new TypeError('Warm session request exceeded its limit')))
         return
       }
