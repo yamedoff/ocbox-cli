@@ -211,9 +211,6 @@ importers:
       '@oclif/core':
         specifier: 4.14.0
         version: 4.14.0
-      ignore:
-        specifier: 7.0.16
-        version: 7.0.16
       smol-toml:
         specifier: 1.8.0
         version: 1.8.0
@@ -233,6 +230,9 @@ importers:
       fast-check:
         specifier: 4.9.0
         version: 4.9.0
+      ignore:
+        specifier: 7.0.16
+        version: 7.0.16
       tsup:
         specifier: 8.5.1
         version: 8.5.1(postcss@8.5.33)(supports-color@8.1.1)(typescript@5.9.3)
