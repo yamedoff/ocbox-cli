@@ -11,6 +11,22 @@ import {
 
 const timestamp = '2026-01-01T00:00:00.000Z'
 
+// The CLI's own stderr output for `ocbox project list --json` without a login:
+// one pretty-printed envelope across many lines (src/output/writer.ts).
+const capturedAuthErrorEnvelope = `{
+  "data": {
+    "code": "AUTH_REQUIRED",
+    "message": "Authentication is required; run \`ocbox auth login\`",
+    "requestId": "141fbdf4-22c4-4248-b60d-5b57bdb0b093",
+    "retryable": false
+  },
+  "kind": "error",
+  "name": "error",
+  "schemaVersion": 1,
+  "timestamp": "2026-11-23T15:49:40.887Z"
+}
+`
+
 function errorEnvelope(code, message) {
   return {
     schemaVersion: 1,
@@ -134,6 +150,53 @@ test('parseResultEnvelope returns the named result data and throws on errors or 
   )
 })
 
+test('parseResultEnvelope reads the pretty-printed envelope the CLI prints for --json', () => {
+  const stdout = `${JSON.stringify(
+    {
+      schemaVersion: 1,
+      kind: 'result',
+      name: 'sizes.listed',
+      timestamp,
+      data: { sizes: [{ id: 'size-small', cpuMillicores: 1000 }] },
+    },
+    null,
+    2,
+  )}\n`
+  assert.deepEqual(parseResultEnvelope(stdout, 'sizes.listed'), {
+    sizes: [{ id: 'size-small', cpuMillicores: 1000 }],
+  })
+})
+
+test('parseResultEnvelope reads the compact JSONL envelope the CLI prints for --jsonl', () => {
+  const stdout = jsonLines([
+    resultEnvelope('sizes.listed', { sizes: [{ id: 'size-small', cpuMillicores: 1000 }] }),
+  ])
+  assert.deepEqual(parseResultEnvelope(stdout, 'sizes.listed'), {
+    sizes: [{ id: 'size-small', cpuMillicores: 1000 }],
+  })
+})
+
+test('cliErrorLine reads the pretty-printed error envelope the CLI writes to stderr', () => {
+  const line = cliErrorLine(capturedAuthErrorEnvelope, '')
+  assert.equal(line, 'AUTH_REQUIRED: Authentication is required; run `ocbox auth login`')
+  assert.notEqual(line, '}')
+})
+
+test('formatCliFailure reports the pretty-printed stderr envelope without JSON braces', () => {
+  const message = formatCliFailure('start', {
+    status: 1,
+    stderr: capturedAuthErrorEnvelope,
+    stdout: '',
+    timedOut: false,
+  })
+  assert.equal(
+    message,
+    'ocbox start failed with exit code 1: AUTH_REQUIRED: Authentication is required; run `ocbox auth login`',
+  )
+  assert.ok(!message.includes('{'))
+  assert.ok(!message.includes('}'))
+})
+
 test('parseExecOutput decodes base64 stdout events and reads the final exit code', () => {
   const stdout = jsonLines([
     {
@@ -158,6 +221,73 @@ test('parseExecOutput decodes base64 stdout events and reads the final exit code
     exitCode: 3,
     error: null,
   })
+})
+
+test('parseExecOutput reads the compact JSONL execution stream the CLI prints for exec --jsonl', () => {
+  const stdout = jsonLines([
+    {
+      schemaVersion: 1,
+      kind: 'event',
+      outcome: null,
+      event: 'started',
+      type: 'started',
+      executionId: 'exec-smoke',
+      sequence: 0,
+      timestamp,
+    },
+    {
+      schemaVersion: 1,
+      kind: 'event',
+      outcome: null,
+      event: 'stdout',
+      executionId: 'exec-smoke',
+      sequence: 1,
+      timestamp,
+      encoding: 'base64',
+      data: Buffer.from('ocb-smoke-selftest\n').toString('base64'),
+    },
+    {
+      schemaVersion: 1,
+      kind: 'event',
+      outcome: 'remote_result',
+      event: 'completed',
+      executionId: 'exec-smoke',
+      sequence: 2,
+      timestamp,
+      result: {
+        exitCode: 0,
+        signal: null,
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    },
+  ])
+  assert.deepEqual(parseExecOutput(stdout), {
+    output: 'ocb-smoke-selftest\n',
+    exitCode: 0,
+    error: null,
+  })
+})
+
+test('cliErrorLine reports the exit code of a non-zero completed event in the exec stream', () => {
+  const stdout = jsonLines([
+    {
+      schemaVersion: 1,
+      kind: 'event',
+      outcome: 'remote_result',
+      event: 'completed',
+      executionId: 'exec-smoke',
+      sequence: 1,
+      timestamp,
+      result: {
+        exitCode: 7,
+        signal: null,
+        startedAt: timestamp,
+        completedAt: timestamp,
+      },
+    },
+  ])
+  assert.equal(cliErrorLine('', stdout), 'remote command exited with code 7')
 })
 
 test('parseExecOutput reports an infrastructure error message', () => {
