@@ -135,17 +135,16 @@ the box.
 ### 6. Run a command and read its output
 
 ```sh
-ocbox exec --timeout-seconds 60 -- cat hello.txt
+ocbox exec --timeout 60000 -- cat hello.txt
 ```
 
 ```text
-execution exe_9d6b3eb74aae3741801b93a37e4ff2 started; reattach with: ocbox execution get exe_9d6b3eb74aae3741801b93a37e4ff2
 hello from the box
 ```
 
-The command runs in the box's workspace, where `sync push` put the files.
-Tokens after `--` are passed to the program unchanged. The execution ID lets
-you reattach after a disconnect with `ocbox execution get <id>`.
+`--timeout 60000` bounds the run at 60 seconds. The command runs in the box's
+workspace, where `sync push` put the files. Tokens after `--` are passed to the
+program unchanged.
 
 ### 7. Stop the box
 
