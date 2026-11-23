@@ -251,6 +251,7 @@ describe('warm session daemon', () => {
     expect(call?.command).toBe(process.execPath)
     expect(call?.args).toEqual(['/tmp/ocbox-warm-daemon.js'])
     expect(call?.options.detached).toBe(true)
+    expect(call?.options.cwd).toBe(tmpdir())
     expect(call?.options.stdio).toBe('ignore')
     expect(envValue(call?.options.env, 'OCBOX_WARM_SOCKET')).toBe(socketPath)
     expect(envValue(call?.options.env, 'OCBOX_WARM_API_URL')).toBe(scope.apiUrl)

@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, lstatSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { HostedSessionCache } from '../providers/ocbox/session-cache.js'
@@ -257,6 +258,9 @@ export class WarmSessionClient implements HostedSessionCache {
     this.#spawnAttempted = true
     try {
       const child = this.#spawn(process.execPath, [entry], {
+        // A detached daemon must not keep the caller's project directory as its
+        // cwd: on Windows that locks the directory until the daemon exits.
+        cwd: tmpdir(),
         detached: true,
         env: {
           ...this.#environment,
