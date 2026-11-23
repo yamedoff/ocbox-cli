@@ -51,6 +51,28 @@ function parseJsonLine(line) {
   }
 }
 
+/**
+ * Reads the CLI's own output. `--json` prints one pretty-printed envelope
+ * across many lines (src/output/writer.ts), while `--jsonl` prints one compact
+ * envelope per line. The whole text is read first and the JSONL stream is the
+ * fallback, so neither shape is mistaken for the other.
+ */
+function jsonDocuments(text) {
+  const trimmed = text.trim()
+  if (trimmed !== '') {
+    const document = parseJsonLine(trimmed)
+    if (document !== null) return [document]
+  }
+  const documents = []
+  for (const line of text.split(/\r?\n/)) {
+    const candidate = line.trim()
+    if (candidate === '') continue
+    const document = parseJsonLine(candidate)
+    if (document !== null) documents.push(document)
+  }
+  return documents
+}
+
 function errorText(envelope) {
   const data = envelope?.data
   if (data !== null && typeof data === 'object') {
@@ -64,29 +86,23 @@ function errorText(envelope) {
 
 /** Returns the CLI's own error line, never a whole response body. */
 export function cliErrorLine(stderr, stdout) {
-  for (const line of stderr.split(/\r?\n/).reverse()) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const parsed = parseJsonLine(trimmed)
-    if (parsed?.kind === 'error') return errorText(parsed)
+  for (const document of jsonDocuments(stderr).reverse()) {
+    if (document?.kind === 'error') return errorText(document)
   }
-  for (const line of stdout.split(/\r?\n/).reverse()) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const parsed = parseJsonLine(trimmed)
-    if (parsed?.kind === 'error') return errorText(parsed)
-    if (parsed?.kind === 'result' && parsed.outcome === 'infrastructure_error') {
-      return errorText({ data: parsed.error })
+  for (const document of jsonDocuments(stdout).reverse()) {
+    if (document?.kind === 'error') return errorText(document)
+    if (document?.kind === 'result' && document.outcome === 'infrastructure_error') {
+      return errorText({ data: document.error })
     }
-    if (parsed?.kind === 'result' && typeof parsed.result?.exitCode === 'number') {
-      return `remote command exited with code ${parsed.result.exitCode}`
+    if (document?.kind === 'result' && typeof document.result?.exitCode === 'number') {
+      return `remote command exited with code ${document.result.exitCode}`
     }
     if (
-      parsed?.kind === 'event' &&
-      parsed.event === 'completed' &&
-      typeof parsed.result?.exitCode === 'number'
+      document?.kind === 'event' &&
+      document.event === 'completed' &&
+      typeof document.result?.exitCode === 'number'
     ) {
-      return `remote command exited with code ${parsed.result.exitCode}`
+      return `remote command exited with code ${document.result.exitCode}`
     }
   }
   return lastNonEmptyLine(stderr) || lastNonEmptyLine(stdout) || 'the CLI printed no error line'
@@ -104,12 +120,9 @@ export function formatCliFailure(command, result) {
 
 /** Finds one result envelope by name and returns its data. */
 export function parseResultEnvelope(stdout, expectedName) {
-  for (const line of stdout.split(/\r?\n/).reverse()) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const parsed = parseJsonLine(trimmed)
-    if (parsed?.kind === 'error') fail(errorText(parsed))
-    if (parsed?.kind === 'result' && parsed.name === expectedName) return parsed.data
+  for (const document of jsonDocuments(stdout).reverse()) {
+    if (document?.kind === 'error') fail(errorText(document))
+    if (document?.kind === 'result' && document.name === expectedName) return document.data
   }
   return fail(`ocbox did not print a ${expectedName} result`)
 }
@@ -119,30 +132,31 @@ export function parseExecOutput(stdout) {
   const chunks = []
   let exitCode = null
   let error = null
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const parsed = parseJsonLine(trimmed)
-    if (parsed?.kind === 'error') {
-      error = errorText(parsed)
+  for (const document of jsonDocuments(stdout)) {
+    if (document?.kind === 'error') {
+      error = errorText(document)
       continue
     }
     if (
-      parsed?.kind === 'event' &&
-      parsed.event === 'stdout' &&
-      parsed.encoding === 'base64' &&
-      typeof parsed.data === 'string'
+      document?.kind === 'event' &&
+      document.event === 'stdout' &&
+      document.encoding === 'base64' &&
+      typeof document.data === 'string'
     ) {
-      chunks.push(Buffer.from(parsed.data, 'base64').toString('utf8'))
+      chunks.push(Buffer.from(document.data, 'base64').toString('utf8'))
     }
-    if (parsed?.kind === 'event' && parsed.event === 'completed' && parsed.result !== undefined) {
-      exitCode = parsed.result.exitCode ?? null
+    if (
+      document?.kind === 'event' &&
+      document.event === 'completed' &&
+      document.result !== undefined
+    ) {
+      exitCode = document.result.exitCode ?? null
     }
-    if (parsed?.kind === 'result' && parsed.result !== undefined) {
-      exitCode = parsed.result.exitCode ?? null
+    if (document?.kind === 'result' && document.result !== undefined) {
+      exitCode = document.result.exitCode ?? null
     }
-    if (parsed?.kind === 'result' && parsed.outcome === 'infrastructure_error') {
-      error = errorText({ data: parsed.error })
+    if (document?.kind === 'result' && document.outcome === 'infrastructure_error') {
+      error = errorText({ data: document.error })
     }
   }
   return { output: chunks.join(''), exitCode, error }
@@ -500,26 +514,49 @@ const fakeCliSource = `import { appendFileSync } from 'node:fs'
 
 const argv = process.argv.slice(2)
 const command = argv[0] ?? ''
+const jsonl = argv.includes('--jsonl')
 const logPath = process.env.OCBOX_FAKE_LOG
 if (logPath) appendFileSync(logPath, JSON.stringify({ command, args: argv.slice(1) }) + '\\n')
 
 function envelope(name, data) {
   return { schemaVersion: 1, kind: 'result', name, timestamp: new Date().toISOString(), data }
 }
+// The CLI prints one pretty-printed envelope for --json and one compact
+// envelope per line for --jsonl.
 function write(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
+  process.stdout.write((jsonl ? JSON.stringify(value) : JSON.stringify(value, null, 2)) + '\\n')
 }
-function fail(code, message) {
+// A command failure is one error envelope on stderr.
+function failCommand(code, message) {
   process.stderr.write(
-    JSON.stringify({
-      schemaVersion: 1,
-      kind: 'error',
-      name: 'error',
-      timestamp: new Date().toISOString(),
-      data: { code, message, requestId: 'req-smoke' },
-    }) + '\\n',
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        kind: 'error',
+        name: 'error',
+        timestamp: new Date().toISOString(),
+        data: { code, message, requestId: 'req-smoke' },
+      },
+      null,
+      2,
+    ) + '\\n',
   )
-  process.exit(7)
+  process.exit(1)
+}
+// A failed remote run ends with a completed event that carries its exit code.
+function failRun(exitCode) {
+  const timestamp = new Date().toISOString()
+  write({
+    schemaVersion: 1,
+    kind: 'event',
+    outcome: 'remote_result',
+    event: 'completed',
+    executionId: 'exec-smoke',
+    sequence: 1,
+    timestamp,
+    result: { exitCode, signal: null, startedAt: timestamp, completedAt: timestamp },
+  })
+  process.exit(exitCode)
 }
 function option(name) {
   const index = argv.indexOf(name)
@@ -547,7 +584,10 @@ if (command === 'sizes') {
     }),
   )
 } else if (command === 'start') {
-  if (option('--size') === undefined) fail('INVALID_SPEC', 'fake start needs a size')
+  if (option('--size') === undefined) failCommand('INVALID_SPEC', 'fake start needs a size')
+  if (process.env.OCBOX_FAKE_FAIL_START === '1') {
+    failCommand('CAPACITY_UNAVAILABLE', 'fake start failed')
+  }
   write(
     envelope('session.started', {
       selected: true,
@@ -558,12 +598,22 @@ if (command === 'sizes') {
     }),
   )
 } else if (command === 'exec') {
-  if (process.env.OCBOX_FAKE_FAIL_RUN === '1') fail('EXEC_FAILED', 'fake exec failed')
   const separator = argv.indexOf('--')
   const marker =
     separator === -1 || argv[separator + 1] !== 'echo' ? undefined : argv[separator + 2]
-  if (typeof marker !== 'string') fail('INVALID_SPEC', 'fake exec needs an echo marker')
+  if (typeof marker !== 'string') failCommand('INVALID_SPEC', 'fake exec needs an echo marker')
   const timestamp = new Date().toISOString()
+  write({
+    schemaVersion: 1,
+    kind: 'event',
+    outcome: null,
+    event: 'started',
+    executionId: 'exec-smoke',
+    sequence: 0,
+    timestamp,
+    type: 'started',
+  })
+  if (process.env.OCBOX_FAKE_FAIL_RUN === '1') failRun(7)
   write({
     schemaVersion: 1,
     kind: 'event',
@@ -585,12 +635,6 @@ if (command === 'sizes') {
     timestamp,
     result: { exitCode: 0, signal: null, startedAt: timestamp, completedAt: timestamp },
   })
-  write({
-    schemaVersion: 1,
-    kind: 'result',
-    outcome: 'remote_result',
-    result: { exitCode: 0, signal: null, startedAt: timestamp, completedAt: timestamp },
-  })
 } else if (command === 'destroy') {
   write(
     envelope('session.destroyed', {
@@ -600,7 +644,8 @@ if (command === 'sizes') {
     }),
   )
 } else {
-  fail('INVALID_SPEC', 'fake ocbox does not know ' + command)
+  process.stderr.write('Error: unknown command ' + command + '\\n')
+  process.exit(2)
 }
 `
 
@@ -688,7 +733,7 @@ export async function selfTest() {
       (error) => {
         assert.match(
           error.message,
-          /ocbox exec failed with exit code 7: EXEC_FAILED: fake exec failed/,
+          /ocbox exec failed with exit code 7: remote command exited with code 7/,
         )
         return true
       },
@@ -700,6 +745,31 @@ export async function selfTest() {
       'destroy must still run after a failed exec step',
     )
     assert.equal(failedLog.at(-1)?.command, 'destroy')
+
+    await writeFile(fake.log, '', 'utf8')
+    const startFailingEnv = { ...env, OCBOX_FAKE_FAIL_START: '1' }
+    await assert.rejects(
+      () =>
+        runSmoke({
+          command: 'ocbox',
+          env: startFailingEnv,
+          cwd,
+          marker: 'ocb-smoke-selftest-start-fail',
+        }),
+      (error) => {
+        assert.match(
+          error.message,
+          /ocbox start failed with exit code 1: CAPACITY_UNAVAILABLE: fake start failed/,
+        )
+        return true
+      },
+    )
+    const startFailedLog = await readLog(fake.log)
+    assert.deepEqual(
+      startFailedLog.map((entry) => entry.command),
+      ['sizes', 'start', 'destroy'],
+      'destroy must still run after a failed start step',
+    )
     console.log('staging smoke self-test: passed')
   } finally {
     await rm(root, { recursive: true, force: true })
