@@ -7,31 +7,43 @@ source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle comman
 
 ## Install
 
-Requires Node.js ≥22.
+Requires Node.js ≥22 and the pinned pnpm from [Toolchain](#toolchain).
+
+The npm package and the first GitHub release are not published yet, so the only
+working install path is from source. Build the release files and install them
+with the same scripts a published release uses.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.sh | sh
+git clone https://github.com/yamedoff/ocbox-cli.git
+cd ocbox-cli
+pnpm install --frozen-lockfile
+pnpm run pack:release
+OCBOX_RELEASE_BASE="$PWD/dist/release" sh install.sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/yamedoff/ocbox-cli/main/install.ps1 | iex
+git clone https://github.com/yamedoff/ocbox-cli.git
+cd ocbox-cli
+pnpm install --frozen-lockfile
+pnpm run pack:release
+$env:OCBOX_RELEASE_BASE = "$PWD\dist\release"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-These commands work once the first release is published; until then install with `npm i -g opencloudbox`.
+`pnpm run pack:release` writes `ocbox-0.1.0.tgz`, `SHA256SUMS`, and `LATEST` to
+`dist/release`. The install script verifies the release checksum and places
+`ocbox` in `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on Windows), adding the bin folder
+to PATH (printing the line to add on macOS and Linux when it is not already
+there).
 
-The install scripts place `ocbox` in `~/.ocbox` (`%LOCALAPPDATA%\ocbox` on
-Windows), verify the release checksum, and add the bin folder to PATH (printing
-the line to add on macOS and Linux when it is not already there). To install
-from npm instead:
-
-```sh
-npm i -g opencloudbox
-ocbox --help
-```
+The package is `opencloudbox@0.1.0`. It is not published to npm yet, so there is
+no registry install path. `package.json` is configured for a public release
+(`publishConfig.access` is `public`, with provenance) and carries no `private`
+field.
 
 The `opencloudbox` command is also available as an alias for `ocbox`.
 
@@ -150,7 +162,22 @@ box's workspace, where `sync push` put the files. Tokens after `--` are passed
 to the program unchanged. The execution ID lets you reattach after a disconnect
 with `ocbox execution get <id>`.
 
-### 7. Stop the box
+### 7. Read stored logs
+
+```sh
+ocbox logs exe_9d6b3eb74aae3741801b93a37e4ff2
+```
+
+```text
+hello from the box
+```
+
+`logs` re-reads a finished execution's stored stdout and stderr, so an agent
+that lost the live stream still sees the run's output. A pending or running
+execution is refused with its state; use `ocbox execution get <id>` for the
+execution record.
+
+### 8. Stop the box
 
 ```sh
 ocbox stop
@@ -162,7 +189,7 @@ ocbox stop
 
 Stopping keeps the box's filesystem. Start it again with `ocbox start`.
 
-### 8. Destroy the box
+### 9. Destroy the box
 
 ```sh
 ocbox destroy --yes
@@ -263,9 +290,9 @@ GitHub Codespaces uses the committed `.devcontainer` configuration to install
 and verify this exact toolchain, enable `gh codespace ssh`, and run the frozen
 install automatically whenever a codespace is created or rebuilt.
 
-The package is named `opencloudbox` at version `0.1.0`, but publication is
-disabled with `private: true` until a later registry and release review. Both
-`ocbox` and `opencloudbox` resolve to the same built entrypoint.
+The package is named `opencloudbox` at version `0.1.0`; see
+[Install](#install) for its publication state and the only working install path.
+Both `ocbox` and `opencloudbox` resolve to the same built entrypoint.
 
 ## Validate
 
