@@ -103,6 +103,11 @@ test('cliErrorLine falls back to the last human stderr line and prefers JSON err
 
   const stdout = jsonLines([errorEnvelope('QUOTA_EXCEEDED', 'no capacity')])
   assert.equal(cliErrorLine('human context\n', stdout), 'QUOTA_EXCEEDED: no capacity')
+
+  const completed = jsonLines([
+    { schemaVersion: 1, kind: 'event', event: 'completed', result: { exitCode: 9 } },
+  ])
+  assert.equal(cliErrorLine('', completed), 'remote command exited with code 9')
 })
 
 test('parseResultEnvelope returns the named result data and throws on errors or missing results', () => {

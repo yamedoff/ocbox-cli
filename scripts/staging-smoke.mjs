@@ -81,6 +81,13 @@ export function cliErrorLine(stderr, stdout) {
     if (parsed?.kind === 'result' && typeof parsed.result?.exitCode === 'number') {
       return `remote command exited with code ${parsed.result.exitCode}`
     }
+    if (
+      parsed?.kind === 'event' &&
+      parsed.event === 'completed' &&
+      typeof parsed.result?.exitCode === 'number'
+    ) {
+      return `remote command exited with code ${parsed.result.exitCode}`
+    }
   }
   return lastNonEmptyLine(stderr) || lastNonEmptyLine(stdout) || 'the CLI printed no error line'
 }
