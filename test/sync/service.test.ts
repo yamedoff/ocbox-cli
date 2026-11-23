@@ -338,6 +338,18 @@ describe('sync service', () => {
     expect(result.summary?.installCommand).toBeNull()
   })
 
+  it('labels a package-manager store as cache instead of dependencies', async () => {
+    const { context: sync, local } = await pair()
+    await mkdir(join(local, '.yarn', 'cache'), { recursive: true })
+    await writeFile(join(local, '.yarn', 'cache', 'pkg.zip'), 'cache')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+    const rendered = renderSyncApplied(result)
+
+    expect(rendered).toContain('.yarn (cache)')
+    expect(rendered).not.toContain('install them on the box')
+  })
+
   it('names every left-out dependency folder instead of truncating the list', async () => {
     const { context: sync, local } = await pair()
     // More than the plan view's 200-entry excluded cap: the summary must still
