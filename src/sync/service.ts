@@ -551,10 +551,10 @@ function renderApplySummary(
   if (summary === undefined) return []
   const lines: string[] = []
   if (summary.leftOut.length > 0) {
-    const shown = summary.leftOut.slice(0, 10)
-    const remaining = summary.leftOut.length - shown.length
-    const names = shown.map((entry) => `${entry.path} (${leftOutLabel(entry)})`).join(', ')
-    lines.push(`Left out: ${names}${remaining === 0 ? '' : `, and ${String(remaining)} more`}`)
+    const names = summary.leftOut
+      .map((entry) => `${entry.path} (${leftOutLabel(entry)})`)
+      .join(', ')
+    lines.push(`Left out: ${names}`)
   }
   if (
     dependenciesOnBox &&

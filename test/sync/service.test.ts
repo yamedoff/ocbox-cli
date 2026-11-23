@@ -337,6 +337,21 @@ describe('sync service', () => {
     expect(result.summary?.installCommand).toBeNull()
   })
 
+  it('names every left-out dependency folder instead of truncating the list', async () => {
+    const { context: sync, local } = await pair()
+    const folders = Array.from({ length: 12 }, (_, index) => `pkg${String(index)}/node_modules`)
+    for (const folder of folders) {
+      await mkdir(join(local, folder), { recursive: true })
+      await writeFile(join(local, folder, 'dep.js'), 'dep')
+    }
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+    const rendered = renderSyncApplied(result)
+
+    for (const folder of folders) expect(rendered).toContain(`${folder} (dependencies)`)
+    expect(rendered).not.toContain('more')
+  })
+
   it('does not ask for an install when the pushed lockfile is unchanged', async () => {
     const { context: sync, local } = await pair()
     await writeFile(join(local, 'package-lock.json'), '{"lockfileVersion":3}')
