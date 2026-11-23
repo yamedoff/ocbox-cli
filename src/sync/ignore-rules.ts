@@ -36,7 +36,39 @@ interface GitignoreMatcher {
   test(path: string): { readonly ignored: boolean; readonly unignored: boolean }
 }
 
-async function readGitMatcher(path: string): Promise<GitignoreMatcher | null> {
+/**
+ * Reads `core.ignorecase` from the repository config without invoking git. Git
+ * only treats a repository as case-insensitive when the setting says so, and
+ * defaults to case-sensitive matching when it is absent. A worktree's `.git`
+ * is a file, so the config is unreadable there and the default applies.
+ */
+async function readCoreIgnoreCase(root: string): Promise<boolean> {
+  let contents: string
+  try {
+    contents = await readFile(join(root, '.git', 'config'), 'utf8')
+  } catch (error) {
+    if (isMissing(error)) return false
+    throw error
+  }
+  let section = ''
+  for (const original of contents.split(/\r?\n/)) {
+    const line = original.trim()
+    if (line.length === 0 || line.startsWith('#') || line.startsWith(';')) continue
+    const header = /^\[\s*([^\]\s"]+)(?:\s+"[^"]*")?\s*\]$/.exec(line)
+    if (header !== null) {
+      section = (header[1] ?? '').toLowerCase()
+      continue
+    }
+    if (section !== 'core') continue
+    const assignment = /^([^=\s]+)\s*(?:=\s*(.*))?$/.exec(line)
+    if (assignment === null || (assignment[1] ?? '').toLowerCase() !== 'ignorecase') continue
+    const value = (assignment[2] ?? '').trim().toLowerCase()
+    return !['false', 'no', 'off', '0'].includes(value)
+  }
+  return false
+}
+
+async function readGitMatcher(path: string, ignorecase: boolean): Promise<GitignoreMatcher | null> {
   let contents: string
   try {
     contents = await readFile(path, 'utf8')
@@ -44,7 +76,7 @@ async function readGitMatcher(path: string): Promise<GitignoreMatcher | null> {
     if (isMissing(error)) return null
     throw error
   }
-  return ignore().add(contents)
+  return ignore({ ignorecase }).add(contents)
 }
 
 /**
@@ -54,6 +86,7 @@ async function readGitMatcher(path: string): Promise<GitignoreMatcher | null> {
  */
 export interface LoadedIgnoreRules {
   readonly root: string
+  readonly ignorecase: boolean
   readonly infoExclude: GitignoreMatcher | null
   readonly userRuleGroups: readonly (readonly IgnoreRule[])[]
   readonly gitignoreByFolder: Map<string, Promise<GitignoreMatcher | null>>
@@ -69,12 +102,14 @@ export async function loadIgnoreRuleGroups(
   root: string,
   cliRules: readonly IgnoreRule[],
 ): Promise<LoadedIgnoreRules> {
+  const ignorecase = await readCoreIgnoreCase(root)
   const [infoExclude, opencloudboxignore] = await Promise.all([
-    readGitMatcher(join(root, '.git', 'info', 'exclude')),
+    readGitMatcher(join(root, '.git', 'info', 'exclude'), ignorecase),
     readRuleFile(root, '.opencloudboxignore', 'opencloudboxignore'),
   ])
   return {
     root,
+    ignorecase,
     infoExclude,
     userRuleGroups: [opencloudboxignore, cliRules],
     gitignoreByFolder: new Map(),
@@ -91,7 +126,7 @@ async function gitignoreFor(
     folder === ''
       ? join(rules.root, '.gitignore')
       : join(rules.root, ...folder.split('/'), '.gitignore')
-  const loaded = readGitMatcher(path)
+  const loaded = readGitMatcher(path, rules.ignorecase)
   rules.gitignoreByFolder.set(folder, loaded)
   return loaded
 }

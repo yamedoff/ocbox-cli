@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -24,6 +25,33 @@ async function scanned(directory: string, cli: readonly IgnoreRule[] = []): Prom
   return manifest.entries
     .filter((entry) => entry.exclusionReason === null)
     .map((entry) => entry.path)
+}
+
+/**
+ * Creates a git repository holding two files that differ only in case. Returns
+ * null on a case-insensitive filesystem, where both names address one file.
+ */
+async function caseSensitiveGitRoot(ignorecase: boolean | undefined): Promise<string | null> {
+  const directory = await root()
+  await writeFile(join(directory, 'Foo.txt'), 'upper')
+  await writeFile(join(directory, 'foo.txt'), 'lower')
+  if ((await readdir(directory)).length !== 2) return null
+  execFileSync('git', ['init', '--quiet'], { cwd: directory })
+  if (ignorecase !== undefined) {
+    execFileSync('git', ['config', 'core.ignorecase', String(ignorecase)], { cwd: directory })
+  }
+  return directory
+}
+
+/** Files git would transfer, in the same path form the scan reports. */
+function gitFiles(directory: string): string[] {
+  return execFileSync('git', ['ls-files', '--others', '--cached', '--exclude-standard'], {
+    cwd: directory,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter((path) => path.length > 0)
+    .sort()
 }
 
 describe('sync ignore rules', () => {
@@ -69,6 +97,25 @@ describe('sync ignore rules', () => {
       'sub/keep.txt',
       'sub/nested',
     ])
+  })
+
+  it('keeps files that differ only in case when core.ignorecase is unset, matching git', async () => {
+    const directory = await caseSensitiveGitRoot(undefined)
+    if (directory === null) return
+    await writeFile(join(directory, '.gitignore'), 'foo.txt\n')
+
+    expect(await scanned(directory)).toEqual(gitFiles(directory))
+    expect(await scanned(directory)).toContain('Foo.txt')
+  })
+
+  it('reads core.ignorecase from the repository config', async () => {
+    const insensitive = await caseSensitiveGitRoot(true)
+    if (insensitive === null) return
+    const sensitive = await caseSensitiveGitRoot(false)
+    if (sensitive === null) return
+
+    expect((await loadIgnoreRuleGroups(insensitive, [])).ignorecase).toBe(true)
+    expect((await loadIgnoreRuleGroups(sensitive, [])).ignorecase).toBe(false)
   })
 
   it('accepts an anchored .gitignore rule and anchors it to the project root', async () => {
