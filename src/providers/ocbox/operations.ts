@@ -6,7 +6,12 @@ import { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
 import { RequestIdSchema } from '../../domain/ids.js'
 import { IdempotencyKeySchema } from '../../domain/ids.js'
-import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import {
+  envelopeOf,
+  mapApiFailureToOcboxError,
+  toRequestId,
+  withRefusalEnvelope,
+} from '../../api/client/errors.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { admissionError } from './requested-spec.js'
 import {
@@ -179,7 +184,7 @@ function terminalFailureOf(operation: HostedOperation): OcboxError | null {
   }
   if (operation.state === 'failed') {
     const admission = admissionError(operation.error?.reason, toRequestId(operation.requestId))
-    if (admission !== undefined) return admission
+    if (admission !== undefined) return withRefusalEnvelope(admission, operation.error ?? {})
     return mapApiFailureToOcboxError({
       operation: `operation:${operation.kind}`,
       requestId: operation.requestId,

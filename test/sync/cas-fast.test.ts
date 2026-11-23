@@ -280,6 +280,75 @@ describe('CAS v3 fast re-sync', () => {
     expect(renderSyncApplied(view)).toContain('1 modification(s)')
   })
 
+  it('never sends ignore-matched or secret-looking files in the fast apply', async () => {
+    const local = await localRoot()
+    await writeFile(join(local, 'a.txt'), 'one')
+    await writeFile(join(local, '.gitignore'), '.env\nignored.txt\nignored-later.txt\n')
+    await writeFile(join(local, '.env'), 'SECRET_TOKEN=do-not-upload')
+    await writeFile(join(local, 'ignored.txt'), 'gitignore-content')
+    const pages = [page(0, [file('a.txt', 'one')])]
+    const fastBodies: Record<string, unknown>[] = []
+    const checkBodies: Record<string, unknown>[] = []
+    const { origin } = await serve((request, response) => {
+      if (request.path.endsWith('/source/cas/check')) {
+        checkBodies.push(request.body)
+        json(response, {
+          version: 3,
+          state: 'changed',
+          changedPaths: ['a.txt'],
+          changedCount: 1,
+          editedPaths: [],
+          editedCount: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (request.path.endsWith('/source/cas/fast')) {
+        fastBodies.push(request.body)
+        json(response, {
+          version: 3,
+          state: 'applied',
+          fingerprint: request.body['fingerprint'],
+          missing: [],
+          writtenFiles: 1,
+          linkedFiles: 0,
+          removedFiles: 0,
+          fetchedBlobs: 0,
+          fetchedBytes: 0,
+          replayed: false,
+        })
+        return
+      }
+      if (!v2Routes(request, response, pages))
+        json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    })
+    const context = await contextFor(origin, local)
+    await runSyncApply(context, 'push', options)
+    // A new ignored file and a rotated secret appear beside a visible edit; the
+    // fast delta must carry only the visible file.
+    await writeFile(join(local, 'a.txt'), 'two')
+    await writeFile(join(local, 'ignored-later.txt'), 'later-secret')
+    await writeFile(join(local, '.env'), 'SECRET_TOKEN=rotated-do-not-upload')
+    await runSyncApply(context, 'push', options)
+
+    expect(fastBodies).toHaveLength(1)
+    const fast = fastBodies[0] ?? {}
+    const files = fast['files'] as { path: string }[]
+    expect(files.map((entry) => entry.path)).toEqual(['a.txt'])
+    expect(fast['deletedPaths']).toEqual([])
+    expect(checkBodies.at(-1)?.['changedPaths']).toEqual(['a.txt'])
+    for (const path of ['.env', 'ignored.txt', 'ignored-later.txt'])
+      expect(files.some((entry) => entry.path === path)).toBe(false)
+    const blobHashes = (fast['blobs'] as { hash: string }[]).map((blob) => blob.hash)
+    for (const secret of [
+      'SECRET_TOKEN=do-not-upload',
+      'SECRET_TOKEN=rotated-do-not-upload',
+      'gitignore-content',
+      'later-secret',
+    ])
+      expect(blobHashes).not.toContain(sha(secret))
+  })
+
   it('falls back to the v2 cycle when the server has no check route', async () => {
     const local = await localRoot()
     await writeFile(join(local, 'a.txt'), 'one')

@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import type { ApiResult } from '../../api/generated/client.js'
-import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import {
+  envelopeOf,
+  mapApiFailureToOcboxError,
+  toRequestId,
+  withRefusalEnvelope,
+} from '../../api/client/errors.js'
 import type {
   Operation as HostedOperation,
   Session as HostedSession,
@@ -197,6 +202,20 @@ export interface OcboxProviderOptions {
  * cross-process daemon has its own, longer lifetime.
  */
 const EXECUTION_SESSION_CACHE_MILLISECONDS = 30_000
+
+const REFUSAL_DETAIL_KEYS = ['reason', 'reasonCode', 'nextStep', 'limitName', 'limitValue'] as const
+
+/**
+ * Keeps a refusal whose envelope already names the limit and next step; the
+ * generic admission rewrite only replaces bare provider codes.
+ */
+function preserveRefusalEnvelope(error: unknown): never {
+  if (error instanceof OcboxError) {
+    const details = error.details
+    if (details !== undefined && REFUSAL_DETAIL_KEYS.some((key) => key in details)) throw error
+  }
+  return friendlyAdmissionFailure(error)
+}
 
 function notFoundSandbox(requestId: RequestId): OcboxError {
   return new OcboxError({
@@ -754,7 +773,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         envelope.reason ?? envelope.code,
         toRequestId(created.requestId),
       )
-      if (denial) throw denial
+      if (denial) throw withRefusalEnvelope(denial, envelope)
       const refusal = sizeRefusalError(envelope.reasonCode, toRequestId(created.requestId))
       if (refusal) throw refusal
     }
@@ -821,7 +840,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       ...this.#waitOptions,
       deadlineMilliseconds: deadline.remainingMilliseconds(),
       store: this.#checkpointStore,
-    }).catch(friendlyAdmissionFailure)
+    }).catch(preserveRefusalEnvelope)
     const hostedSessionId = waited.operation.sessionId ?? hostedOp.sessionId
     if (!hostedSessionId || (record !== undefined && record.hostedSessionId !== hostedSessionId)) {
       throw new OcboxError({
@@ -837,7 +856,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         observed.normalizedState === 'running' &&
         resolvePrimaryBinding(observed)?.state === 'running'
       )
-    }).catch(friendlyAdmissionFailure)
+    }).catch(preserveRefusalEnvelope)
     const primary = session === null ? null : resolvePrimaryBinding(session)
     if (record === undefined || primary === null) {
       throw new OcboxError({
@@ -1131,7 +1150,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         ...this.#waitOptions,
         deadlineMilliseconds: deadline.remainingMilliseconds(),
         store: this.#checkpointStore,
-      }).catch(friendlyAdmissionFailure)
+      }).catch(preserveRefusalEnvelope)
       waitedRequestId = waited.requestId
     } catch (error) {
       if (
