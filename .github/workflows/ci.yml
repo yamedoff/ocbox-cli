@@ -72,6 +72,10 @@ jobs:
         run: pnpm run build
       - name: Smoke-test CLI shell
         run: pnpm run cli:smoke
+      - name: Test the staging smoke script
+        run: node --test scripts/staging-smoke.test.mjs
+      - name: Self-test the staging smoke script
+        run: node scripts/staging-smoke.mjs --self-test
       - name: Set up Node.js 22 for runtime compatibility tests
         if: matrix.node == 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

@@ -21,6 +21,21 @@ pnpm run licenses:check
 Never commit credentials, generated build output, local environment files, or
 unrelated changes. Commit messages should explain one coherent change.
 
+The release staging smoke gate (`.github/workflows/release-smoke.yml`) runs on
+manual dispatch and on `v*` release tags, never on pull requests. It installs the
+built release files with the real install scripts on Linux, macOS and Windows,
+then runs `scripts/staging-smoke.mjs` against staging: list sizes, start a box,
+run one command, destroy it. The script destroys in a `finally` step even after a
+failure.
+
+The gate needs the repository secrets `OCB_STAGING_API_URL` and
+`OCB_STAGING_CLI_TOKEN`. It fails on its first step when either is missing and
+never prints their values.
+
+Do not publish a release until all three OS smoke jobs pass. The release job, or
+the manual release steps, must depend on all three; on a tag push, wait for the
+workflow to succeed before publishing.
+
 This public repository runs a content guard for internal terms on pull requests
 and branch pushes. It checks added lines and new filenames; the private pattern
 list is maintained only in a repository secret. When that secret is unavailable,
