@@ -15,6 +15,9 @@ const sandboxBinding = z.strictObject({
 const sessionFailure = z.strictObject({
   reasonCode: z.string().min(1),
   nextStep: z.string().min(1),
+  limitName: z.string().max(128).optional(),
+  limitValue: z.number().int().min(1).optional(),
+  retryAfterSeconds: z.number().int().min(0).optional(),
 })
 export const HostedSessionSchema = z.strictObject({
   id: z.string().min(1),
@@ -95,5 +98,17 @@ export async function getSession(
 export function sessionLine(session: HostedSession): string {
   const primary = session.primarySandboxId === null ? '' : ` sandbox=${session.primarySandboxId}`
   const line = `${session.id}  ${session.normalizedState}  project=${session.projectId}${primary}`
-  return session.failure === undefined ? line : `${line}\nReason ${session.failure.reasonCode}.`
+  if (session.failure === undefined) return line
+  const parts: string[] = []
+  const { limitName, limitValue, retryAfterSeconds } = session.failure
+  if (limitName !== undefined && limitValue !== undefined) {
+    parts.push(`limit ${limitName} = ${limitValue}`)
+  } else if (limitName !== undefined) {
+    parts.push(`limit ${limitName}`)
+  } else if (limitValue !== undefined) {
+    parts.push(`limit = ${limitValue}`)
+  }
+  if (retryAfterSeconds !== undefined) parts.push(`retry after ${retryAfterSeconds} s`)
+  const suffix = parts.length === 0 ? '' : `; ${parts.join('; ')}`
+  return `${line}\nReason ${session.failure.reasonCode}${suffix}.`
 }
