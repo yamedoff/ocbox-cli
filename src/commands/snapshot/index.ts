@@ -1,12 +1,20 @@
 import { Command } from '@oclif/core'
+import { resolve } from 'node:path'
 import { z } from 'zod'
 import { mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type { OcboxApiClient } from '../../api/client/index.js'
 import type { ApiResult } from '../../api/generated/client.js'
 import { runtimeFlags } from '../../cli/base-command.js'
-import { createLifecycleService, type RuntimeFlags } from '../../cli/runtime.js'
+import {
+  createLifecycleService,
+  loadProjectConfig,
+  resolveAccountStateDirectory,
+  resolveStateDirectory,
+  type RuntimeFlags,
+} from '../../cli/runtime.js'
 import { OcboxError } from '../../errors/index.js'
 import { parseHostedResponse } from '../../hosted/response.js'
+import { LifecycleStore, projectIdForPath } from '../../lifecycle/index.js'
 import { HostedOperationSchema } from '../../metadata/client.js'
 import { hostedFlags } from '../../metadata/command.js'
 import { waitForHostedOperation } from '../../providers/ocbox/operations.js'
@@ -111,14 +119,38 @@ export function snapshotListLine(snapshots: readonly SessionSnapshot[]): string 
   return snapshots.length === 0 ? 'No snapshots' : snapshots.map(snapshotLine).join('\n')
 }
 
-/** Resolves `[<box>]` the same way stop and exec resolve the selected Session. */
+/**
+ * Resolves `[<box>]` the same way stop and exec resolve the selected Session,
+ * then maps the tracked Session to the hosted `ses_` ID the snapshot routes
+ * take. A tracked Session without a hosted mapping (for example one owned by
+ * the fake provider) falls back to its local ID, which the hosted API refuses.
+ */
 export async function resolveSnapshotSession(
   flags: RuntimeFlags,
   box: string | undefined,
   signal?: AbortSignal,
 ): Promise<string> {
-  const view = await (await createLifecycleService(flags, signal)).status(box)
-  return view.session.id
+  const config = await loadProjectConfig(flags)
+  const stateDirectory = resolveStateDirectory(flags)
+  const lifecycleStateDirectory = await resolveAccountStateDirectory(
+    flags,
+    stateDirectory,
+    config.provider.name === 'ocbox',
+    signal,
+  )
+  const view = await (await createLifecycleService(flags, signal, lifecycleStateDirectory)).status(
+    box,
+  )
+  const store = new LifecycleStore(
+    lifecycleStateDirectory,
+    projectIdForPath(resolve(process.cwd())),
+  )
+  const state = await store.load()
+  const mapped = Object.values(state.hostedMappings)
+    .flatMap((records) => Object.values(records))
+    .filter((record) => record.localSessionId === view.session.id && !record.deleted)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
+  return mapped?.hostedSessionId ?? view.session.id
 }
 
 function operationOf(

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,11 +9,12 @@ import {
   resolveAuthEndpoints,
 } from '../../src/auth/runtime.js'
 import { DEFAULT_PROJECT_CONFIG, resolveAccountStateDirectory } from '../../src/cli/runtime.js'
+import { parseProjectConfig, toSandboxSpec } from '../../src/config/index.js'
 import SnapshotDelete from '../../src/commands/snapshot/delete.js'
 import SnapshotList from '../../src/commands/snapshot/list.js'
 import SnapshotRestore from '../../src/commands/snapshot/restore.js'
 import SnapshotSave from '../../src/commands/snapshot/save.js'
-import type { Session } from '../../src/contracts.js'
+import type { ProjectId, SandboxId, Session } from '../../src/contracts.js'
 import { PowerShellWindowsAclProtector } from '../../src/credentials/windows-acl.js'
 import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { LifecycleStore, projectIdForPath } from '../../src/lifecycle/index.js'
@@ -30,6 +31,10 @@ let stderrSpy: ReturnType<typeof vi.spyOn>
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111' as Session['id']
 const OTHER_SESSION_ID = '22222222-2222-4222-8222-222222222222' as Session['id']
+const SANDBOX_ID = '44444444-4444-4444-8444-444444444444' as SandboxId
+const OTHER_SANDBOX_ID = '55555555-5555-4555-8555-555555555555' as SandboxId
+const HOSTED_SESSION_ID = 'ses_hosted_1'
+const OTHER_HOSTED_SESSION_ID = 'ses_hosted_2'
 const PROJECT_ID = '33333333-3333-4333-8333-333333333333'
 
 function output(spy: ReturnType<typeof vi.spyOn>): string {
@@ -51,12 +56,12 @@ function operation(overrides: Record<string, unknown> = {}): Record<string, unkn
     updatedAt: timestamp,
     kind: 'session.snapshot',
     projectId: PROJECT_ID,
-    sessionId: SESSION_ID,
+    sessionId: HOSTED_SESSION_ID,
     state: 'pending',
     progress: 0,
     requestId: 'request-1',
     error: null,
-    resource: { type: 'session', id: SESSION_ID },
+    resource: { type: 'session', id: HOSTED_SESSION_ID },
     ...overrides,
   }
 }
@@ -124,6 +129,19 @@ async function seedSessions(activeSessionId: Session['id'] = SESSION_ID): Promis
     state,
     true,
   )
+  const spec = toSandboxSpec(parseProjectConfig(await readFile(config, 'utf8')))
+  const timestamp = new Date().toISOString()
+  const mapping = (localSessionId: Session['id'], localId: SandboxId, hostedSessionId: string) => ({
+    localId,
+    localSessionId,
+    localProjectId: PROJECT_ID as ProjectId,
+    hostedSessionId,
+    spec,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    stale: false,
+    deleted: false,
+  })
   const store = new LifecycleStore(accountState, projectIdForPath(resolve(process.cwd())))
   await store.update((current) => ({
     ...current,
@@ -132,6 +150,13 @@ async function seedSessions(activeSessionId: Session['id'] = SESSION_ID): Promis
       ...current.sessions,
       [SESSION_ID]: session(SESSION_ID),
       [OTHER_SESSION_ID]: session(OTHER_SESSION_ID),
+    },
+    hostedMappings: {
+      ...current.hostedMappings,
+      fixture: {
+        [SANDBOX_ID]: mapping(SESSION_ID, SANDBOX_ID, HOSTED_SESSION_ID),
+        [OTHER_SANDBOX_ID]: mapping(OTHER_SESSION_ID, OTHER_SANDBOX_ID, OTHER_HOSTED_SESSION_ID),
+      },
     },
   }))
 }
@@ -215,7 +240,7 @@ describe('snapshot save', () => {
     expect(calls).toEqual([
       {
         method: 'POST',
-        path: `/v1/sessions/${SESSION_ID}/snapshots`,
+        path: `/v1/sessions/${HOSTED_SESSION_ID}/snapshots`,
         key: 'test-idempotency-key-123',
       },
       { method: 'GET', path: '/v1/operations/op_save', key: null },
@@ -310,7 +335,7 @@ describe('snapshot save', () => {
       'Next: Delete a snapshot with `ocbox snapshot delete` to free a slot, then retry.',
     )
     expect(calls.map((call) => call.path)).toEqual([
-      `/v1/sessions/${SESSION_ID}/snapshots`,
+      `/v1/sessions/${HOSTED_SESSION_ID}/snapshots`,
       '/v1/operations/op_limit',
     ])
   })
@@ -341,7 +366,7 @@ describe('snapshot list', () => {
 
     expect(process.exitCode ?? 0).toBe(0)
     expect(calls).toEqual([
-      { method: 'GET', path: `/v1/sessions/${SESSION_ID}/snapshots`, key: null },
+      { method: 'GET', path: `/v1/sessions/${HOSTED_SESSION_ID}/snapshots`, key: null },
     ])
     expect(output(stdoutSpy)).toBe(
       ['snap_new  2026-11-23T10:00:00.000Z  1 KiB', 'snap_old  2026-11-22T10:00:00.000Z', ''].join(
@@ -363,7 +388,7 @@ describe('snapshot list', () => {
     await SnapshotList.run([...runArguments(), OTHER_SESSION_ID], { root: process.cwd() })
 
     expect(process.exitCode ?? 0).toBe(0)
-    expect(calls).toEqual([`/v1/sessions/${OTHER_SESSION_ID}/snapshots`])
+    expect(calls).toEqual([`/v1/sessions/${OTHER_HOSTED_SESSION_ID}/snapshots`])
     expect(output(stdoutSpy)).toBe('No snapshots\n')
   })
 
@@ -439,7 +464,7 @@ describe('snapshot restore', () => {
     expect(calls).toEqual([
       {
         method: 'POST',
-        path: `/v1/sessions/${SESSION_ID}/snapshots/snap_1/restore`,
+        path: `/v1/sessions/${HOSTED_SESSION_ID}/snapshots/snap_1/restore`,
         key: 'test-restore-key-123',
       },
       { method: 'GET', path: '/v1/operations/op_restore', key: null },
@@ -507,7 +532,7 @@ describe('snapshot delete', () => {
     expect(calls).toEqual([
       {
         method: 'DELETE',
-        path: `/v1/sessions/${SESSION_ID}/snapshots/snap_1`,
+        path: `/v1/sessions/${HOSTED_SESSION_ID}/snapshots/snap_1`,
         key: 'test-delete-key-123',
       },
       { method: 'GET', path: '/v1/operations/op_delete', key: null },
