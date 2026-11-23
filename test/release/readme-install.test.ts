@@ -80,9 +80,11 @@ describe('README install path', () => {
 
     expect(pkg.name).toBe('opencloudbox')
     expect(install).toContain(`${pkg.name}@${pkg.version}`)
-    expect(readme).toMatch(/(?:not|isn't)\s+(?:yet\s+)?published|not\s+(?:yet\s+)?(?:on|to)\s+npm/i)
+    expect(install).toMatch(
+      /(?:not|isn't)\s+(?:yet\s+)?published|not\s+(?:yet\s+)?(?:on|to)\s+npm/i,
+    )
     expect(pkg.publishConfig?.access).toBe('public')
-    expect(readme).toContain('publishConfig.access')
+    expect(install).toContain('publishConfig.access')
     expect(install).not.toMatch(/npm\s+(?:i|install)\s+-g\s+opencloudbox/)
 
     if (pkg.private === true) {
