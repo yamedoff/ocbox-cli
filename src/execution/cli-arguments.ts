@@ -1,12 +1,12 @@
 import { posix } from 'node:path'
 import { newRequestId } from '../auth/errors.js'
 import {
-  ExecCommandSchema,
-  ExecEnvironmentSchema,
-  SessionIdSchema,
   type ExecCommand,
+  ExecCommandSchema,
   type ExecEnvironment,
+  ExecEnvironmentSchema,
   type SessionId,
+  SessionIdSchema,
 } from '../contracts.js'
 import { OcboxError } from '../errors/index.js'
 import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
@@ -24,6 +24,8 @@ export interface ParsedExecArguments {
   readonly timeoutMilliseconds: number | null
   readonly environment: ExecEnvironment
   readonly outputMode: ExecutionOutputMode
+  /** Human diagnostics for flags that still work but are deprecated. */
+  readonly deprecationWarnings: readonly string[]
 }
 
 export class ExecArgumentError extends Error {
@@ -88,6 +90,18 @@ function parseTimeout(value: string): number {
   return milliseconds
 }
 
+/** `--timeout-seconds` is the MCP/API unit; the internal millisecond value maps back to whole seconds at the provider boundary. */
+function parseTimeoutSeconds(value: string): number {
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new ExecArgumentError('--timeout-seconds must be a positive integer in seconds')
+  }
+  const seconds = Number(value)
+  if (!Number.isSafeInteger(seconds) || seconds > Math.floor(2_147_483_647 / 1000)) {
+    throw new ExecArgumentError('--timeout-seconds is outside the supported range')
+  }
+  return seconds * 1000
+}
+
 function addEnvironment(environment: Record<string, string>, assignment: string): void {
   const separator = assignment.indexOf('=')
   if (separator < 1) throw new ExecArgumentError('--env requires NAME=VALUE')
@@ -109,10 +123,12 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
   let sessionId: SessionId | null = null
   let workingDirectory: string | null = null
   let timeoutMilliseconds: number | null = null
+  let timeoutUnit: 'milliseconds' | 'seconds' | null = null
   let outputMode: ExecutionOutputMode = 'human'
   let shell: string | undefined
   let argv: readonly string[] | undefined
   const environment: Record<string, string> = {}
+  const deprecationWarnings: string[] = []
 
   for (let index = 0; index < input.length; index++) {
     const item = input[index] ?? ''
@@ -138,7 +154,17 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
       workingDirectory = parseWorkingDirectory(takeOptionValue(input, index, name, inline))
       if (inline === null) index++
     } else if (name === '--timeout') {
+      if (timeoutUnit === 'seconds')
+        throw new ExecArgumentError('--timeout and --timeout-seconds are mutually exclusive')
+      timeoutUnit = 'milliseconds'
+      deprecationWarnings.push('--timeout is deprecated; use --timeout-seconds (seconds) instead')
       timeoutMilliseconds = parseTimeout(takeOptionValue(input, index, name, inline))
+      if (inline === null) index++
+    } else if (name === '--timeout-seconds') {
+      if (timeoutUnit === 'milliseconds')
+        throw new ExecArgumentError('--timeout and --timeout-seconds are mutually exclusive')
+      timeoutUnit = 'seconds'
+      timeoutMilliseconds = parseTimeoutSeconds(takeOptionValue(input, index, name, inline))
       if (inline === null) index++
     } else if (name === '--env') {
       addEnvironment(environment, takeOptionValue(input, index, name, inline))
@@ -183,5 +209,6 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
     timeoutMilliseconds,
     environment: ExecEnvironmentSchema.parse(environment),
     outputMode,
+    deprecationWarnings,
   }
 }

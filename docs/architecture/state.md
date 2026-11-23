@@ -12,7 +12,7 @@ Hosted lifecycle state is selected by the token subject: the first command reads
 
 ## Data it keeps
 
-Configuration/state: selected Session, local-to-hosted mappings and pending operations (`accounts/<subject-hash>/lifecycle/<project>.json` for a hosted login, `lifecycle/<project>.json` when no subject is known), operation checkpoints (`ocbox-operation-checkpoints.json`), sync baselines (`sync/<project>/<session>/`), fake-provider state (`providers/fake.json`) and Codex manifests (`agents/codex/`). A hosted mapping may retain both the CLI execution ID printed by `exec` and the hosted ID used on the wire. Secret store: access/refresh material. Auth metadata contains only identity/binding/expiry facts, including the cached `/auth/me` subject.
+Configuration/state: selected Session, local-to-hosted mappings and pending operations (`accounts/<subject-hash>/lifecycle/<project>.json` for a hosted login, `lifecycle/<project>.json` when no subject is known), operation checkpoints (`ocbox-operation-checkpoints.json`), sync baselines (`sync/<project>/<session>/`), fake-provider state (`providers/fake.json`) and Codex manifests (`agents/codex/`). A hosted mapping may retain both the CLI-local execution ID and the hosted ID used on the wire. Secret store: access/refresh material. Auth metadata contains only identity/binding/expiry facts, including the cached `/auth/me` subject.
 
 V2 sync stores unsigned pending/success pages and source blobs under `sync/<project>/<session>/cas/<scope-hash>/`, bound to API/hosted Session/local root. Capability URLs are never persisted, and the state subtree is excluded before scanning. Its writers request 0600 files and 0700 directories but do not use the credential store's Windows ACL verification or the AtomicJsonStore fsync protocol. None of these is a copy of the server database.
 
@@ -34,6 +34,6 @@ Atomic JSON/locks: `src/lifecycle/atomic-json-store.ts:56–182`, `src/state/exc
 
 Verified against ocbox-cli @ b604910 plus the subject-scoped lifecycle directory.
 
-A hosted mapping retains the CLI execution ID next to the hosted ID so `cancel` reports the same ID `exec` printed.
+A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it resolved.
 
-Verified against ocbox-cli @ 872e6f2 plus the execution-ID mapping change.
+Verified against ocbox-cli @ 0a544da plus the hosted execution-ID mapping change.

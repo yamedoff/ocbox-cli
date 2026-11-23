@@ -4,7 +4,8 @@ import { createLifecycleService } from '../cli/runtime.js'
 import { sessionViewLine } from '../cli/views.js'
 
 export default class Pause extends OcboxCommand {
-  static override description = 'Pause a Session while preserving memory and filesystem'
+  static override description =
+    'Pause a Session while preserving memory and filesystem; the hosted service refuses pause because it cannot preserve memory, so use `ocbox stop` to keep the filesystem and `ocbox start` to resume'
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),
