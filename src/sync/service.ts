@@ -483,14 +483,7 @@ function toPlanView(plan: SyncPlan, context: SyncContext, inputs: PlanInputs): S
   }
 }
 
-const LEFT_OUT_REASONS = new Set<string>(['build-cache', 'dependency-cache'])
-const DEPENDENCY_FOLDER_NAMES = new Set([
-  '.pnpm-store',
-  '.yarn',
-  'bower_components',
-  'node_modules',
-  'vendor',
-])
+const DEPENDENCY_FOLDER_NAMES = new Set(['bower_components', 'node_modules', 'vendor'])
 const LOCKFILE_INSTALL_COMMANDS: Readonly<Record<string, string>> = {
   'npm-shrinkwrap.json': 'npm ci',
   'package-lock.json': 'npm ci',
@@ -500,16 +493,12 @@ const LOCKFILE_INSTALL_COMMANDS: Readonly<Record<string, string>> = {
 
 /** The source-side dependency/cache folders the transfer intentionally skipped. */
 function leftOutFor(
-  view: SyncPlanView,
+  inputs: PlanInputs,
   mode: Exclude<SyncMode, 'diff'>,
 ): readonly SyncLeftOutView[] {
-  const sourceSide = mode === 'push' ? 'local' : 'remote'
-  return view.excluded
-    .filter((entry) => entry.side === sourceSide && LEFT_OUT_REASONS.has(entry.reason))
-    .map((entry) => ({
-      path: entry.path,
-      reason: entry.reason as SyncLeftOutView['reason'],
-    }))
+  // The plan view caps its `excluded` list, but the summary must name every
+  // left-out folder, so read the uncapped source manifest instead.
+  return leftOutFromManifest(mode === 'push' ? inputs.localManifest : inputs.remoteManifest)
 }
 
 /**
@@ -531,9 +520,10 @@ function installCommandFor(view: SyncPlanView): string | null {
 function applySummaryFor(
   view: SyncPlanView,
   mode: Exclude<SyncMode, 'diff'>,
+  inputs: PlanInputs,
 ): SyncApplySummaryView {
   return {
-    leftOut: leftOutFor(view, mode),
+    leftOut: leftOutFor(inputs, mode),
     installCommand: mode === 'push' ? installCommandFor(view) : null,
   }
 }
@@ -860,7 +850,7 @@ export async function runSyncApply(
     assertManifestsTransferable([sourceManifest, targetManifest])
     if (inputs.plan.conflicts.length > 0) throw conflictError(inputs.plan.conflicts)
     const view = toPlanView(inputs.plan, context, inputs)
-    const summary = applySummaryFor(view, mode)
+    const summary = applySummaryFor(view, mode, inputs)
     if (inputs.plan.operations.length === 0) {
       return { ...view, summary, applied: false, baselineUpdated: false, operationId: null }
     }

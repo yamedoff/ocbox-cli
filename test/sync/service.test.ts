@@ -340,7 +340,9 @@ describe('sync service', () => {
 
   it('names every left-out dependency folder instead of truncating the list', async () => {
     const { context: sync, local } = await pair()
-    const folders = Array.from({ length: 12 }, (_, index) => `pkg${String(index)}/node_modules`)
+    // More than the plan view's 200-entry excluded cap: the summary must still
+    // name every folder, not only the first 200.
+    const folders = Array.from({ length: 205 }, (_, index) => `pkg${String(index)}/node_modules`)
     for (const folder of folders) {
       await mkdir(join(local, folder), { recursive: true })
       await writeFile(join(local, folder, 'dep.js'), 'dep')
@@ -349,6 +351,7 @@ describe('sync service', () => {
     const result = await runSyncApply(sync, 'push', applyOptions())
     const rendered = renderSyncApplied(result)
 
+    expect(result.summary?.leftOut).toHaveLength(folders.length)
     for (const folder of folders) expect(rendered).toContain(`${folder} (dependencies)`)
     expect(rendered).not.toContain('more')
   })
