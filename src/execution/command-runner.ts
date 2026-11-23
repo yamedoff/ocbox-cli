@@ -160,6 +160,7 @@ export async function runExecutionCommandResult(
   let mode = requestedOutputMode(input)
   let arguments_: ParsedExecArguments
   let run: ExecutionRun
+  let executionId: string | undefined
   /**
    * Once a terminal envelope has been handed to the caller, streaming is closed:
    * later event emissions must stop. The gate is what keeps a stuck or
@@ -175,16 +176,23 @@ export async function runExecutionCommandResult(
     run = await service.start(
       target,
       arguments_,
-      gatedSink(createExecutionEventSink(mode, io.stdout, io.stderr), () => {
-        if (terminalStreamAccepted) {
-          throw new ExecutionInfrastructureError('event_stream', new ExecutionStreamEndedError())
-        }
-        return true
-      }),
+      gatedSink(
+        createExecutionEventSink(mode, io.stdout, io.stderr, {
+          onExecutionId: (id) => {
+            executionId = id
+          },
+        }),
+        () => {
+          if (terminalStreamAccepted) {
+            throw new ExecutionInfrastructureError('event_stream', new ExecutionStreamEndedError())
+          }
+          return true
+        },
+      ),
     )
   } catch (error) {
     const completion = beforeStartFailure(error)
-    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
+    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr, { executionId })
     return {
       started: false,
       outcome: completion.outcome,
@@ -218,7 +226,7 @@ export async function runExecutionCommandResult(
         : { ...settled, outcome: { ...settled.outcome, detail } }
     terminal = true
     terminalStreamAccepted = true
-    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
+    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr, { executionId })
     return {
       started: true,
       outcome: completion.outcome,

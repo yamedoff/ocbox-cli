@@ -110,6 +110,37 @@ describe('execution command runner', () => {
     })
   })
 
+  it('prints the accepted execution ID on stderr without changing program stdout bytes', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--', process.execPath, '-e', 'process.stdout.write("program bytes")'],
+      () => target(),
+      output,
+    )
+    expect(exitCode).toBe(0)
+    expect(output.stdout.text()).toBe('program bytes')
+    const match = /^execution (\S+) started; reattach with: ocbox execution get (\S+)\n$/u.exec(
+      output.stderr.text(),
+    )
+    expect(match).not.toBeNull()
+    expect(match?.[1]).toBe(match?.[2])
+  })
+
+  it('carries the accepted execution ID in the JSON result', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', process.execPath, '-e', 'process.exit(0)'],
+      () => target(),
+      output,
+    )
+    expect(exitCode).toBe(0)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'remote_result',
+      executionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    })
+    expect(output.stderr.text()).toBe('')
+  })
+
   it('maps a missing executable to a safe before-start infrastructure result', async () => {
     const output = io()
     const exitCode = await runExecutionCommand(
@@ -251,6 +282,53 @@ describe('execution command runner', () => {
         })
     },
   )
+
+  it('names the execution ID and reattach command when the event stream drops', async () => {
+    const never = new Promise<never>(() => {})
+    const execute = vi.fn(async (context: OperationContext): Promise<ExecHandle> => {
+      async function* events() {
+        yield {
+          type: 'started' as const,
+          executionId: ids.execution,
+          sequence: 0,
+          timestamp: session.createdAt,
+        }
+        throw new Error('connection dropped')
+      }
+      return {
+        execution: {
+          id: ids.execution,
+          operationId: context.operationId,
+          sandboxId: ids.sandbox,
+          command: { mode: 'argv', argv: ['tool'] },
+          status: 'running',
+          result: null,
+          createdAt: session.createdAt,
+          startedAt: session.createdAt,
+          completedAt: null,
+        },
+        events: events(),
+        result: never,
+      }
+    })
+    const provider = {
+      exec: { execute, cancel: vi.fn(async () => ({}) as Operation) },
+    } as unknown as SandboxProvider
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--', 'tool'],
+      () => ({ ...target(), provider }),
+      output,
+    )
+    expect(exitCode).toBe(125)
+    expect(output.stdout.text()).toBe('')
+    expect(output.stderr.text()).toContain(
+      `execution ${ids.execution} started; reattach with: ocbox execution get ${ids.execution}`,
+    )
+    expect(output.stderr.text()).toContain(
+      `execution ${ids.execution} output stream was lost; reattach with: ocbox execution get ${ids.execution}`,
+    )
+  })
 
   it('surfaces an actionable detail for an invalid exec argument', async () => {
     const jsonOutput = io()
