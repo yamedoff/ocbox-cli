@@ -218,6 +218,7 @@ async function hostedLifecycle() {
     'comspec',
     'temp',
     'tmp',
+    'tmpdir',
   ])
   const environment = {
     ...Object.fromEntries(
