@@ -663,6 +663,8 @@ async function createFakeCli(root) {
   await mkdir(directory, { recursive: true })
   await writeFile(join(directory, 'fake-ocbox.mjs'), fakeCliSource, 'utf8')
   if (process.platform === 'win32') {
+    // The npm-installed ocbox.cmd finds its own files through %~dp0 too, so
+    // runCli must not quote the bare command name (see windowsCommandLine).
     await writeFile(
       join(directory, 'ocbox.cmd'),
       '@echo off\r\nnode "%~dp0fake-ocbox.mjs" %*\r\n',
