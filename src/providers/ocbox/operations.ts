@@ -184,21 +184,7 @@ function terminalFailureOf(operation: HostedOperation): OcboxError | null {
   }
   if (operation.state === 'failed') {
     const admission = admissionError(operation.error?.reason, toRequestId(operation.requestId))
-    if (admission !== undefined) {
-      // Keep the provider's own code so the outer admission-friendly rewrite
-      // leaves this enriched error (and its refusal details) intact.
-      const serverCode = operation.error?.code
-      const classified =
-        serverCode === undefined
-          ? admission
-          : new OcboxError({
-              code: admission.code,
-              message: admission.message,
-              requestId: admission.requestId,
-              providerCode: serverCode.slice(0, 128),
-            })
-      return withRefusalEnvelope(classified, operation.error ?? {})
-    }
+    if (admission !== undefined) return withRefusalEnvelope(admission, operation.error ?? {})
     return mapApiFailureToOcboxError({
       operation: `operation:${operation.kind}`,
       requestId: operation.requestId,

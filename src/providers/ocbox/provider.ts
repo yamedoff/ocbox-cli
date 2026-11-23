@@ -203,6 +203,23 @@ export interface OcboxProviderOptions {
  */
 const EXECUTION_SESSION_CACHE_MILLISECONDS = 30_000
 
+const REFUSAL_DETAIL_KEYS = ['reason', 'reasonCode', 'nextStep', 'limitName', 'limitValue'] as const
+
+/**
+ * Keeps a refusal whose envelope already names the limit and next step; the
+ * generic admission rewrite only replaces bare provider codes.
+ */
+function preserveRefusalEnvelope(error: unknown): never {
+  if (
+    error instanceof OcboxError &&
+    error.details !== undefined &&
+    REFUSAL_DETAIL_KEYS.some((key) => key in error.details)
+  ) {
+    throw error
+  }
+  return friendlyAdmissionFailure(error)
+}
+
 function notFoundSandbox(requestId: RequestId): OcboxError {
   return new OcboxError({
     code: 'SANDBOX_NOT_FOUND',
@@ -826,7 +843,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
       ...this.#waitOptions,
       deadlineMilliseconds: deadline.remainingMilliseconds(),
       store: this.#checkpointStore,
-    }).catch(friendlyAdmissionFailure)
+    }).catch(preserveRefusalEnvelope)
     const hostedSessionId = waited.operation.sessionId ?? hostedOp.sessionId
     if (!hostedSessionId || (record !== undefined && record.hostedSessionId !== hostedSessionId)) {
       throw new OcboxError({
@@ -842,7 +859,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         observed.normalizedState === 'running' &&
         resolvePrimaryBinding(observed)?.state === 'running'
       )
-    }).catch(friendlyAdmissionFailure)
+    }).catch(preserveRefusalEnvelope)
     const primary = session === null ? null : resolvePrimaryBinding(session)
     if (record === undefined || primary === null) {
       throw new OcboxError({
@@ -1136,7 +1153,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         ...this.#waitOptions,
         deadlineMilliseconds: deadline.remainingMilliseconds(),
         store: this.#checkpointStore,
-      }).catch(friendlyAdmissionFailure)
+      }).catch(preserveRefusalEnvelope)
       waitedRequestId = waited.requestId
     } catch (error) {
       if (
