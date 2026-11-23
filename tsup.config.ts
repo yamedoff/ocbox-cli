@@ -1,0 +1,78 @@
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  banner: {
+    // @oclif/core ships CommonJS. When it is inlined into an ESM bundle its
+    // runtime `require` calls (for example `require('url')`) need a real
+    // CommonJS require rooted at this module.
+    js: "import { createRequire as __ocboxCreateRequire } from 'node:module';\nconst require = __ocboxCreateRequire(import.meta.url);",
+  },
+  clean: true,
+  // Commands are runtime-only entry points; the public modules keep their
+  // declarations. Limiting declaration generation keeps the build worker's
+  // heap bounded as the command list grows.
+  dts: { entry: ['src/index.ts', 'src/contracts.ts', 'src/infrastructure.ts'] },
+  entry: {
+    'commands/project/list': 'src/commands/project/list.ts',
+    'commands/project/create': 'src/commands/project/create.ts',
+    'commands/project/get': 'src/commands/project/get.ts',
+    'commands/project/update': 'src/commands/project/update.ts',
+    'commands/project/delete': 'src/commands/project/delete.ts',
+    'commands/environment/list': 'src/commands/environment/list.ts',
+    'commands/environment/create': 'src/commands/environment/create.ts',
+    'commands/environment/get': 'src/commands/environment/get.ts',
+    'commands/environment/update': 'src/commands/environment/update.ts',
+    'commands/agent/doctor': 'src/commands/agent/doctor.ts',
+    'commands/agent/hook': 'src/commands/agent/hook.ts',
+    'commands/agent/index': 'src/commands/agent/index.ts',
+    'commands/agent/remove': 'src/commands/agent/remove.ts',
+    'commands/agent/setup': 'src/commands/agent/setup.ts',
+    'commands/auth/index': 'src/commands/auth/index.ts',
+    'commands/auth/login': 'src/commands/auth/login.ts',
+    'commands/auth/logout': 'src/commands/auth/logout.ts',
+    'commands/auth/status': 'src/commands/auth/status.ts',
+    'commands/destroy': 'src/commands/destroy.ts',
+    'commands/exec': 'src/commands/exec.ts',
+    'commands/cancel': 'src/commands/cancel.ts',
+    'commands/execution/get': 'src/commands/execution/get.ts',
+    'commands/gpu/check': 'src/commands/gpu/check.ts',
+    'commands/init': 'src/commands/init.ts',
+    'commands/ls': 'src/commands/ls.ts',
+    'commands/operation/cancel': 'src/commands/operation/cancel.ts',
+    'commands/operation/get': 'src/commands/operation/get.ts',
+    'commands/pause': 'src/commands/pause.ts',
+    'commands/preview/create': 'src/commands/preview/create.ts',
+    'commands/providers': 'src/commands/providers.ts',
+    'commands/session/get': 'src/commands/session/get.ts',
+    'commands/session/list': 'src/commands/session/list.ts',
+    'commands/start': 'src/commands/start.ts',
+    'commands/status': 'src/commands/status.ts',
+    'commands/stop': 'src/commands/stop.ts',
+    'commands/usage/list': 'src/commands/usage/list.ts',
+    'commands/wallet/get': 'src/commands/wallet/get.ts',
+    'commands/sync/diff': 'src/commands/sync/diff.ts',
+    'commands/sync/index': 'src/commands/sync/index.ts',
+    'commands/sync/pull': 'src/commands/sync/pull.ts',
+    'commands/sync/push': 'src/commands/sync/push.ts',
+    'commands/sync/recover': 'src/commands/sync/recover.ts',
+    'commands/update': 'src/commands/update.ts',
+    'commands/use': 'src/commands/use.ts',
+    contracts: 'src/contracts.ts',
+    index: 'src/index.ts',
+    infrastructure: 'src/infrastructure.ts',
+    'warm-daemon': 'src/warm/daemon-main.ts',
+  },
+  format: ['esm'],
+  // The CLI is copied into the base image without a node_modules tree, so every
+  // production dependency must be inlined. Shared output chunks keep one copy of
+  // @oclif/core across the entry points. The execution helper is built
+  // separately by tsup.helper.config.ts as a single self-contained file.
+  // TypeScript stays external: oclif only loads it for dev-mode ts paths, and
+  // inlining it would add ~10 MiB to the compiled CLI.
+  external: ['typescript'],
+  noExternal: ['@oclif/core', 'smol-toml', 'zod'],
+  outDir: 'dist',
+  platform: 'node',
+  sourcemap: true,
+  target: 'node24',
+})

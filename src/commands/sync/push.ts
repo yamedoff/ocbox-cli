@@ -1,0 +1,56 @@
+import { Flags } from '@oclif/core'
+import { OcboxCommand, runtimeFlags } from '../../cli/base-command.js'
+import {
+  confirmSyncDeletion,
+  isInteractiveForFlags,
+  resolveSyncContext,
+  syncCliRules,
+} from '../../sync/command.js'
+import { renderSyncApplied, runSyncApply } from '../../sync/service.js'
+
+/** One-way local-to-remote apply; deletions require `--delete` and confirmation. */
+export default class SyncPush extends OcboxCommand {
+  static override description =
+    'Apply local-only changes to the Session workspace; on hosted boxes, uploads local files to the box workspace'
+  static override flags = {
+    ...runtimeFlags,
+    session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),
+    'local-dir': Flags.string({
+      description: 'Local source root; defaults to the current directory',
+    }),
+    'remote-dir': Flags.string({
+      description:
+        'Fake provider only; hosted commands run in the workspace folder of the box (run pwd in the box to see it)',
+    }),
+    exclude: Flags.string({ multiple: true, description: 'Repeatable exclude pattern' }),
+    include: Flags.string({ multiple: true, description: 'Repeatable re-include pattern' }),
+    delete: Flags.boolean({ description: 'Approve deleting target entries' }),
+    yes: Flags.boolean({
+      char: 'y',
+      description: 'Acknowledge destructive deletions noninteractively',
+    }),
+  }
+
+  async run(): Promise<void> {
+    const { flags } = await this.parse(SyncPush)
+    const interrupt = this.abortOnInterrupt()
+    await this.emitResult(flags, 'sync.pushed', renderSyncApplied, async () => {
+      const context = await resolveSyncContext(flags, interrupt.signal)
+      const writer = this.writerFor(flags)
+      return runSyncApply(context, 'push', {
+        onProgress: (event) => {
+          if (flags.jsonl) writer.event('sync.progress', event)
+          else if (!flags.json)
+            writer.progress(
+              `Source sync: ${event.phase}${event.uploadedBlobs === undefined ? '' : ` (${event.uploadedBlobs} blobs, ${event.uploadedBytes} bytes)`}`,
+            )
+        },
+        cliRules: syncCliRules(flags),
+        delete: flags.delete === true,
+        yes: flags.yes === true,
+        interactive: isInteractiveForFlags(flags),
+        confirm: confirmSyncDeletion,
+      })
+    }).finally(interrupt.dispose)
+  }
+}

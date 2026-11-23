@@ -1,0 +1,26 @@
+name: map check
+on:
+  pull_request:
+  push:
+    branches: ["codex/recovery-ci-validation"] # the branch the map syncs from (install.mjs --branch sets this)
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      # Errors fail the build (drifted line ranges, renamed ids, broken references).
+      # Coverage and depth warnings are listed in the job summary: fix them or explain them in the PR.
+      - name: Test dependency ownership
+        run: node --test tools/map/dependencies.test.mjs
+      # Owner rule: map refresh is paused, so pull requests do not compare the
+      # architecture map. Dependency ownership above still runs; the map check
+      # resumes when the refresh work does.
+      - name: Check map.json
+        if: github.event_name != 'pull_request'
+        run: node tools/map/cli.mjs check
+      - name: Map report
+        if: always() && github.event_name != 'pull_request'
+        run: node tools/map/cli.mjs report >> "$GITHUB_STEP_SUMMARY"

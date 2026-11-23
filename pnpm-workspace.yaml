@@ -1,0 +1,3 @@
+allowBuilds:
+  # tsup and Vitest require esbuild's exact lockfile-pinned native binary.
+  esbuild: true

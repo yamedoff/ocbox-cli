@@ -1,0 +1,11 @@
+/** Side-effect-free sync contract and adapter surface. CLI wiring lives in commands. */
+export * from './archive.js'
+export * from './baseline.js'
+export * from './baseline-store.js'
+export * from './exclusions.js'
+export * from './local-transfer-adapter.js'
+export * from './manifest.js'
+export * from './path-policy.js'
+export * from './planner.js'
+export * from './provider-adapter.js'
+export * from './transfer.js'

@@ -1,0 +1,1704 @@
+import { randomUUID } from 'node:crypto'
+import type { OcboxApiClient } from '../../api/client/client.js'
+import type { ApiResult } from '../../api/generated/client.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import type {
+  Operation as HostedOperation,
+  Session as HostedSession,
+} from '../../api/generated/client.js'
+import { type Sandbox, SandboxSchema } from '../../domain/entities.js'
+import type {
+  ExecEvent,
+  ExecHandle,
+  ExecRequest,
+  ExecResult,
+  Execution,
+} from '../../domain/execution.js'
+import {
+  type ExecutionId,
+  ExecutionIdSchema,
+  ProjectIdSchema,
+  ProviderSandboxIdSchema,
+  type RequestId,
+  RequestIdSchema,
+  SandboxIdSchema,
+  SessionIdSchema,
+} from '../../domain/ids.js'
+import { ProviderLifecycleObservationSchema } from '../../domain/lifecycle.js'
+import {
+  type Operation,
+  type OperationAction,
+  type OperationContext,
+  OperationSchema,
+  type RequestContext,
+} from '../../domain/operation.js'
+import {
+  ImageReferenceSchema,
+  type RequestedEffectiveSpec,
+  type SandboxSpec,
+  SandboxSpecSchema,
+} from '../../domain/spec.js'
+import { UtcTimestampSchema } from '../../domain/timestamps.js'
+import { OcboxError } from '../../errors/index.js'
+import {
+  type CancellationResult,
+  executionError,
+  waitForCancellation,
+} from '../../lifecycle/cancellation.js'
+import type { HostedSandboxMapping } from '../../lifecycle/schema.js'
+import type { LifecycleStore } from '../../lifecycle/store.js'
+import type { ProviderCapabilities } from '../contract/capabilities.js'
+import type { ProviderFiles } from '../contract/files.js'
+import type {
+  CreatePreviewRequest,
+  Preview,
+  ProviderPreviews,
+  RevokePreviewRequest,
+} from '../contract/preview.js'
+import type {
+  CancelExecutionRequest,
+  CreateSandboxRequest,
+  GetSandboxRequest,
+  LifecycleMutationRequest,
+  ListSandboxesRequest,
+  ProviderExecution,
+  SandboxMutationResult,
+  SandboxProvider,
+} from '../contract/provider.js'
+import type { ApplySourceRequest, ApplySourceResult, ProviderSource } from '../contract/source.js'
+import { collectExecutionEvents, ExecEventRenumberer, toExecResult } from './executions.js'
+import { assertOwnedSession, resolvePrimaryBinding } from './mapping.js'
+import type { HostedSessionCache } from './session-cache.js'
+import { createCasTransport } from './cas.js'
+import {
+  MemoryOperationCheckpointStore,
+  type OperationCheckpointDurability,
+  type OperationCheckpointStore,
+  waitForHostedOperation,
+  type WaitOperationOptions,
+} from './operations.js'
+import {
+  admissionError,
+  friendlyAdmissionFailure,
+  sizeRefusalError,
+  type HostedRequestedSpec,
+} from './requested-spec.js'
+import {
+  Deadline,
+  parseRetryAfterSeconds,
+  resolvePollDelayMilliseconds,
+  sleepWithSignal,
+} from './retry.js'
+import {
+  type HostedExecutionEvent,
+  HostedExecutionSchema,
+  isTerminalExecutionState,
+} from './wire.js'
+
+const HOSTED_CAPABILITIES: ProviderCapabilities = {
+  runtimeClasses: ['container'],
+  lifecycle: {
+    preservesFilesystemOnStop: true,
+    supportsMemoryPause: false,
+    supportsArchive: false,
+  },
+  execution: { streaming: true, cancellation: true },
+  files: {
+    read: false,
+    write: false,
+    list: false,
+    stat: false,
+    makeDirectory: false,
+    remove: false,
+    move: false,
+    checksum: false,
+  },
+  previews: { supported: true, authenticated: true, http: true, websocket: false },
+  egressModes: ['open', 'restricted', 'blocked'],
+  metadataSearch: true,
+  secretExposureModes: ['unsupported'],
+  limits: {
+    maxCpuMillicores: null,
+    maxMemoryBytes: null,
+    maxDiskBytes: null,
+    maxExecutionMilliseconds: 3_600_000,
+    maxFileBytes: null,
+    maxConcurrentExecutions: null,
+    maxSandboxes: null,
+    maxSandboxesPerSession: 1,
+  },
+}
+
+/**
+ * The agent adapters route their own calls through `ocbox exec` with these
+ * recursion markers. They are not user options, and the hosted API cannot carry
+ * an execution environment, so they are dropped instead of refusing every
+ * adapter-routed command.
+ */
+const ADAPTER_OWNED_ENVIRONMENT = new Set([
+  'OCBOX_AGENT_ADAPTER',
+  'OCBOX_AGENT_ROUTED',
+  'OCBOX_CODEX_ADAPTER',
+  'OCBOX_CODEX_ADAPTER_ACTIVE',
+  'OCBOX_CODEX_SESSION_ID',
+])
+
+const DEFAULT_EXECUTION_WAIT_MILLISECONDS = 5 * 60_000
+const EXECUTION_DEADLINE_GRACE_MILLISECONDS = 30_000
+
+/**
+ * Binds the local event-collection deadline to the caller's requested timeout
+ * (plus a bounded grace) instead of a fixed ceiling, falling back to the
+ * provider's advertised maximum when no timeout was requested. The grace
+ * covers provider-side scheduling and result propagation so a legitimately
+ * long command is never cut off while it is still running.
+ */
+export function executionWaitDeadlineMilliseconds(
+  requestedTimeoutMilliseconds: number | null,
+  advertisedMaximumMilliseconds: number | null,
+): number {
+  const base =
+    requestedTimeoutMilliseconds ??
+    advertisedMaximumMilliseconds ??
+    DEFAULT_EXECUTION_WAIT_MILLISECONDS
+  return base + EXECUTION_DEADLINE_GRACE_MILLISECONDS
+}
+
+type SandboxRecord = HostedSandboxMapping
+
+export interface OcboxProviderOptions {
+  readonly requestedSpec?: HostedRequestedSpec | undefined
+  readonly mappingScope?: (() => Promise<string>) | undefined
+  readonly api: OcboxApiClient
+  readonly hostedProjectId: string
+  readonly now?: (() => string) | undefined
+  readonly createId?: (() => string) | undefined
+  /**
+   * Durable operation checkpoint store used by lifecycle waits. Supplying one
+   * alone does not claim restart recovery; a caller must also declare
+   * `checkpointDurability: 'durable'`. When omitted the provider uses a
+   * process-local in-memory store and reports `ephemeral`.
+   */
+  readonly checkpointStore?: OperationCheckpointStore | undefined
+  readonly checkpointDurability?: OperationCheckpointDurability | undefined
+  readonly waitOptions?: WaitOperationOptions | undefined
+  /**
+   * Cross-process warm session cache used only by the execution path. Lifecycle
+   * mutations still read the hosted Session directly so a stop/destroy sees the
+   * server's current state.
+   */
+  readonly sessionCache?: HostedSessionCache | undefined
+}
+
+/**
+ * How long one command may reuse the hosted Session it already read before
+ * `ocbox exec` starts. This removes the second `GET /v1/sessions/{id}` that the
+ * execution target and the execution start used to make back-to-back. The
+ * cross-process daemon has its own, longer lifetime.
+ */
+const EXECUTION_SESSION_CACHE_MILLISECONDS = 30_000
+
+function notFoundSandbox(requestId: RequestId): OcboxError {
+  return new OcboxError({
+    code: 'SANDBOX_NOT_FOUND',
+    message: 'The requested sandbox was not found',
+    requestId,
+  })
+}
+
+function unsupported(requestId: RequestId, capability: string): OcboxError {
+  return new OcboxError({
+    code: 'CAPABILITY_UNSUPPORTED',
+    message: `The hosted provider does not support ${capability}`,
+    requestId,
+    details: { capability },
+  })
+}
+
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+const HOSTED_SECRET_REFERENCE_PREFIX = 'ocbox:'
+
+/**
+ * Hosted session create takes the server's raw secret reference ids. The
+ * canonical spec stores them as non-secret `ocbox:` locators, so unwrap only
+ * those references and never forward another namespace as a hosted id.
+ */
+function hostedSecretReferenceIds(specification: SandboxSpec): readonly string[] {
+  return specification.environment.secretReferenceIds
+    .filter((reference) => reference.startsWith(HOSTED_SECRET_REFERENCE_PREFIX))
+    .map((reference) => reference.slice(HOSTED_SECRET_REFERENCE_PREFIX.length))
+}
+
+function commandString(request: ExecRequest): string {
+  if (request.command.mode === 'shell') return request.command.shell
+  return request.command.argv.map(shellQuote).join(' ')
+}
+
+const MIB = 2 ** 20
+const MAX_HOSTED_MEMORY_MIB = 65_536
+const HOSTED_REGION_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/** Parses the hosted vCPU value (cores as a number or a decimal string). */
+function hostedCpuMillicores(value: unknown): number | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    const millicores = Math.round(value * 1000)
+    return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+  }
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  const milli = /^([0-9]+(?:\.[0-9]+)?)m$/.exec(text)
+  if (milli?.[1] !== undefined) {
+    const millicores = Number(milli[1])
+    return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+  }
+  if (!/^[0-9]+(?:\.[0-9]+)?$/.test(text)) return null
+  const millicores = Math.round(Number(text) * 1000)
+  return Number.isSafeInteger(millicores) && millicores > 0 ? millicores : null
+}
+
+/**
+ * Parses the hosted memory value. The V1 public view reports MiB while the
+ * legacy REST view reports bytes; a value at or below the public MiB ceiling is
+ * read as MiB, a larger one as bytes. Explicit units always win.
+ */
+function hostedMemoryBytes(value: unknown): number | null {
+  let amount: number
+  let unit: string | null = null
+  if (typeof value === 'number') {
+    amount = value
+  } else if (typeof value === 'string') {
+    const match = /^([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|KB|MB|GB)?$/i.exec(value.trim())
+    if (match?.[1] === undefined) return null
+    amount = Number(match[1])
+    unit = match[2]?.toLowerCase() ?? null
+  } else {
+    return null
+  }
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  let bytes: number
+  if (unit === 'b') bytes = amount
+  else if (unit === 'kib' || unit === 'kb') bytes = amount * 1024
+  else if (unit === 'mib' || unit === 'mb') bytes = amount * MIB
+  else if (unit === 'gib' || unit === 'gb') bytes = amount * 1024 * MIB
+  else bytes = amount <= MAX_HOSTED_MEMORY_MIB ? amount * MIB : amount
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : null
+}
+
+function hostedImageReference(value: unknown): SandboxSpec['image'] | null {
+  const parsed = ImageReferenceSchema.safeParse(
+    typeof value === 'string' ? { kind: 'image', reference: value } : value,
+  )
+  return parsed.success ? parsed.data : null
+}
+
+function hostedRegion(value: unknown): string | null {
+  return typeof value === 'string' && HOSTED_REGION_PATTERN.test(value) ? value : null
+}
+
+/**
+ * Builds the observed specification from the hosted public view. A complete
+ * domain spec is used unchanged. The V1 object view publishes only the public
+ * scalar fields (cpu, memory, region, image when known), so those fields are
+ * applied over the request to form the full contract; a payload that reports
+ * none of them stays unobserved. Fields the host does not report are not
+ * presented as observed by the host.
+ */
+function hostedEffectiveSpec(
+  requested: SandboxSpec,
+  effectiveSpec: Readonly<Record<string, unknown>>,
+): SandboxSpec | null {
+  const complete = SandboxSpecSchema.safeParse(effectiveSpec)
+  if (complete.success) return complete.data
+  const merged: SandboxSpec = { ...requested }
+  let observed = false
+  if (Object.hasOwn(effectiveSpec, 'cpu')) {
+    const millicores = hostedCpuMillicores(effectiveSpec['cpu'])
+    if (millicores !== null) {
+      merged.cpu = { millicores }
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'memory')) {
+    const bytes = hostedMemoryBytes(effectiveSpec['memory'])
+    if (bytes !== null) {
+      merged.memory = { bytes }
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'image')) {
+    const image = hostedImageReference(effectiveSpec['image'])
+    if (image !== null) {
+      merged.image = image
+      observed = true
+    }
+  }
+  if (Object.hasOwn(effectiveSpec, 'region')) {
+    const region = hostedRegion(effectiveSpec['region'])
+    if (region !== null) {
+      merged.region = region
+      observed = true
+    }
+  }
+  if (!observed) return null
+  const parsed = SandboxSpecSchema.safeParse(merged)
+  return parsed.success ? parsed.data : null
+}
+
+/**
+ * Maps the hosted Session's observed specification onto the domain's
+ * requested/effective pair.
+ *
+ * The hosted `effectiveSpec` is the provider's observed reality and is the only
+ * source promoted to `effective`; the locally persisted request is never
+ * promoted as observed, though the public scalar fields the host does report
+ * are merged into the full contract. An omitted image or region is a server
+ * default, not a local placeholder, so the observed value also replaces the
+ * local placeholder in the requested view. A payload that reports no public
+ * field stays `effective: null` (unknown/unobserved). Explicit shell execution
+ * with an unobserved OS is left to the remote executor; a known non-Linux OS is
+ * rejected before dispatch. `effectiveObservedAt` records the host's observation
+ * clock (the same clock as the Sandbox lifetime) so the domain timestamp
+ * invariant holds without trusting a cross-service clock; provider identity,
+ * bindings, and raw/normalized state are untouched.
+ */
+function hostedSpecification(
+  requested: SandboxSpec,
+  effectiveSpec: Readonly<Record<string, unknown>> | null,
+  observedAt: string,
+  requestedSpec: HostedRequestedSpec | undefined,
+): RequestedEffectiveSpec {
+  if (effectiveSpec === null) {
+    return { effective: null, effectiveObservedAt: null, requested }
+  }
+  const effective = hostedEffectiveSpec(requested, effectiveSpec)
+  if (effective === null) {
+    return { effective: null, effectiveObservedAt: null, requested }
+  }
+  const requestedWithDefaults =
+    requestedSpec === undefined
+      ? requested
+      : {
+          ...requested,
+          ...(requestedSpec.image === undefined ? { image: effective.image } : {}),
+          ...(requestedSpec.region === undefined ? { region: effective.region } : {}),
+        }
+  return {
+    effective,
+    effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
+    requested: requestedWithDefaults,
+  }
+}
+
+/**
+ * Minimal single-consumer async channel. The hosted provider returns an
+ * `ExecHandle` before the command completes, so event collection runs in the
+ * background and streams each renumbered event to the awaiting consumer. A
+ * cancellation or collection failure is surfaced to the consumer as a throw.
+ */
+class ExecEventQueue {
+  readonly #items: ExecEvent[] = []
+  readonly #waiters: Array<() => void> = []
+  #closed = false
+  #failed = false
+  #failure: unknown
+
+  push(event: ExecEvent): void {
+    if (this.#closed) return
+    this.#items.push(event)
+    this.#wake()
+  }
+
+  close(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#wake()
+  }
+
+  fail(error: unknown): void {
+    if (this.#closed) return
+    this.#failed = true
+    this.#failure = error
+    this.#closed = true
+    this.#wake()
+  }
+
+  async *drain(): AsyncGenerator<ExecEvent> {
+    for (;;) {
+      while (this.#items.length > 0) {
+        yield this.#items.shift() as ExecEvent
+      }
+      if (this.#closed) {
+        if (this.#failed) throw this.#failure
+        return
+      }
+      await new Promise<void>((resolve) => {
+        this.#waiters.push(resolve)
+      })
+    }
+  }
+
+  #wake(): void {
+    while (this.#waiters.length > 0) {
+      this.#waiters.shift()?.()
+    }
+  }
+}
+
+/** Hosted `ocbox` provider over the pinned `/v1` contract. */
+export class OcboxSandboxProvider implements SandboxProvider {
+  readonly name = 'ocbox'
+  readonly #waitOptions: WaitOperationOptions
+  readonly #requestedSpec: HostedRequestedSpec | undefined
+  readonly #api: OcboxApiClient
+  readonly #hostedProjectId: string
+  readonly #now: () => string
+  readonly #createId: () => string
+  readonly #checkpointStore: OperationCheckpointStore
+  readonly checkpointDurability: OperationCheckpointDurability
+  #pinnedMappingScope: string | undefined
+  #lifecycleStore: LifecycleStore | undefined
+  readonly #mappingScope: (() => Promise<string>) | undefined
+  readonly #sessionCache: HostedSessionCache | undefined
+  readonly #sandboxes = new Map<string, SandboxRecord>()
+  readonly #executionSessions = new Map<
+    string,
+    { readonly observedAt: number; readonly session: HostedSession }
+  >()
+  readonly #sessionReads = new Map<string, Promise<HostedSession>>()
+  readonly #executions = new Map<
+    string,
+    {
+      controller: AbortController
+      hostedId: string
+      localSessionId: string
+      localSandboxId: string
+    }
+  >()
+  readonly #previews = new Map<string, string>()
+
+  constructor(options: OcboxProviderOptions) {
+    if (options.hostedProjectId.trim().length === 0) {
+      throw new TypeError('The hosted project ID must be a non-empty string')
+    }
+    const checkpointDurability = options.checkpointDurability ?? 'ephemeral'
+    if (checkpointDurability === 'durable' && options.checkpointStore === undefined) {
+      throw new TypeError('A durable operation checkpoint policy requires a checkpoint store')
+    }
+    this.#waitOptions = options.waitOptions ?? {}
+    this.#requestedSpec = options.requestedSpec
+    this.#mappingScope = options.mappingScope
+    this.#api = options.api
+    this.#hostedProjectId = options.hostedProjectId
+    this.#now = options.now ?? (() => new Date().toISOString())
+    this.#createId = options.createId ?? randomUUID
+    this.#checkpointStore = options.checkpointStore ?? new MemoryOperationCheckpointStore()
+    this.checkpointDurability = checkpointDurability
+    this.#sessionCache = options.sessionCache
+  }
+
+  /** The lifecycle composition root supplies its existing project repository. */
+  bindLifecycleStore(store: LifecycleStore): void {
+    this.#lifecycleStore = store
+  }
+
+  async #scope(): Promise<string> {
+    if (this.#mappingScope === undefined) throw new TypeError('Hosted mapping scope is missing')
+    const scope = await this.#mappingScope()
+    if (this.#pinnedMappingScope !== undefined && scope !== this.#pinnedMappingScope) {
+      throw new OcboxError({
+        code: 'PROVIDER_AUTH',
+        message: 'The hosted login changed during this operation; rerun the command',
+        requestId: toRequestId(null),
+      })
+    }
+    this.#pinnedMappingScope = scope
+    return scope
+  }
+
+  async #records(): Promise<Map<string, SandboxRecord>> {
+    if (this.#mappingScope === undefined) return this.#sandboxes
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    const state = await this.#lifecycleStore.load()
+    return new Map(Object.entries(state.hostedMappings[scope] ?? {}))
+  }
+
+  async #saveRecord(record: SandboxRecord): Promise<void> {
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, record)
+      return
+    }
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    const scope = await this.#scope()
+    await this.#lifecycleStore.update((state) => ({
+      ...state,
+      hostedMappings: {
+        ...state.hostedMappings,
+        [scope]: { ...state.hostedMappings[scope], [record.localId]: record },
+      },
+    }))
+  }
+
+  #staleMapping(requestId: RequestId): OcboxError {
+    return new OcboxError({
+      code: 'SANDBOX_NOT_FOUND',
+      providerCode: 'HOSTED_MAPPING_STALE',
+      message:
+        'The hosted sandbox mapping is stale: its hosted session no longer exists. No replacement was created.',
+      requestId,
+    })
+  }
+
+  async #record(localId: string, requestId: RequestId): Promise<SandboxRecord | undefined> {
+    const record = (await this.#records()).get(localId)
+    if (record?.stale === true) throw this.#staleMapping(requestId)
+    return record
+  }
+
+  async #mappedSession(record: SandboxRecord): Promise<HostedSession> {
+    try {
+      return await this.#getOwnedSession(record.hostedSessionId)
+    } catch (error) {
+      if (!(error instanceof OcboxError) || error.code !== 'SANDBOX_NOT_FOUND') throw error
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(error.requestId)
+    }
+  }
+
+  /**
+   * The execution path's owned Session. Within one command the execution
+   * target and the execution start share the first read; across commands an
+   * available warm-session daemon serves the observation without another
+   * request. A cache miss (or an absent/stale daemon) reads the API directly.
+   */
+  async #executionSession(record: SandboxRecord): Promise<HostedSession> {
+    const now = Date.parse(this.#now())
+    const cached = this.#executionSessions.get(record.hostedSessionId)
+    if (cached !== undefined && now - cached.observedAt < EXECUTION_SESSION_CACHE_MILLISECONDS) {
+      return cached.session
+    }
+    if (this.#sessionCache !== undefined) {
+      const warm = await this.#sessionCache.get(record.hostedSessionId).catch(() => null)
+      if (warm !== null) {
+        try {
+          assertOwnedSession(warm, this.#hostedProjectId)
+          this.#executionSessions.set(record.hostedSessionId, { observedAt: now, session: warm })
+          return warm
+        } catch {
+          // A foreign or malformed cached Session is ignored; read directly.
+        }
+      }
+    }
+    const inflight = this.#sessionReads.get(record.hostedSessionId)
+    if (inflight !== undefined) return inflight
+    const read = this.#mappedSession(record)
+      .then((session) => {
+        this.#executionSessions.set(record.hostedSessionId, {
+          observedAt: Date.parse(this.#now()),
+          session,
+        })
+        if (this.#sessionCache !== undefined) {
+          void Promise.resolve(this.#sessionCache.remember(record.hostedSessionId, session)).catch(
+            () => undefined,
+          )
+        }
+        return session
+      })
+      .finally(() => {
+        this.#sessionReads.delete(record.hostedSessionId)
+      })
+    this.#sessionReads.set(record.hostedSessionId, read)
+    return read
+  }
+
+  /**
+   * Reads the owned hosted Session for the warm-session daemon. This bypasses
+   * the execution-path cache so a daemon refresh observes the API directly.
+   */
+  readHostedSession(hostedSessionId: string): Promise<HostedSession> {
+    return this.#getOwnedSession(hostedSessionId)
+  }
+
+  /** Test seam: seed a sandbox mapping without a network round-trip. */
+  seedForTests(record: {
+    localId: string
+    localSessionId: string
+    localProjectId: string
+    hostedSessionId: string
+    hostedSandboxId: string
+    spec: SandboxSpec
+  }): void {
+    const now = this.#now()
+    this.#sandboxes.set(record.localId, {
+      deleted: false,
+      stale: false,
+      createdAt: now,
+      hostedSandboxId: record.hostedSandboxId,
+      hostedSessionId: record.hostedSessionId,
+      localId: SandboxIdSchema.parse(record.localId),
+      localProjectId: ProjectIdSchema.parse(record.localProjectId),
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
+      spec: record.spec,
+      updatedAt: now,
+    })
+  }
+
+  /** Resolve source sync v2 through the owned running mapping. */
+  async sourceCasTransport(sandboxId: string, signal?: AbortSignal) {
+    const requestId = toRequestId(null)
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined || record.deleted) throw notFoundSandbox(requestId)
+    const owned = await this.#mappedSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (
+      primary === null ||
+      primary.sandboxId !== record.hostedSandboxId ||
+      primary.state !== 'running'
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'Source sync requires a running mapped sandbox; run ocbox start',
+        requestId,
+      })
+    }
+    return createCasTransport(this.#api, record.hostedSessionId, signal)
+  }
+
+  readonly exec: ProviderExecution = {
+    execute: (context: OperationContext, request: ExecRequest): Promise<ExecHandle> =>
+      this.#execute(context, request),
+    cancel: (context: OperationContext, request: CancelExecutionRequest): Promise<Operation> =>
+      this.#cancelExecution(context, request),
+  }
+
+  readonly files: ProviderFiles = {
+    read: (context) => Promise.reject(unsupported(context.requestId, 'files_read')),
+    write: (context) => Promise.reject(unsupported(context.requestId, 'files_write')),
+    list: (context) => Promise.reject(unsupported(context.requestId, 'files_list')),
+    stat: (context) => Promise.reject(unsupported(context.requestId, 'files_stat')),
+    checksum: (context) => Promise.reject(unsupported(context.requestId, 'files_checksum')),
+    makeDirectory: (context) =>
+      Promise.reject(unsupported(context.requestId, 'files_make_directory')),
+    remove: (context) => Promise.reject(unsupported(context.requestId, 'files_remove')),
+    move: (context) => Promise.reject(unsupported(context.requestId, 'files_move')),
+  }
+
+  readonly source: ProviderSource = {
+    apply: (context: OperationContext, request: ApplySourceRequest): Promise<ApplySourceResult> =>
+      this.#applySource(context, request),
+  }
+
+  readonly previews: ProviderPreviews = {
+    create: (context: OperationContext, request: CreatePreviewRequest): Promise<Preview> =>
+      this.#createPreview(context, request),
+    revoke: (context: OperationContext, request: RevokePreviewRequest): Promise<Operation> =>
+      this.#revokePreview(context, request),
+  }
+
+  capabilities(_context: RequestContext): Promise<ProviderCapabilities> {
+    return Promise.resolve(HOSTED_CAPABILITIES)
+  }
+
+  async create(
+    context: OperationContext,
+    request: CreateSandboxRequest,
+  ): Promise<SandboxMutationResult> {
+    await this.#records()
+    await this.#assertProject(context.requestId)
+    const secretReferenceIds = hostedSecretReferenceIds(request.specification)
+    const requestedSpec =
+      this.#requestedSpec === undefined || Object.keys(this.#requestedSpec).length === 0
+        ? {}
+        : {
+            requestedSpec: {
+              ...(this.#requestedSpec.cpu === undefined
+                ? {}
+                : { cpu: String(this.#requestedSpec.cpu) }),
+              ...(this.#requestedSpec.memory === undefined
+                ? {}
+                : { memory: String(this.#requestedSpec.memory) }),
+              ...(this.#requestedSpec.image === undefined
+                ? {}
+                : { image: this.#requestedSpec.image }),
+              ...(this.#requestedSpec.region === undefined
+                ? {}
+                : { region: this.#requestedSpec.region }),
+              ...(this.#requestedSpec.runtime === undefined
+                ? {}
+                : { runtime: this.#requestedSpec.runtime }),
+              ...(this.#requestedSpec.sizeId === undefined
+                ? {}
+                : { sizeId: this.#requestedSpec.sizeId }),
+              ...(this.#requestedSpec.lifetimeSeconds === undefined
+                ? {}
+                : { lifetimeSeconds: this.#requestedSpec.lifetimeSeconds }),
+            },
+          }
+    const created = await this.#api.generated.createSession({
+      path: { projectId: this.#hostedProjectId },
+      body: {
+        ...requestedSpec,
+        ...(secretReferenceIds.length === 0 ? {} : { secretReferenceIds }),
+      },
+      idempotencyKey: context.idempotencyKey,
+    })
+    if (created.status >= 400) {
+      const envelope = envelopeOf(created.body)
+      const denial = admissionError(
+        envelope.reason ?? envelope.code,
+        toRequestId(created.requestId),
+      )
+      if (denial) throw denial
+      const refusal = sizeRefusalError(envelope.reasonCode, toRequestId(created.requestId))
+      if (refusal) throw refusal
+    }
+    const started = this.#assertSuccess('createSession', created, [200, 201, 202])
+    const hostedOp = started.body as HostedOperation & { session?: HostedSession }
+    const deadline = this.#lifecycleDeadline()
+    let record: SandboxRecord | undefined
+    const remember = async (session: HostedSession): Promise<void> => {
+      assertOwnedSession(session, this.#hostedProjectId)
+      const primary = resolvePrimaryBinding(session)
+      const sandboxId = primary?.sandboxId ?? session.primarySandboxId
+      const now = this.#now()
+      let next: SandboxRecord
+      if (record === undefined) {
+        // Persist the hosted Session as soon as its ID is known: a create that
+        // times out before a primary binding exists must still be destroyable.
+        next = {
+          deleted: false,
+          stale: false,
+          createdAt: now,
+          hostedSessionId: session.id,
+          ...(sandboxId === null ? {} : { hostedSandboxId: sandboxId }),
+          localId: SandboxIdSchema.parse(this.#createId()),
+          localProjectId: request.projectId,
+          localSessionId: request.sessionId,
+          spec: request.specification,
+          updatedAt: now,
+        }
+      } else if (sandboxId !== null) {
+        if (record.hostedSandboxId !== undefined && record.hostedSandboxId !== sandboxId) {
+          throw new OcboxError({
+            code: 'INVALID_STATE',
+            message: 'The hosted primary binding changed during provisioning',
+            providerCode: 'PRIMARY_BINDING_CHANGED',
+            requestId: context.requestId,
+          })
+        }
+        next = { ...record, hostedSandboxId: sandboxId, updatedAt: now }
+      } else {
+        next = { ...record, updatedAt: now }
+      }
+      record = next
+      await this.#saveRecord(next)
+    }
+    const rememberId = async (sessionId: string): Promise<void> => {
+      if (record !== undefined) return
+      const now = this.#now()
+      record = {
+        deleted: false,
+        stale: false,
+        createdAt: now,
+        hostedSessionId: sessionId,
+        localId: SandboxIdSchema.parse(this.#createId()),
+        localProjectId: request.projectId,
+        localSessionId: request.sessionId,
+        spec: request.specification,
+        updatedAt: now,
+      }
+      await this.#saveRecord(record)
+    }
+    if (hostedOp.session !== undefined) await remember(hostedOp.session)
+    else if (typeof hostedOp.sessionId === 'string') await rememberId(hostedOp.sessionId)
+    const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+      ...this.#waitOptions,
+      deadlineMilliseconds: deadline.remainingMilliseconds(),
+      store: this.#checkpointStore,
+    }).catch(friendlyAdmissionFailure)
+    const hostedSessionId = waited.operation.sessionId ?? hostedOp.sessionId
+    if (!hostedSessionId || (record !== undefined && record.hostedSessionId !== hostedSessionId)) {
+      throw new OcboxError({
+        code: 'PROVIDER_UNAVAILABLE',
+        message: 'The hosted service did not return the expected session for the created operation',
+        requestId: toRequestId(waited.requestId),
+      })
+    }
+    if (record === undefined) await rememberId(hostedSessionId)
+    const session = await this.#waitForSession(hostedSessionId, deadline, async (observed) => {
+      await remember(observed)
+      return (
+        observed.normalizedState === 'running' &&
+        resolvePrimaryBinding(observed)?.state === 'running'
+      )
+    }).catch(friendlyAdmissionFailure)
+    const primary = session === null ? null : resolvePrimaryBinding(session)
+    if (record === undefined || primary === null) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted session has no active primary sandbox binding',
+        providerCode: 'MISSING_PRIMARY_BINDING',
+        requestId: toRequestId(waited.requestId),
+      })
+    }
+    const now = this.#now()
+    const localId = record.localId
+    const sandbox = this.#sandboxOf(record, primary.state, now, request.specification, session)
+    const operation = this.#operationOf(context, {
+      action: 'create',
+      replay: started.meta.replay,
+      sandboxId: localId,
+      sessionId: request.sessionId,
+      verifiedAt: now,
+    })
+    return { operation, sandbox }
+  }
+
+  async get(context: RequestContext, request: GetSandboxRequest): Promise<Sandbox | null> {
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined || record.deleted) return null
+    const session = await this.#executionSession(record)
+    const primary = resolvePrimaryBinding(session)
+    if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted primary binding changed for this sandbox',
+        providerCode: 'PRIMARY_BINDING_CHANGED',
+        requestId: context.requestId,
+      })
+    }
+    const now = this.#now()
+    record.updatedAt = now
+    return this.#sandboxOf(record, primary.state, now, record.spec, session)
+  }
+
+  async list(context: RequestContext, request: ListSandboxesRequest): Promise<readonly Sandbox[]> {
+    const page = await this.#api.generated.listSessions({
+      path: { projectId: this.#hostedProjectId },
+    })
+    const listed = this.#api.assertSuccess('listSessions', page, [200])
+    const sessions = (listed.body as { data: readonly HostedSession[] }).data
+    const out: Sandbox[] = []
+    const records = await this.#records()
+    for (const session of sessions) {
+      if (session.projectId !== this.#hostedProjectId) continue
+      const primary = resolvePrimaryBinding(session)
+      if (primary === null) continue
+      const existing = [...records.values()].find(
+        (record) =>
+          !record.stale &&
+          record.hostedSessionId === session.id &&
+          record.hostedSandboxId === primary.sandboxId,
+      )
+      if (request.sessionId !== null && request.sessionId !== undefined) {
+        if (existing === undefined || existing.localSessionId !== request.sessionId) continue
+      }
+      if (request.projectId !== null && request.projectId !== undefined) {
+        if (existing === undefined || existing.localProjectId !== request.projectId) continue
+      }
+      const now = this.#now()
+      if (existing !== undefined) {
+        existing.updatedAt = now
+        out.push(this.#sandboxOf(existing, primary.state, now, existing.spec, session))
+      } else {
+        void context
+      }
+    }
+    return out
+  }
+
+  async start(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    return this.#mutate(context, request, 'start', 'running')
+  }
+
+  async pause(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    return this.#mutate(context, request, 'pause', 'paused')
+  }
+
+  async resume(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    return this.#mutate(context, request, 'resume', 'running')
+  }
+
+  async stop(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    return this.#mutate(context, request, 'stop', 'stopped')
+  }
+
+  async destroy(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+  ): Promise<SandboxMutationResult> {
+    return this.#mutate(context, request, 'destroy', 'deleted')
+  }
+
+  async #assertProject(requestId: string): Promise<void> {
+    const result = await this.#api.generated.getProject({
+      path: { projectId: this.#hostedProjectId },
+    })
+    if (result.status === 404) {
+      const envelope = envelopeOf(result.body)
+      throw mapApiFailureToOcboxError({
+        operation: 'getProject',
+        notFoundCode: 'PROJECT_NOT_FOUND',
+        requestId: result.requestId ?? envelope.requestId ?? requestId,
+        responseRequestId: envelope.requestId ?? result.requestId ?? null,
+        retryAfterSeconds: envelope.retryAfterSeconds ?? null,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
+        status: result.status,
+      })
+    }
+    this.#api.assertSuccess('getProject', result, [200])
+  }
+
+  async #getOwnedSession(hostedSessionId: string): Promise<HostedSession> {
+    const result = await this.#api.generated.getSession({ path: { sessionId: hostedSessionId } })
+    if (result.status === 404) {
+      const envelope = envelopeOf(result.body)
+      throw mapApiFailureToOcboxError({
+        operation: 'getSession',
+        notFoundCode: 'SANDBOX_NOT_FOUND',
+        requestId: result.requestId ?? envelope.requestId ?? null,
+        responseRequestId: envelope.requestId ?? result.requestId ?? null,
+        retryAfterSeconds: envelope.retryAfterSeconds ?? null,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
+        status: result.status,
+      })
+    }
+    const { body } = this.#assertSuccess('getSession', result, [200])
+    const session = body as HostedSession
+    assertOwnedSession(session, this.#hostedProjectId)
+    return session
+  }
+
+  #assertSuccess<T>(operation: string, result: ApiResult<T>, expected: readonly number[]) {
+    const retryAfterSeconds = parseRetryAfterSeconds(result.retryAfter)
+    if (!expected.includes(result.status) && retryAfterSeconds !== null) {
+      const envelope = envelopeOf(result.body)
+      const mapped = mapApiFailureToOcboxError({
+        operation,
+        requestId: result.requestId ?? envelope.requestId,
+        responseRequestId: envelope.requestId,
+        retryAfterSeconds,
+        serverCode: envelope.code,
+        serverMessage: envelope.message,
+        nextStep: envelope.nextStep,
+        status: result.status,
+      })
+      if (result.status === 429) {
+        throw new OcboxError({
+          code: mapped.code,
+          requestId: mapped.requestId,
+          ...(mapped.providerCode === undefined ? {} : { providerCode: mapped.providerCode }),
+          ...(mapped.details === undefined ? {} : { details: mapped.details }),
+          message: `${mapped.message} Retry after ${retryAfterSeconds} seconds.`,
+        })
+      }
+      throw mapped
+    }
+    return this.#api.assertSuccess(operation, result, expected)
+  }
+
+  #lifecycleDeadline(): Deadline {
+    return new Deadline(
+      this.#waitOptions.deadlineMilliseconds ?? this.#waitOptions.maxWaitMilliseconds ?? 5 * 60_000,
+      this.#waitOptions.now,
+    )
+  }
+
+  async #waitForSession(
+    hostedSessionId: string,
+    deadline: Deadline,
+    complete: (session: HostedSession) => Promise<boolean>,
+    allowDeleted = false,
+  ): Promise<HostedSession | null> {
+    let attempt = 0
+    for (;;) {
+      if (deadline.exceeded()) {
+        throw new OcboxError({
+          code: 'OPERATION_TIMEOUT',
+          message: 'The hosted sandbox did not reach the requested state in time',
+          requestId: toRequestId(null),
+        })
+      }
+      let retryAfterSeconds: number | null = null
+      try {
+        const session = await this.#getOwnedSession(hostedSessionId)
+        if (await complete(session)) return session
+      } catch (error) {
+        if (!(error instanceof OcboxError)) throw error
+        if (allowDeleted && error.code === 'SANDBOX_NOT_FOUND') return null
+        if (!error.retryable) throw error
+        // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+        const hint = error.details?.['retryAfterSeconds']
+        retryAfterSeconds = typeof hint === 'number' ? hint : null
+      }
+      attempt += 1
+      await (this.#waitOptions.sleep ?? sleepWithSignal)(
+        Math.min(
+          resolvePollDelayMilliseconds({
+            attempt,
+            retryAfterSeconds,
+            policy: this.#waitOptions.policy,
+            random: this.#waitOptions.random,
+          }),
+          deadline.remainingMilliseconds(),
+        ),
+      )
+    }
+  }
+
+  async #confirmDeleted(hostedSessionId: string, deadline: Deadline): Promise<void> {
+    await this.#waitForSession(
+      hostedSessionId,
+      deadline,
+      async (session) =>
+        session.normalizedState === 'destroyed' && resolvePrimaryBinding(session) === null,
+      true,
+    )
+  }
+
+  async #mutate(
+    context: OperationContext,
+    request: LifecycleMutationRequest,
+    action: Extract<OperationAction, 'start' | 'pause' | 'resume' | 'stop' | 'destroy'>,
+    expected: 'running' | 'paused' | 'stopped' | 'deleted',
+  ): Promise<SandboxMutationResult> {
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined) throw notFoundSandbox(context.requestId)
+    await this.#assertProject(context.requestId)
+    const invoke = {
+      destroy: () =>
+        this.#api.generated.destroySession({
+          path: { sessionId: record.hostedSessionId },
+          idempotencyKey: context.idempotencyKey,
+        }),
+      pause: () =>
+        this.#api.generated.pauseSession({
+          path: { sessionId: record.hostedSessionId },
+          idempotencyKey: context.idempotencyKey,
+        }),
+      start: () =>
+        this.#api.generated.startSession({
+          path: { sessionId: record.hostedSessionId },
+          idempotencyKey: context.idempotencyKey,
+        }),
+      resume: () =>
+        this.#api.generated.startSession({
+          path: { sessionId: record.hostedSessionId },
+          idempotencyKey: context.idempotencyKey,
+        }),
+      stop: () =>
+        this.#api.generated.stopSession({
+          path: { sessionId: record.hostedSessionId },
+          idempotencyKey: context.idempotencyKey,
+        }),
+    }[action]
+    if (!(action === 'destroy' && record.deleted)) await this.#mappedSession(record)
+    const deadline = this.#lifecycleDeadline()
+    const initiated = await invoke()
+    if (initiated.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
+    let replay = initiated.replay
+    let waitedRequestId = initiated.requestId
+    try {
+      const started = this.#assertSuccess(`${action}Session`, initiated, [200, 202])
+      replay = started.meta.replay
+      const hostedOp = started.body as HostedOperation
+      const waited = await waitForHostedOperation(this.#api, hostedOp.id, {
+        ...this.#waitOptions,
+        deadlineMilliseconds: deadline.remainingMilliseconds(),
+        store: this.#checkpointStore,
+      }).catch(friendlyAdmissionFailure)
+      waitedRequestId = waited.requestId
+    } catch (error) {
+      if (
+        action !== 'destroy' ||
+        !(error instanceof OcboxError) ||
+        !error.retryable ||
+        initiated.status < 400
+      )
+        throw error
+      const session = await this.#getOwnedSession(record.hostedSessionId)
+      if (session.normalizedState !== 'destroying' && session.normalizedState !== 'destroyed')
+        throw error
+    }
+    if (expected === 'deleted') {
+      await this.#confirmDeleted(record.hostedSessionId, deadline)
+      const now = this.#now()
+      record.updatedAt = now
+      await this.#saveRecord({ ...record, deleted: true })
+      const sandbox = this.#sandboxOf(record, 'stopped', now, record.spec, null, 'deleted')
+      const operation = this.#operationOf(context, {
+        action,
+        replay,
+        sandboxId: record.localId,
+        sessionId: record.localSessionId,
+        verifiedAt: now,
+      })
+      return { operation, sandbox }
+    }
+    const session = await this.#mappedSession(record)
+    const now = this.#now()
+    record.updatedAt = now
+    const primary = resolvePrimaryBinding(session)
+    if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted primary binding changed during the operation',
+        providerCode: 'PRIMARY_BINDING_CHANGED',
+        requestId: toRequestId(waitedRequestId),
+      })
+    }
+    const sandbox = this.#sandboxOf(record, primary.state, now, record.spec, session, expected)
+    const operation = this.#operationOf(context, {
+      action,
+      replay,
+      sandboxId: record.localId,
+      sessionId: record.localSessionId,
+      verifiedAt: now,
+    })
+    return { operation, sandbox }
+  }
+
+  #operationOf(
+    context: OperationContext,
+    input: {
+      sessionId: string
+      sandboxId: string | null
+      action: OperationAction
+      verifiedAt: string
+      replay: boolean
+    },
+  ): Operation {
+    const lifecycle = new Set<OperationAction>([
+      'create',
+      'start',
+      'pause',
+      'stop',
+      'resume',
+      'destroy',
+    ])
+    const previewLifecycle = actionIsPreview(input.action)
+    const terminal = lifecycle.has(input.action) || previewLifecycle
+    return OperationSchema.parse({
+      action: input.action,
+      completedAt: terminal ? input.verifiedAt : null,
+      createdAt: context.issuedAt,
+      id: context.operationId,
+      idempotencyKey: context.idempotencyKey,
+      idempotencyResolution: input.replay
+        ? { kind: 'replayed_result', originalOperationId: context.operationId }
+        : { kind: 'created' },
+      providerVerifiedAt: lifecycle.has(input.action) ? input.verifiedAt : null,
+      requestId: context.requestId,
+      sandboxId: input.sandboxId,
+      sessionId: input.sessionId,
+      startedAt: terminal ? context.issuedAt : null,
+      status: 'succeeded',
+    })
+  }
+
+  #sandboxOf(
+    record: SandboxRecord,
+    bindingState: 'running' | 'stopped' | 'destroyed',
+    observedAt: string,
+    spec: SandboxSpec,
+    hostedSession: HostedSession | null,
+    forceNormalized?: 'running' | 'paused' | 'stopped' | 'deleted',
+  ): Sandbox {
+    const normalized = forceNormalized ?? (bindingState === 'running' ? 'running' : 'stopped')
+    const observation = ProviderLifecycleObservationSchema.parse({
+      desiredState: null,
+      lifecycleTimestamps: {
+        creationStartedAt: null,
+        runningAt: null,
+        pauseStartedAt: null,
+        pausedAt: null,
+        stopStartedAt: null,
+        stoppedAt: null,
+        deletionStartedAt: null,
+        deletedAt: normalized === 'deleted' ? UtcTimestampSchema.parse(observedAt) : null,
+        errorAt: null,
+        lastTransitionAt: null,
+      },
+      normalizedState: normalized,
+      observedAt: UtcTimestampSchema.parse(observedAt),
+      rawState: bindingState,
+      reason: null,
+    })
+    return SandboxSchema.parse({
+      createdAt: record.createdAt,
+      id: record.localId,
+      lifecycle: observation,
+      projectId: record.localProjectId,
+      provider: 'ocbox',
+      providerSandboxId: ProviderSandboxIdSchema.parse(
+        record.hostedSandboxId ?? record.hostedSessionId,
+      ),
+      specification: hostedSpecification(
+        spec,
+        hostedSession?.effectiveSpec ?? null,
+        observedAt,
+        this.#requestedSpec,
+      ),
+      updatedAt: observedAt,
+    })
+  }
+
+  async #lastExecution(
+    record: SandboxRecord,
+    executionId: string,
+    localExecutionId: string | undefined,
+    clear = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const mutate = (current: SandboxRecord): SandboxRecord => {
+      if (!clear) {
+        return {
+          ...current,
+          lastExecutionId: executionId,
+          ...(localExecutionId === undefined ? {} : { lastLocalExecutionId: localExecutionId }),
+        }
+      }
+      if (current.lastExecutionId !== executionId) return current
+      const { lastExecutionId: _last, lastLocalExecutionId: _local, ...rest } = current
+      return rest
+    }
+    if (this.#mappingScope === undefined) {
+      this.#sandboxes.set(record.localId, mutate(this.#sandboxes.get(record.localId) ?? record))
+      return
+    }
+    const scope = await this.#scope()
+    if (this.#lifecycleStore === undefined)
+      throw new TypeError('Hosted mapping requires a lifecycle store')
+    await this.#lifecycleStore.update((state) => {
+      const mappings = state.hostedMappings[scope]
+      const current = mappings?.[record.localId]
+      if (mappings !== undefined && current !== undefined)
+        mappings[record.localId] = mutate(current)
+      return state
+    }, signal)
+  }
+
+  async cancelSandboxExecution(
+    sandboxId: Sandbox['id'],
+    executionId: string | undefined,
+    waitMilliseconds: number,
+    signal?: AbortSignal,
+    requestCancellation = true,
+  ): Promise<CancellationResult> {
+    const requestId = RequestIdSchema.parse(this.#createId())
+    const record = await this.#record(sandboxId, requestId)
+    if (record === undefined) throw notFoundSandbox(requestId)
+    const id = executionId ?? record.lastExecutionId
+    if (id === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    // `exec` prints the CLI execution ID; map it to the hosted ID for the
+    // remote calls and report the same CLI ID back to `cancel`.
+    const localId =
+      executionId === undefined
+        ? record.lastLocalExecutionId
+        : executionId === record.lastLocalExecutionId
+          ? record.lastLocalExecutionId
+          : executionId === record.lastExecutionId
+            ? record.lastLocalExecutionId
+            : undefined
+    const hostedId =
+      executionId === undefined ? id : localId === undefined ? id : record.lastExecutionId
+    if (hostedId === undefined) throw executionError(requestId, 'Nothing running in this Sandbox')
+    return waitForCancellation(
+      requestId,
+      waitMilliseconds,
+      signal,
+      async (boundedSignal, pause) => {
+        let requested = !requestCancellation
+        for (;;) {
+          boundedSignal.throwIfAborted()
+          const response = await this.#api.generated.getExecution({
+            path: { executionId: hostedId },
+            signal: boundedSignal,
+          })
+          if (response.status === 404)
+            throw executionError(
+              requestId,
+              `Unknown execution ID: ${executionId ?? hostedId}`,
+              'SANDBOX_NOT_FOUND',
+            )
+          const execution = HostedExecutionSchema.parse(
+            this.#api.assertSuccess('getExecution', response, [200]).body,
+          )
+          if (
+            execution.sessionId !== record.hostedSessionId ||
+            (execution.sandboxId !== null && execution.sandboxId !== record.hostedSandboxId)
+          ) {
+            throw executionError(
+              requestId,
+              'Execution does not belong to the selected Sandbox in the current scope',
+            )
+          }
+          if (isTerminalExecutionState(execution.state)) {
+            await this.#lastExecution(record, hostedId, localId, true, boundedSignal)
+            return {
+              executionId: localId ?? hostedId,
+              sandboxId,
+              state: execution.state as CancellationResult['state'],
+            }
+          }
+          if (!requested) {
+            const cancelled = await this.#api.generated.cancelExecution({
+              path: { executionId: hostedId },
+              idempotencyKey: this.#createId(),
+              signal: boundedSignal,
+            })
+            // Completion may race cancellation; re-read the execution on conflict.
+            if (cancelled.status !== 409)
+              this.#api.assertSuccess('cancelExecution', cancelled, [200, 202])
+            requested = true
+          }
+          await pause()
+        }
+      },
+    )
+  }
+
+  async #execute(context: OperationContext, request: ExecRequest): Promise<ExecHandle> {
+    const userEnvironment = Object.keys(request.environment).filter(
+      (name) => !ADAPTER_OWNED_ENVIRONMENT.has(name),
+    )
+    const unsupportedOptions = [
+      ...(request.workingDirectory === null ? [] : ['--cwd']),
+      ...(userEnvironment.length === 0 ? [] : ['--env']),
+    ]
+    if (unsupportedOptions.length > 0) {
+      throw new OcboxError({
+        code: 'CAPABILITY_UNSUPPORTED',
+        message: `The hosted provider does not support ${unsupportedOptions.join(' or ')} for executions; omit ${unsupportedOptions.length === 1 ? 'it' : 'them'} and use the default workspace.`,
+        requestId: context.requestId,
+      })
+    }
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined) throw notFoundSandbox(context.requestId)
+    const owned = await this.#executionSession(record)
+    const primary = resolvePrimaryBinding(owned)
+    if (primary === null || primary.sandboxId !== record.hostedSandboxId) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted Session primary Sandbox binding does not match the requested Sandbox',
+        requestId: context.requestId,
+      })
+    }
+    const timeoutSeconds =
+      request.timeoutMilliseconds === null
+        ? undefined
+        : Math.min(3600, Math.max(1, Math.ceil(request.timeoutMilliseconds / 1000)))
+    const started = await this.#api.generated.createExecution({
+      path: { sessionId: record.hostedSessionId },
+      body: {
+        command: commandString(request),
+        ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+      },
+      idempotencyKey: context.idempotencyKey,
+    })
+    if (started.status === 404) {
+      await this.#saveRecord({ ...record, stale: true, updatedAt: this.#now() })
+      throw this.#staleMapping(context.requestId)
+    }
+    const created = this.#api.assertSuccess('createExecution', started, [200, 202])
+    const hosted = created.body as {
+      id: string
+      createdAt: string
+      sessionId?: unknown
+      sandboxId?: unknown
+    }
+    if (
+      (typeof hosted.sessionId === 'string' && hosted.sessionId !== record.hostedSessionId) ||
+      (typeof hosted.sandboxId === 'string' &&
+        hosted.sandboxId !== record.hostedSandboxId &&
+        hosted.sandboxId !== null)
+    ) {
+      throw new OcboxError({
+        code: 'INVALID_STATE',
+        message: 'The hosted Execution does not belong to the requested Session and Sandbox',
+        requestId: context.requestId,
+      })
+    }
+    const localExecutionId: ExecutionId = ExecutionIdSchema.parse(this.#createId())
+    await this.#lastExecution(record, hosted.id, localExecutionId)
+    const controller = new AbortController()
+    this.#executions.set(localExecutionId, {
+      controller,
+      hostedId: hosted.id,
+      localSandboxId: request.sandboxId,
+      localSessionId: SessionIdSchema.parse(record.localSessionId),
+    })
+    const startedAt = UtcTimestampSchema.parse(hosted.createdAt)
+    const renumberer = new ExecEventRenumberer(localExecutionId, startedAt)
+    const queue = new ExecEventQueue()
+    let resolveResult!: (result: ExecResult) => void
+    let rejectResult!: (error: unknown) => void
+    const resultPromise = new Promise<ExecResult>((resolve, reject) => {
+      resolveResult = resolve
+      rejectResult = reject
+    })
+    // Cancellation can reject the result before a consumer awaits it; observe
+    // that rejection here so it never surfaces as an unhandled rejection while
+    // `handle.result` still rejects for callers that await it.
+    void resultPromise.catch(() => undefined)
+
+    void collectExecutionEvents(this.#api, hosted.id, {
+      deadlineMilliseconds: executionWaitDeadlineMilliseconds(
+        request.timeoutMilliseconds,
+        HOSTED_CAPABILITIES.limits.maxExecutionMilliseconds,
+      ),
+      signal: controller.signal,
+      onEvent: (event: HostedExecutionEvent) => {
+        for (const mapped of renumberer.push(event)) queue.push(mapped)
+      },
+    }).then(
+      async (collected) => {
+        try {
+          await this.#lastExecution(record, hosted.id, localExecutionId, true)
+          this.#executions.delete(localExecutionId)
+          const latest = collected.events[collected.events.length - 1]
+          const completedAt = latest?.at ?? this.#now()
+          const result = toExecResult(collected.result, {
+            completedAt: UtcTimestampSchema.parse(completedAt),
+            startedAt,
+          })
+          for (const mapped of renumberer.finish()) queue.push(mapped)
+          resolveResult(result)
+          queue.push({
+            executionId: localExecutionId,
+            result,
+            sequence: renumberer.sequence,
+            timestamp: result.completedAt,
+            type: 'completed',
+          })
+        } catch (error) {
+          rejectResult(error)
+          queue.fail(error)
+          return
+        }
+        queue.close()
+      },
+      (error: unknown) => {
+        rejectResult(error)
+        queue.fail(error)
+      },
+    )
+
+    const execution: Execution = {
+      command: request.command,
+      completedAt: null,
+      createdAt: startedAt,
+      id: localExecutionId,
+      operationId: context.operationId,
+      result: null,
+      sandboxId: request.sandboxId,
+      startedAt,
+      status: 'running',
+    }
+    async function* stream(): AsyncGenerator<ExecEvent> {
+      yield* queue.drain()
+    }
+    return { events: stream(), execution, result: resultPromise }
+  }
+
+  async #cancelExecution(
+    context: OperationContext,
+    request: CancelExecutionRequest,
+  ): Promise<Operation> {
+    const tracked = this.#executions.get(request.executionId)
+    if (tracked === undefined) {
+      throw new OcboxError({
+        code: 'SANDBOX_NOT_FOUND',
+        message: 'The hosted execution was not found',
+        requestId: context.requestId,
+      })
+    }
+    // Stop the local event wait immediately so an in-flight command's polling
+    // does not outlive the cancel; the remote request still confirms it.
+    tracked.controller.abort()
+    const result = await this.#api.generated.cancelExecution({
+      path: { executionId: tracked.hostedId },
+      idempotencyKey: context.idempotencyKey,
+    })
+    this.#api.assertSuccess('cancelExecution', result, [200, 202])
+    if (this.#mappingScope !== undefined) {
+      await this.cancelSandboxExecution(
+        SandboxIdSchema.parse(tracked.localSandboxId),
+        tracked.hostedId,
+        30_000,
+        undefined,
+        false,
+      )
+    }
+    this.#executions.delete(request.executionId)
+    return OperationSchema.parse({
+      action: 'exec_cancel',
+      completedAt: null,
+      createdAt: context.issuedAt,
+      id: context.operationId,
+      idempotencyKey: context.idempotencyKey,
+      idempotencyResolution: null,
+      providerVerifiedAt: null,
+      requestId: context.requestId,
+      sandboxId: tracked.localSandboxId,
+      sessionId: tracked.localSessionId,
+      startedAt: context.issuedAt,
+      status: 'running',
+    })
+  }
+
+  async #applySource(
+    context: OperationContext,
+    request: ApplySourceRequest,
+  ): Promise<ApplySourceResult> {
+    if (request.source.kind === 'none') {
+      const record = await this.#record(request.sandboxId, context.requestId)
+      if (record === undefined) throw notFoundSandbox(context.requestId)
+      const now = this.#now()
+      const operation = OperationSchema.parse({
+        action: 'source_apply',
+        completedAt: now,
+        createdAt: context.issuedAt,
+        id: context.operationId,
+        idempotencyKey: context.idempotencyKey,
+        idempotencyResolution: { kind: 'created' },
+        providerVerifiedAt: null,
+        requestId: context.requestId,
+        sandboxId: request.sandboxId,
+        sessionId: record.localSessionId,
+        startedAt: context.issuedAt,
+        status: 'succeeded',
+      })
+      return {
+        contentDigestSha256: '0'.repeat(64),
+        operation,
+        sandboxId: request.sandboxId,
+      }
+    }
+    throw unsupported(context.requestId, 'source_apply')
+  }
+
+  async #createPreview(context: OperationContext, request: CreatePreviewRequest): Promise<Preview> {
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined) throw notFoundSandbox(context.requestId)
+    const ttlSeconds = Math.max(
+      60,
+      Math.min(86400, Math.ceil(request.expiresInMilliseconds / 1000)),
+    )
+    const protocol =
+      request.protocol === 'wss'
+        ? 'wss'
+        : request.protocol === 'ws'
+          ? 'ws'
+          : request.protocol === 'https'
+            ? 'https'
+            : 'http'
+    const created = await this.#api.generated.createPreview({
+      path: { sessionId: record.hostedSessionId },
+      body: { port: request.port, ttlSeconds },
+      idempotencyKey: context.idempotencyKey,
+    })
+    const done = this.#api.assertSuccess('createPreview', created, [200, 202])
+    const hosted = done.body as { id: string; url: string; expiresAt: string }
+    const url = new URL(hosted.url)
+    if (url.username !== '' || url.password !== '' || url.protocol.slice(0, -1) !== protocol) {
+      throw new OcboxError({
+        code: 'PREVIEW_UNAVAILABLE',
+        message: 'The hosted preview URL did not match the requested protocol',
+        requestId: toRequestId(done.meta.requestId),
+      })
+    }
+    this.#previews.set(hosted.url, hosted.id)
+    const now = this.#now()
+    const operation = OperationSchema.parse({
+      action: 'preview_create',
+      completedAt: now,
+      createdAt: context.issuedAt,
+      id: context.operationId,
+      idempotencyKey: context.idempotencyKey,
+      idempotencyResolution: done.meta.replay
+        ? { kind: 'replayed_result', originalOperationId: context.operationId }
+        : { kind: 'created' },
+      providerVerifiedAt: null,
+      requestId: context.requestId,
+      sandboxId: request.sandboxId,
+      sessionId: record.localSessionId,
+      startedAt: context.issuedAt,
+      status: 'succeeded',
+    })
+    return {
+      authenticated: true,
+      expiresAt: UtcTimestampSchema.parse(hosted.expiresAt),
+      operation,
+      port: request.port,
+      protocol,
+      sandboxId: request.sandboxId,
+      url: hosted.url,
+    }
+  }
+
+  async #revokePreview(
+    context: OperationContext,
+    request: RevokePreviewRequest,
+  ): Promise<Operation> {
+    const previewId = this.#previews.get(request.url)
+    if (previewId === undefined) {
+      throw new OcboxError({
+        code: 'PREVIEW_UNAVAILABLE',
+        message: 'The hosted preview was not found',
+        requestId: context.requestId,
+      })
+    }
+    const record = await this.#record(request.sandboxId, context.requestId)
+    if (record === undefined) throw notFoundSandbox(context.requestId)
+    const result = await this.#api.generated.deletePreview({
+      path: { previewId },
+      idempotencyKey: context.idempotencyKey,
+    })
+    this.#api.assertSuccess('deletePreview', result, [200, 202])
+    this.#previews.delete(request.url)
+    return OperationSchema.parse({
+      action: 'preview_revoke',
+      completedAt: null,
+      createdAt: context.issuedAt,
+      id: context.operationId,
+      idempotencyKey: context.idempotencyKey,
+      idempotencyResolution: null,
+      providerVerifiedAt: null,
+      requestId: context.requestId,
+      sandboxId: request.sandboxId,
+      sessionId: record.localSessionId,
+      startedAt: context.issuedAt,
+      status: 'running',
+    })
+  }
+}
+
+function actionIsPreview(action: OperationAction): boolean {
+  return action === 'preview_create' || action === 'preview_revoke'
+}
