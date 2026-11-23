@@ -38,6 +38,7 @@ export default defineConfig({
     'commands/gpu/check': 'src/commands/gpu/check.ts',
     'commands/init': 'src/commands/init.ts',
     'commands/ls': 'src/commands/ls.ts',
+    'commands/logs': 'src/commands/logs.ts',
     'commands/sizes': 'src/commands/sizes.ts',
     'commands/operation/cancel': 'src/commands/operation/cancel.ts',
     'commands/operation/get': 'src/commands/operation/get.ts',

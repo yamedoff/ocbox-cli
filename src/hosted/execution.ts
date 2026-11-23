@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { OcboxApiClient } from '../api/client/index.js'
+import { newRequestId } from '../auth/errors.js'
 import { OcboxError } from '../errors/index.js'
 import { parseHostedResponse } from './response.js'
 import { SafeErrorSchema, safeErrorReason } from './safe-error.js'
@@ -53,6 +54,11 @@ export interface ExecutionView {
   readonly cursor: string | null
 }
 
+export interface ExecutionLogs {
+  readonly execution: ExecutionRecord
+  readonly result: ExecutionResultRecord
+}
+
 function options(signal: AbortSignal | undefined) {
   return signal === undefined ? {} : { signal }
 }
@@ -100,6 +106,35 @@ export async function getExecution(
     }
     throw error
   }
+}
+
+/**
+ * Read the stored result of a finished execution, or explain why it cannot be
+ * read yet: still running, or terminal but the result route answered 409.
+ */
+export async function getExecutionLogs(
+  api: OcboxApiClient,
+  executionId: string,
+  signal?: AbortSignal,
+): Promise<ExecutionLogs> {
+  const view = await getExecution(api, executionId, signal)
+  if (view.execution.state === 'pending' || view.execution.state === 'running') {
+    throw new OcboxError({
+      code: 'INVALID_STATE',
+      requestId: newRequestId(),
+      message: `Execution ${view.execution.id} is ${view.execution.state}; its stored output is available after it finishes.`,
+      details: { executionId: view.execution.id, state: view.execution.state },
+    })
+  }
+  if (view.result === undefined) {
+    throw new OcboxError({
+      code: 'OPERATION_CONFLICT',
+      requestId: newRequestId(),
+      message: `Execution ${view.execution.id} is ${view.execution.state} but its stored result is not ready yet; retry this command.`,
+      details: { executionId: view.execution.id, state: view.execution.state },
+    })
+  }
+  return { execution: view.execution, result: view.result }
 }
 
 /** Human line: state, exit code and the stored failure reason. */
