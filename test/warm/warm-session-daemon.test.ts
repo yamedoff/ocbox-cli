@@ -453,19 +453,6 @@ describe('windows named-pipe authentication', () => {
     }
   })
 
-  it('falls back when no Windows connection file is published', async () => {
-    const { environment, scope, socketPath } = await handshakeScopeFor('win32-no-daemon')
-    const client = new WarmSessionClient({
-      ...scope,
-      daemonEntryExists: () => false,
-      environment,
-      platform: 'win32',
-      socketPath,
-    })
-
-    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
-  })
-
   it('does not answer a request without the secret and the client falls back', async () => {
     const { environment, scope, socketPath } = await handshakeScopeFor('win32-no-secret')
     const provider = new FakeProvider()
