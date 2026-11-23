@@ -6,9 +6,64 @@ import { describe, expect, it } from 'vitest'
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const mapPath = join(root, 'docs/mcp-cli-map.md')
 
+/**
+ * The hosted MCP registry this map promises to cover (`MCP_TOOLS` in
+ * apps/api/src/mcp.ts of the opencloudbox repository). The API repository is
+ * not a dependency of this CLI, so the names are mirrored here: the map test
+ * fails when the table drops one of them or adds a tool the registry does not
+ * have.
+ */
+const HOSTED_MCP_TOOLS = [
+  'project_list',
+  'project_get',
+  'project_create',
+  'project_delete',
+  'environment_list',
+  'environment_get',
+  'sizes_list',
+  'gpu_check',
+  'session_create',
+  'session_list',
+  'session_get',
+  'session_start',
+  'session_pause',
+  'session_stop',
+  'session_destroy',
+  'execution_start',
+  'execution_get',
+  'execution_cancel',
+  'operation_get',
+  'operation_cancel',
+  'source_sync_plan',
+  'source_sync_apply',
+  'source_push_files',
+  'source_read_snapshot',
+  'preview_create',
+  'usage_list',
+  'wallet_get',
+] as const
+
 interface CommandReference {
   readonly command: string
   readonly flags: readonly string[]
+}
+
+interface MapRow extends CommandReference {
+  readonly tool: string
+  readonly reasonCodes: string
+}
+
+/** Parse one backticked `ocbox ...` command into its command path and long flags. */
+function commandReference(line: string): CommandReference | undefined {
+  const words = line.split(/\s+/).slice(1)
+  const first = words[0]
+  if (first === undefined || first.startsWith('-') || first.startsWith('<')) return undefined
+  if (first.startsWith('[')) return undefined
+  const second = words[1]
+  const command =
+    second !== undefined && /^[a-z][a-z0-9-]*$/.test(second) ? `${first} ${second}` : first
+  const flags = [...line.matchAll(/--[a-z][a-z0-9-]*/g)].map((flag) => flag[0] ?? '')
+  return { command, flags }
 }
 
 /** Every backticked `ocbox ...` command in the map, with the long flags it names. */
@@ -17,17 +72,32 @@ function commandReferences(markdown: string): CommandReference[] {
   for (const match of markdown.matchAll(/`(ocbox [^`]+)`/g)) {
     const line = match[1]?.trim()
     if (line === undefined) continue
-    const words = line.split(/\s+/).slice(1)
-    const first = words[0]
-    if (first === undefined || first.startsWith('-') || first.startsWith('<')) continue
-    if (first.startsWith('[')) continue
-    const second = words[1]
-    const command =
-      second !== undefined && /^[a-z][a-z0-9-]*$/.test(second) ? `${first} ${second}` : first
-    const flags = [...line.matchAll(/--[a-z][a-z0-9-]*/g)].map((flag) => flag[0] ?? '')
-    references.push({ command, flags })
+    const reference = commandReference(line)
+    if (reference !== undefined) references.push(reference)
   }
   return references
+}
+
+/** The tool, command and reason columns of every table row in the map. */
+function mapRows(markdown: string): MapRow[] {
+  const rows: MapRow[] = []
+  for (const line of markdown.split('\n')) {
+    // A table cell escapes a literal pipe as `\|`, so only unescaped pipes
+    // separate the columns.
+    const cells = line.split(/(?<!\\)\|/).map((cell) => cell.trim())
+    if (cells.length !== 6) continue
+    const tool = /^`([a-z][a-z0-9_]*)`$/.exec(cells[1] ?? '')
+    if (tool === null) continue
+    const commandLine = /`(ocbox [^`]+)`/.exec(cells[3] ?? '')?.[1]
+    const reference = commandLine === undefined ? undefined : commandReference(commandLine.trim())
+    rows.push({
+      tool: tool[1] ?? '',
+      command: reference?.command ?? '',
+      flags: reference?.flags ?? [],
+      reasonCodes: cells[4] ?? '',
+    })
+  }
+  return rows
 }
 
 /** Load the command class from the source tree, as oclif would discover it. */
@@ -52,6 +122,21 @@ async function loadCommand(command: string): Promise<unknown> {
 }
 
 describe('MCP-to-CLI map', () => {
+  it('lists every hosted MCP tool exactly once', async () => {
+    const markdown = await readFile(mapPath, 'utf8')
+    const tools = mapRows(markdown).map((row) => row.tool)
+    expect(new Set(tools).size).toBe(tools.length)
+    expect([...tools].sort()).toEqual([...HOSTED_MCP_TOOLS].sort())
+  })
+
+  it('gives every hosted MCP tool a CLI command and reason codes', async () => {
+    const markdown = await readFile(mapPath, 'utf8')
+    const rows = mapRows(markdown)
+    expect(rows.length).toBe(HOSTED_MCP_TOOLS.length)
+    expect(rows.filter((row) => row.command === '').map((row) => row.tool)).toEqual([])
+    expect(rows.filter((row) => row.reasonCodes === '').map((row) => row.tool)).toEqual([])
+  })
+
   it('names only CLI commands and long flags that exist', async () => {
     const markdown = await readFile(mapPath, 'utf8')
     const references = commandReferences(markdown)
