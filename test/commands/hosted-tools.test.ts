@@ -18,6 +18,7 @@ import SessionGet from '../../src/commands/session/get.js'
 import SessionList from '../../src/commands/session/list.js'
 import UsageList from '../../src/commands/usage/list.js'
 import WalletGet from '../../src/commands/wallet/get.js'
+import { PowerShellWindowsAclProtector } from '../../src/credentials/windows-acl.js'
 import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { DEFAULT_API_URL } from '../../src/providers/ocbox/defaults.js'
 
@@ -27,10 +28,11 @@ const roots: string[] = []
 let root: string
 let state: string
 let config: string
-let stdoutSpy: ReturnType<typeof vi.spyOn>
-let stderrSpy: ReturnType<typeof vi.spyOn>
+let stdoutSpy: ReturnType<typeof vi.spyOn> | undefined
+let stderrSpy: ReturnType<typeof vi.spyOn> | undefined
 
-function output(spy: ReturnType<typeof vi.spyOn>): string {
+function output(spy: ReturnType<typeof vi.spyOn> | undefined): string {
+  if (spy === undefined) throw new Error('The output spy is not installed')
   return spy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
 }
 
@@ -67,6 +69,11 @@ async function logIn(): Promise<void> {
 const runArguments = () => ['--config', config, '--state-dir', state, '--api-url', DEFAULT_API_URL]
 
 beforeEach(async () => {
+  // The credential store verifies Windows ACLs by starting powershell.exe. On
+  // the Windows CI runner a cold start can outlast the 10s hook budget, so this
+  // suite answers the ACL boundary in-process: it covers command routing, not
+  // ACL protection (test/infrastructure/credentials.test.ts does).
+  vi.spyOn(PowerShellWindowsAclProtector.prototype, 'protectAndVerify').mockResolvedValue(true)
   process.exitCode = 0
   root = await mkdtemp(join(tmpdir(), 'ocbox-hosted-tools-'))
   roots.push(root)
@@ -85,8 +92,10 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  stdoutSpy.mockRestore()
-  stderrSpy.mockRestore()
+  // A timed-out beforeEach never installed the spies; teardown must not throw
+  // and mask the hook's own error.
+  stdoutSpy?.mockRestore()
+  stderrSpy?.mockRestore()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   process.exitCode = originalExitCode

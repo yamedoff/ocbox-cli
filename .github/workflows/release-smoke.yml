@@ -1,0 +1,100 @@
+name: Release staging smoke
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Staging smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CI: true
+      COREPACK_ENABLE_STRICT: 1
+    steps:
+      - name: Require staging secrets
+        # GitHub's Windows runners include Git Bash, so one shell covers all three.
+        shell: bash
+        env:
+          OCB_STAGING_API_URL: ${{ secrets.OCB_STAGING_API_URL }}
+          OCB_STAGING_CLI_TOKEN: ${{ secrets.OCB_STAGING_CLI_TOKEN }}
+        run: |
+          missing=()
+          if [ -z "${OCB_STAGING_API_URL//[[:space:]]/}" ]; then
+            missing+=('OCB_STAGING_API_URL')
+          fi
+          if [ -z "${OCB_STAGING_CLI_TOKEN//[[:space:]]/}" ]; then
+            missing+=('OCB_STAGING_CLI_TOKEN')
+          fi
+          if [ "${#missing[@]}" -ne 0 ]; then
+            list=''
+            for name in "${missing[@]}"; do
+              list="${list:+$list, }$name"
+            done
+            echo "::error::Missing required repository secret(s): ${list}"
+            echo "Missing required repository secret(s): ${list}" >&2
+            exit 1
+          fi
+          echo 'Both required staging secrets are present.'
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          check-latest: false
+      - name: Install exact Corepack
+        run: npm install --global corepack@0.36.0 --force
+      - name: Prefer exact Corepack shims on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # setup-node precedes npm's global prefix on Windows by default.
+        run: (npm prefix --global) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Activate exact pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.24.0 --activate
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Build and pack the release files
+        run: pnpm run pack:release
+      - name: Install from the local release
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OCBOX_RELEASE_BASE: ${{ github.workspace }}/dist/release
+        run: sh install.sh
+      - name: Install from the local release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          OCBOX_RELEASE_BASE: ${{ github.workspace }}\dist\release
+        # A file invocation makes install.ps1 exit non-zero on failure.
+        run: |
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File ./install.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Put the installed ocbox on PATH
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "$HOME/.ocbox/bin" >> "$GITHUB_PATH"
+      - name: Put the installed ocbox on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Windows global installs place the command shims in the prefix itself.
+        run: |
+          "$env:LOCALAPPDATA\ocbox" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Run the staging smoke
+        shell: bash
+        env:
+          OCB_STAGING_API_URL: ${{ secrets.OCB_STAGING_API_URL }}
+          OCB_STAGING_CLI_TOKEN: ${{ secrets.OCB_STAGING_CLI_TOKEN }}
+        run: node scripts/staging-smoke.mjs
