@@ -210,12 +210,9 @@ const REFUSAL_DETAIL_KEYS = ['reason', 'reasonCode', 'nextStep', 'limitName', 'l
  * generic admission rewrite only replaces bare provider codes.
  */
 function preserveRefusalEnvelope(error: unknown): never {
-  if (
-    error instanceof OcboxError &&
-    error.details !== undefined &&
-    REFUSAL_DETAIL_KEYS.some((key) => key in error.details)
-  ) {
-    throw error
+  if (error instanceof OcboxError) {
+    const details = error.details
+    if (details !== undefined && REFUSAL_DETAIL_KEYS.some((key) => key in details)) throw error
   }
   return friendlyAdmissionFailure(error)
 }
