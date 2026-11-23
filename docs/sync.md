@@ -98,9 +98,17 @@ fails closed with `OPERATION_CONFLICT` rather than waiting indefinitely.
 ## Output and exit policy
 
 Human output lists additions, modifications, deletions, renames, conflicts,
-blocked paths, and excluded names deterministically. `--json`/`--jsonl` emit the
-single stable envelope (`schemaVersion`, `kind`, `name`, `timestamp`, `data`)
-through the centralized redaction pass, so no source bytes or host paths leak.
+blocked paths, and excluded names deterministically. For the manifest-based
+transfer, a push or pull summary also names the dependency, cache, and build
+folders the scanner left out (`Left out: node_modules (dependencies), .next
+(cache)`). When a root lockfile was pushed, it prints the install step for the
+box (`Next: ocbox exec -- npm ci`; `pnpm install --frozen-lockfile` for
+`pnpm-lock.yaml`, `yarn install --frozen-lockfile` for `yarn.lock`). The result
+data carries the same facts as `summary.leftOut` (`path`, `reason`) and
+`summary.installCommand`; reporting the omission never changes what is
+transferred. `--json`/`--jsonl` emit the single stable envelope
+(`schemaVersion`, `kind`, `name`, `timestamp`, `data`) through the centralized
+redaction pass, so no source bytes or host paths leak.
 Diagnostics and errors always go to stderr; stdout carries exactly the result
 envelope (or nothing on failure). Conflicts, blocked/colliding paths,
 size/count limits, malformed archives, target mismatches, recovery-required

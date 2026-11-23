@@ -5,6 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ProjectIdSchema, SessionIdSchema, UtcTimestampSchema } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
+import { OutputWriter } from '../../src/output/index.js'
 import { createVerifiedBaseline } from '../../src/sync/baseline.js'
 import { cliRules } from '../../src/sync/ignore-rules.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
@@ -29,6 +30,15 @@ async function root(): Promise<string> {
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { force: true, recursive: true })))
 })
+
+class MemoryStream {
+  isTTY = false
+  value = ''
+
+  write(chunk: string): void {
+    this.value += chunk
+  }
+}
 
 const PROJECT_ID = ProjectIdSchema.parse('11111111-1111-4111-8111-111111111111')
 const SESSION_ID = SessionIdSchema.parse('22222222-2222-4222-8222-222222222222')
@@ -210,6 +220,114 @@ describe('sync service', () => {
       code: 'ENOENT',
     })
     expect(await readFile(join(remote, 'app.js'), 'utf8')).toBe('app')
+  })
+
+  it('names the excluded dependency folders and the install step after a push', async () => {
+    const { context: sync, local, remote } = await pair()
+    await mkdir(join(local, 'node_modules'))
+    await writeFile(join(local, 'node_modules', 'dep.js'), 'dep')
+    await mkdir(join(local, '.next'))
+    await writeFile(join(local, '.next', 'cache.js'), 'cache')
+    await writeFile(join(local, 'package-lock.json'), '{"lockfileVersion":3}')
+    await writeFile(join(local, 'app.js'), 'app')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+    const stdout = new MemoryStream()
+    new OutputWriter({
+      mode: 'human',
+      stdout,
+      stderr: new MemoryStream(),
+    }).result('sync.pushed', result, { humanMessage: renderSyncApplied(result) })
+
+    expect(stdout.value).toContain('node_modules')
+    expect(stdout.value).toContain('npm ci')
+    expect(renderSyncApplied(result)).toContain(
+      'Left out: .next (cache), node_modules (dependencies)',
+    )
+    expect(renderSyncApplied(result)).toContain('Next: ocbox exec -- npm ci')
+    expect(result.summary).toEqual({
+      leftOut: [
+        { path: '.next', reason: 'dependency-cache' },
+        { path: 'node_modules', reason: 'dependency-cache' },
+      ],
+      installCommand: 'ocbox exec -- npm ci',
+    })
+
+    // Reporting the omission does not change what is uploaded.
+    await expect(readFile(join(remote, 'node_modules', 'dep.js'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(readFile(join(remote, '.next', 'cache.js'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(await readFile(join(remote, 'package-lock.json'), 'utf8')).toBe('{"lockfileVersion":3}')
+    expect(await readFile(join(remote, 'app.js'), 'utf8')).toBe('app')
+  })
+
+  it('carries the push summary as JSON result fields', async () => {
+    const { context: sync, local } = await pair()
+    await mkdir(join(local, 'node_modules'))
+    await writeFile(join(local, 'node_modules', 'dep.js'), 'dep')
+    await writeFile(join(local, 'package-lock.json'), '{"lockfileVersion":3}')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+    const stdout = new MemoryStream()
+    new OutputWriter({ mode: 'json', stdout, stderr: new MemoryStream() }).result(
+      'sync.pushed',
+      result,
+    )
+    const envelope = JSON.parse(stdout.value) as {
+      data: { summary: unknown }
+    }
+
+    expect(envelope.data.summary).toEqual({
+      leftOut: [{ path: 'node_modules', reason: 'dependency-cache' }],
+      installCommand: 'ocbox exec -- npm ci',
+    })
+  })
+
+  it('names the excluded dependency folders on the source side of a pull', async () => {
+    const { context: sync, local, remote } = await pair()
+    await mkdir(join(remote, 'node_modules'))
+    await writeFile(join(remote, 'node_modules', 'dep.js'), 'dep')
+    await writeFile(join(remote, 'app.js'), 'app')
+
+    const result = await runSyncApply(sync, 'pull', applyOptions())
+
+    expect(renderSyncApplied(result)).toContain('Left out: node_modules (dependencies)')
+    expect(result.summary).toEqual({
+      leftOut: [{ path: 'node_modules', reason: 'dependency-cache' }],
+      installCommand: null,
+    })
+    await expect(readFile(join(local, 'node_modules', 'dep.js'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(await readFile(join(local, 'app.js'), 'utf8')).toBe('app')
+  })
+
+  it.each([
+    ['pnpm-lock.yaml', 'ocbox exec -- pnpm install --frozen-lockfile'],
+    ['yarn.lock', 'ocbox exec -- yarn install --frozen-lockfile'],
+  ])('names the install step for a pushed %s', async (lockfile, command) => {
+    const { context: sync, local } = await pair()
+    await writeFile(join(local, lockfile), 'lock')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+
+    expect(result.summary?.installCommand).toBe(command)
+    expect(renderSyncApplied(result)).toContain(`Next: ${command}`)
+  })
+
+  it('does not ask for an install when the pushed lockfile is unchanged', async () => {
+    const { context: sync, local } = await pair()
+    await writeFile(join(local, 'package-lock.json'), '{"lockfileVersion":3}')
+    await runSyncApply(sync, 'push', applyOptions())
+
+    await writeFile(join(local, 'app.js'), 'app')
+    const result = await runSyncApply(sync, 'push', applyOptions())
+
+    expect(result.summary?.installCommand).toBeNull()
+    expect(renderSyncApplied(result)).not.toContain('Next:')
   })
 
   it('round-trips binary content byte for byte', async () => {
