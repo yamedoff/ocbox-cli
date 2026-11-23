@@ -1706,7 +1706,8 @@ export async function mockHosted({
         return operation('create')
       }
       if (path.startsWith('/v1/operations/')) {
-        const id = path.split('/').at(-1), apply = applies.get(id)
+        const id = path.split('/').at(-1),
+          apply = applies.get(id)
         if (apply && ++apply.polls >= 12) {
           await apply.finish()
           apply.op.state = 'succeeded'
@@ -1759,8 +1760,13 @@ export async function mockHosted({
         if (apply) assert.equal(req.headers['idempotency-key'], apply.key)
         if (!manifest.verified) {
           if (!apply) {
-            const op = { ...operations.values().next().value, id: operationId,
-              kind: 'source.apply', state: 'pending', progress: 0 }
+            const op = {
+              ...operations.values().next().value,
+              id: operationId,
+              kind: 'source.apply',
+              state: 'pending',
+              progress: 0,
+            }
             apply = { op, polls: 0, key: req.headers['idempotency-key'], finish }
             applies.set(operationId, apply)
             operations.set(operationId, op)
@@ -1773,47 +1779,46 @@ export async function mockHosted({
           chunkCount: manifest.chunkCount,
           verified: true,
         })
-      async function finish() {
-        if (manifest.verified) return
-        assert.equal(manifest.chunks.size, manifest.chunkCount)
-        const archive = Buffer.concat(
-          Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
-        )
-        assert.equal(archive.length, manifest.totalBytes)
-        assert.equal(sha256(archive), manifest.checksum)
-        assert.equal(archive.subarray(0, 8).toString(), 'OCBOXA1\n')
-        const entries = []
-        let offset = 8
-        for (;;) {
-          const length = archive.readUInt32BE(offset)
-          offset += 4
-          const header = JSON.parse(archive.subarray(offset, offset + length).toString())
-          offset += length
-          if (header.type === 'end') {
-            assert.equal(
-              header.snapshotSha256,
-              sha256(Buffer.from(entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''))),
-            )
-            assert.equal(offset, archive.length)
-            break
+        async function finish() {
+          if (manifest.verified) return
+          assert.equal(manifest.chunks.size, manifest.chunkCount)
+          const archive = Buffer.concat(
+            Array.from({ length: manifest.chunkCount }, (_, i) => manifest.chunks.get(i)),
+          )
+          assert.equal(archive.length, manifest.totalBytes)
+          assert.equal(sha256(archive), manifest.checksum)
+          assert.equal(archive.subarray(0, 8).toString(), 'OCBOXA1\n')
+          const entries = []
+          let offset = 8
+          for (;;) {
+            const length = archive.readUInt32BE(offset)
+            offset += 4
+            const header = JSON.parse(archive.subarray(offset, offset + length).toString())
+            offset += length
+            if (header.type === 'end') {
+              assert.equal(
+                header.snapshotSha256,
+                sha256(Buffer.from(entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''))),
+              )
+              assert.equal(offset, archive.length)
+              break
+            }
+            const entry = header.entry
+            assert(!entry.path.startsWith('/') && !entry.path.split('/').includes('..'))
+            assert.equal(entry.linkTarget, null)
+            entries.push(entry)
+            if (entry.type !== 'directory') {
+              const bytes = archive.subarray(offset, offset + entry.size)
+              offset += entry.size
+              assert.equal(sha256(bytes), entry.sha256)
+              workspace.set(entry.path, bytes.toString())
+            }
           }
-          const entry = header.entry
-          assert(!entry.path.startsWith('/') && !entry.path.split('/').includes('..'))
-          assert.equal(entry.linkTarget, null)
-          entries.push(entry)
-          if (entry.type !== 'directory') {
-            const bytes = archive.subarray(offset, offset + entry.size)
-            offset += entry.size
-            assert.equal(sha256(bytes), entry.sha256)
-            workspace.set(entry.path, bytes.toString())
-          }
+          for (const file of ['a.txt', 'b.txt', 'c.txt']) assert(workspace.has(file))
+          assert.equal(workspace.get('a.txt'), expected)
+          manifest.verified = true
+          counts.deliver++
         }
-        for (const file of ['a.txt', 'b.txt', 'c.txt']) assert(workspace.has(file))
-        assert.equal(workspace.get('a.txt'), expected)
-        manifest.verified = true
-        counts.deliver++
-      }
-
       }
       const matched = /^\/v1\/sessions\/hosted_session(?:\/(.*))?$/.exec(path)
       if (matched) {

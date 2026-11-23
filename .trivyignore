@@ -1,0 +1,8 @@
+# libsqlite3-0 stays because python3 is a guaranteed runtime tool and links it; no fix exists in Debian 12. CVE-2025-7458 needs a local caller to run crafted SQL; the only such caller is the unprivileged sandbox user, and the impact (crash or memory disclosure of that process) stays inside that user's own box.
+CVE-2025-7458 exp:2026-12-23
+# zlib1g stays as an essential base package for Node, curl and git; CVE-2023-45853 is MiniZip's zip writer, which Debian does not build in this zlib source and the image never calls.
+CVE-2023-45853 exp:2026-12-23
+# openssh-client stays because it is a guaranteed runtime tool in manifest.json; CVE-2026-60002 is a client-side use-after-free only when connecting to an attacker-controlled server, contained to the unprivileged sandbox user.
+CVE-2026-60002 exp:2026-12-23
+# linux-libc-dev stays because build-essential is a guaranteed runtime tool and libc6-dev depends on it; CVE-2026-99362 is an nfsd kernel-server bug and this package only ships userspace headers.
+CVE-2026-99362 exp:2026-12-23

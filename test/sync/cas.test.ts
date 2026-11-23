@@ -55,8 +55,11 @@ describe('CAS snapshots and transfer', () => {
     const files = snapshot.pages.flatMap((p) => p.files),
       a = files.find((f) => f.path === 'a'),
       b = files.find((f) => f.path === 'b')
+    // Windows has no POSIX execute bit: chmod does not change the reported mode,
+    // so the canonical snapshot records the file as non-executable.
+    const executableMode = process.platform === 'win32' ? 420 : 493
     expect(a).toMatchObject({
-      mode: 493,
+      mode: executableMode,
       hash: digest(Buffer.from('one')),
       parts: [{ offset: 0, size: 3 }],
     })

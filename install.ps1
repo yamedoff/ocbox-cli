@@ -20,14 +20,28 @@ $MinNodeMajor = 22
     throw $Message
   }
 
+  # Windows PowerShell 5.1 can turn a native command's stderr into an error
+  # record that the script-wide Stop preference makes fatal. Native commands
+  # are checked through $LASTEXITCODE instead, so keep their stderr non-fatal.
+  function Invoke-Native([scriptblock]$Command) {
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      & $Command
+    }
+    finally {
+      $ErrorActionPreference = $saved
+    }
+  }
+
   try {
     if ($null -eq (Get-Command node -ErrorAction SilentlyContinue)) {
       Fail "Node.js $MinNodeMajor or newer is required. Install it from https://nodejs.org/ and run this again."
     }
 
-    $nodeVersion = (& node -p 'process.versions.node').Trim()
+    $nodeVersion = (Invoke-Native { & node -p 'process.versions.node' }).Trim()
     if ([string]::IsNullOrWhiteSpace($nodeVersion)) {
-      $nodeVersion = (& node --version).Trim()
+      $nodeVersion = (Invoke-Native { & node --version }).Trim()
     }
     $nodeVersion = $nodeVersion.TrimStart('v')
     $nodeMajor = 0
@@ -38,7 +52,15 @@ $MinNodeMajor = 22
       Fail "Node.js $MinNodeMajor or newer is required (found $nodeVersion). Install it from https://nodejs.org/ and run this again."
     }
 
-    if ($null -eq (Get-Command npm -ErrorAction SilentlyContinue)) {
+    # Prefer the command shim over npm.ps1: Windows PowerShell 5.1 can resolve
+    # bare `npm` to the PowerShell wrapper, whose status code is not reliable here.
+    $npmCommand = if ($null -ne (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+      'npm.cmd'
+    }
+    else {
+      'npm'
+    }
+    if ($null -eq (Get-Command $npmCommand -ErrorAction SilentlyContinue)) {
       Fail "npm was not found. Install Node.js $MinNodeMajor or newer from https://nodejs.org/ and run this again."
     }
 
@@ -128,7 +150,13 @@ $MinNodeMajor = 22
         Fail "SHA256SUMS does not list $tarballName."
       }
 
-      $actual = (Get-FileHash -LiteralPath $tarballPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      # .NET directly: Get-FileHash lives in a module that is not always loadable (e.g. a reset PSModulePath).
+      $stream = [System.IO.File]::OpenRead($tarballPath)
+      try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $actual = ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+      } finally { $stream.Dispose() }
       if ($actual -ne $expected) {
         Fail "Checksum mismatch for $tarballName. Refusing to install."
       }
@@ -139,7 +167,8 @@ $MinNodeMajor = 22
       $prefix = Join-Path $env:LOCALAPPDATA 'ocbox'
       New-Item -ItemType Directory -Force -Path $prefix | Out-Null
 
-      & npm install -g --prefix $prefix $tarballPath
+      $global:LASTEXITCODE = 0
+      Invoke-Native { & $npmCommand install -g --prefix $prefix $tarballPath }
       if ($LASTEXITCODE -ne 0) {
         Fail 'npm install failed.'
       }
@@ -183,7 +212,8 @@ $MinNodeMajor = 22
         $env:Path = $env:Path.TrimEnd(';') + ';' + $binDir
       }
 
-      $installedVersion = & $ocboxCommand --version
+      $global:LASTEXITCODE = 0
+      $installedVersion = Invoke-Native { & $ocboxCommand --version }
       if ($LASTEXITCODE -ne 0) {
         Fail 'The installed ocbox command could not run.'
       }

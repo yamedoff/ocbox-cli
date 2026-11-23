@@ -27,7 +27,10 @@ import { FakeSandboxProvider } from '../providers/fake/index.js'
 import { ProviderRegistry } from '../providers/index.js'
 import { DEFAULT_API_URL } from '../providers/ocbox/defaults.js'
 import { createOcboxProvider } from '../providers/ocbox/factory.js'
-import { requestedSpecFromConfig, requestedSpecFromFlags } from '../providers/ocbox/requested-spec.js'
+import {
+  requestedSpecFromConfig,
+  requestedSpecFromFlags,
+} from '../providers/ocbox/requested-spec.js'
 import { createWarmSessionCache, warmSessionsEnabled } from '../warm/client.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1

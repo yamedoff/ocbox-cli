@@ -357,12 +357,21 @@ describe('ocbox update', () => {
     const { prefix } = await makeInstalled('0.1.0')
     const bin = join(root, `fake-npm-${++installCounter}`)
     await mkdir(bin, { recursive: true })
-    const fakeNpm = join(bin, 'npm')
-    await writeFile(
-      fakeNpm,
-      '#!/bin/sh\necho "npm ERR! code E404" >&2\necho "token=supersecret" >&2\nexit 1\n',
-    )
-    await chmod(fakeNpm, 0o755)
+    if (process.platform === 'win32') {
+      // The updater runs npm.cmd on Windows; a POSIX `npm` script would be
+      // ignored and the real npm would report a missing tarball instead.
+      await writeFile(
+        join(bin, 'npm.cmd'),
+        '@echo off\r\necho npm ERR! code E404 1>&2\r\necho token=supersecret 1>&2\r\nexit /b 1\r\n',
+      )
+    } else {
+      const fakeNpm = join(bin, 'npm')
+      await writeFile(
+        fakeNpm,
+        '#!/bin/sh\necho "npm ERR! code E404" >&2\necho "token=supersecret" >&2\nexit 1\n',
+      )
+      await chmod(fakeNpm, 0o755)
+    }
     const environment = unixEnvironment({
       PATH: `${bin}${delimiter}${process.env['PATH'] ?? ''}`,
     })

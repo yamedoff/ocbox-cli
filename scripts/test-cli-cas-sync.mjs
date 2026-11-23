@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -15,7 +15,19 @@ const root = await mkdtemp(join(tmpdir(), 'ocbox-cas-e2e-'))
 const source = join(root, 'source'),
   state = join(root, 'state'),
   platform = join(root, 'platform')
+const interruptPreload = join(root, 'interrupt-preload.cjs')
 await mkdir(source)
+// On Windows child.kill('SIGINT') terminates the process instead of emitting
+// SIGINT, so the CLI never writes its error envelope. The IPC message below
+// emits the same signal in-process on every platform.
+await writeFile(
+  interruptPreload,
+  `process.channel?.unref()
+process.on('message', (message) => {
+  if (message === 'interrupt') process.emit('SIGINT')
+})
+`,
+)
 const requestId = '11111111-1111-4111-8111-111111111111'
 const now = new Date().toISOString(),
   sessionId = 'sesdo_localtest'
@@ -126,7 +138,7 @@ const server = createServer(async (req, res) => {
         blobs.set(digest, bytes)
         accepted.push(digest)
         send({}, 200)
-        if (interruptThisUpload) setTimeout(() => activeChild?.kill('SIGINT'), 10)
+        if (interruptThisUpload) setTimeout(interruptChild, 10)
       } finally {
         concurrent--
       }
@@ -302,6 +314,61 @@ async function run(args) {
     activeChild = undefined
   }
 }
+/**
+ * Runs one command with an IPC channel so the harness can deliver the
+ * interrupt in-process. This reaches the CLI's SIGINT handler on Windows too,
+ * where child.kill('SIGINT') terminates the process without running it.
+ */
+function runInterruptibly(args) {
+  const child = spawn(
+    process.execPath,
+    ['--require', interruptPreload, join(repo, 'dist/index.js'), ...args, ...flags],
+    {
+      cwd: root,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
+    },
+  )
+  activeChild = child
+  const stdout = []
+  const stderr = []
+  let settled = false
+  let timer
+  const finish = (action) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    action()
+  }
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(() => reject(new Error(`CLI timed out: ${args.join(' ')}`)))
+    }, 45000)
+    child.stdout.on('data', (chunk) => stdout.push(chunk))
+    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    child.on('error', (error) => finish(() => reject(error)))
+    child.on('close', (code, signal) =>
+      finish(() =>
+        resolve({
+          code,
+          signal,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+        }),
+      ),
+    )
+  }).finally(() => {
+    activeChild = undefined
+  })
+}
+function interruptChild() {
+  const child = activeChild
+  if (child === undefined) return
+  if (child.connected) child.send('interrupt')
+  else child.kill('SIGINT')
+}
 const push = (extra = []) => run(['sync', 'push', '--local-dir', source, ...extra])
 const events = (output) =>
   output
@@ -318,7 +385,12 @@ async function success(pending, jsonl = false) {
 }
 try {
   const credentials = new infrastructure.ProtectedFileCredentialStore(
-    infrastructure.resolveCurrentPlatformPaths(env).credentialDirectory,
+    infrastructure.resolvePlatformPaths({
+      platform: process.platform,
+      homeDirectory: platform,
+      environment: env,
+      isWsl: false,
+    }).credentialDirectory,
   )
   const identity = { kind: 'hosted-oauth', provider: 'ocbox', accountId: 'default' }
   const credential = {
@@ -371,7 +443,7 @@ try {
   for (let i = 3; i < 8; i++) await writeFile(join(source, `f000${i}.js`), `resume${i}`)
   accepted = []
   interrupt = true
-  const interrupted = await push(['--jsonl'])
+  const interrupted = await runInterruptibly(['sync', 'push', '--local-dir', source, '--jsonl'])
   assert.notEqual(interrupted.code, 0)
   assert.equal(JSON.parse(interrupted.stderr).data.code, 'OPERATION_CANCELLED')
   assert.equal(accepted.length, 1)
