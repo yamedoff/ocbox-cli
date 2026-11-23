@@ -51,9 +51,23 @@ export default class Exec extends OcboxCommand {
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),
-    cwd: Flags.string({ description: 'Normalized absolute sandbox working directory' }),
-    timeout: Flags.string({ description: 'Positive execution timeout in milliseconds' }),
-    env: Flags.string({ multiple: true, description: 'Repeatable non-secret NAME=VALUE setting' }),
+    cwd: Flags.string({
+      description:
+        'Normalized absolute sandbox working directory; the hosted service refuses this flag, so omit it and use the box workspace (the default)',
+    }),
+    timeout: Flags.string({
+      description:
+        'Positive execution timeout in milliseconds, for example `--timeout 300000` is 5 minutes; the hosted API and MCP take seconds, so use `--timeout-seconds` for that unit',
+    }),
+    'timeout-seconds': Flags.string({
+      description:
+        'Positive execution timeout in seconds, for example `--timeout-seconds 300` is 5 minutes; sent to the hosted service as timeoutSeconds unchanged, and mutually exclusive with `--timeout`',
+    }),
+    env: Flags.string({
+      multiple: true,
+      description:
+        'Repeatable non-secret NAME=VALUE setting; the hosted service refuses this flag, so omit it and set the value in the command or image',
+    }),
     shell: Flags.string({ description: 'Explicit /bin/bash -lc command string' }),
   }
 
