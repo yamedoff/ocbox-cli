@@ -82,7 +82,7 @@ function commandReferences(markdown: string): CommandReference[] {
 function mapRows(markdown: string): MapRow[] {
   const rows: MapRow[] = []
   for (const line of markdown.split('\n')) {
-    const cells = line.split('|').map((cell) => cell.trim())
+    const cells = line.split(/(?<!\\)\|/).map((cell) => cell.trim())
     if (cells.length !== 6) continue
     const tool = /^`([a-z][a-z0-9_]*)`$/.exec(cells[1] ?? '')
     if (tool === null) continue

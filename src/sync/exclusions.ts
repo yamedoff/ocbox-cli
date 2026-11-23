@@ -87,9 +87,18 @@ export class InvalidIgnoreRuleError extends Error {
   }
 }
 
+export interface ParseIgnoreRuleOptions {
+  /**
+   * `.opencloudboxignore` and `--exclude`/`--include` accept a leading slash as
+   * "anchored at the project root"; the legacy parser still refuses it.
+   */
+  readonly allowAnchored?: boolean
+}
+
 export function parseIgnoreRules(
   contents: string,
   source: IgnoreRule['source'],
+  options: ParseIgnoreRuleOptions = {},
 ): readonly IgnoreRule[] {
   const rules: IgnoreRule[] = []
   for (const [index, original] of contents.split(/\r?\n/).entries()) {
@@ -97,11 +106,13 @@ export function parseIgnoreRules(
     if (line.length === 0 || line.startsWith('#')) continue
     const include = line.startsWith('!')
     let pattern = include ? line.slice(1) : line
+    const anchored = pattern.startsWith('/')
+    if (anchored && !options.allowAnchored) throw new InvalidIgnoreRuleError(index + 1)
+    if (anchored) pattern = pattern.slice(1)
     if (
       pattern.length === 0 ||
       pattern.includes('\\') ||
       pattern.includes('\0') ||
-      pattern.startsWith('/') ||
       pattern.split('/').includes('..')
     ) {
       throw new InvalidIgnoreRuleError(index + 1)
@@ -111,12 +122,12 @@ export function parseIgnoreRules(
     if (pattern.endsWith('/')) {
       let directory = pattern.slice(0, -1)
       if (directory.length === 0) throw new InvalidIgnoreRuleError(index + 1)
-      if (!directory.includes('/')) directory = `**/${directory}`
+      if (!anchored && !directory.includes('/')) directory = `**/${directory}`
       rules.push({ include, pattern: directory, source })
       rules.push({ include, pattern: `${directory}/**`, source })
       continue
     }
-    if (!pattern.includes('/')) pattern = `**/${pattern}`
+    if (!anchored && !pattern.includes('/')) pattern = `**/${pattern}`
     rules.push({ include, pattern, source })
   }
   return rules

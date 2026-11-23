@@ -14,7 +14,8 @@ export default class SyncDiff extends OcboxCommand {
       description: 'Local source root; defaults to the current directory',
     }),
     'remote-dir': Flags.string({
-      description: 'Provider/fake workspace root; defaults under the state directory',
+      description:
+        'Fake-provider workspace root (defaults under the state directory); the hosted service refuses this flag, so omit it and diff the hosted project workspace',
     }),
     exclude: Flags.string({ multiple: true, description: 'Repeatable exclude pattern' }),
     include: Flags.string({ multiple: true, description: 'Repeatable re-include pattern' }),

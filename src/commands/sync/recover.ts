@@ -13,7 +13,8 @@ export default class SyncRecover extends OcboxCommand {
       description: 'Local target root; defaults to the current directory',
     }),
     'remote-dir': Flags.string({
-      description: 'Provider/fake workspace root; defaults under the state directory',
+      description:
+        'Fake-provider workspace root (defaults under the state directory); the hosted service refuses this flag, so omit it and recover the hosted project workspace',
     }),
   }
 
