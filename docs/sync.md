@@ -103,8 +103,8 @@ transfer, a push or pull summary also names the dependency, cache, and build
 folders the scanner left out (`Left out: node_modules (dependencies), .next
 (cache)`). When a root lockfile was pushed, it prints the install step for the
 box (`Next: ocbox exec -- npm ci`; `pnpm install --frozen-lockfile` for
-`pnpm-lock.yaml`, `yarn install --frozen-lockfile` for `yarn.lock`). A lockfile
-that is unchanged is not pushed, so it prints no install step. The result data
+`pnpm-lock.yaml`, `yarn install --frozen-lockfile` for `yarn.lock`). When the
+plan leaves the lockfile unchanged it prints no install step. The result data
 carries the same facts as `summary.leftOut` (`path`, `reason`) and
 `summary.installCommand`; reporting the omission never changes what is
 transferred. `--json`/`--jsonl` emit the single stable envelope
