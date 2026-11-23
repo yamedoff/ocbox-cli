@@ -342,34 +342,38 @@ function isolatedEnvironment(root, apiUrl) {
   const local = join(root, 'local')
   const roaming = join(root, 'roaming')
   const xdgState = join(root, 'xdg-state')
+  const env = {
+    ...process.env,
+    ...(process.platform === 'win32'
+      ? {
+          HOME: home,
+          USERPROFILE: home,
+          APPDATA: roaming,
+          LOCALAPPDATA: local,
+        }
+      : process.platform === 'darwin'
+        ? { HOME: home }
+        : {
+            HOME: home,
+            XDG_CONFIG_HOME: config,
+            XDG_STATE_HOME: xdgState,
+            XDG_CACHE_HOME: cache,
+          }),
+    OCBOX_API_URL: apiUrl,
+    OCBOX_STATE_DIR: state,
+    // A detached warm daemon would outlive this one-shot smoke.
+    OCBOX_WARM: '0',
+    NO_COLOR: '1',
+  }
+  // The token is handed to the credential store, never to a child process.
+  delete env.OCB_STAGING_API_URL
+  delete env.OCB_STAGING_CLI_TOKEN
   return {
     home,
     state,
     xdgState,
     directories: [home, state, config, cache, local, roaming, xdgState],
-    env: {
-      ...process.env,
-      ...(process.platform === 'win32'
-        ? {
-            HOME: home,
-            USERPROFILE: home,
-            APPDATA: roaming,
-            LOCALAPPDATA: local,
-          }
-        : process.platform === 'darwin'
-          ? { HOME: home }
-          : {
-              HOME: home,
-              XDG_CONFIG_HOME: config,
-              XDG_STATE_HOME: xdgState,
-              XDG_CACHE_HOME: cache,
-            }),
-      OCBOX_API_URL: apiUrl,
-      OCBOX_STATE_DIR: state,
-      // A detached warm daemon would outlive this one-shot smoke.
-      OCBOX_WARM: '0',
-      NO_COLOR: '1',
-    },
+    env,
   }
 }
 
