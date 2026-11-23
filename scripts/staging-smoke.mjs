@@ -653,6 +653,8 @@ export async function selfTest() {
       OCBOX_FAKE_LOG: fake.log,
       NO_COLOR: '1',
     }
+    delete env.OCB_STAGING_API_URL
+    delete env.OCB_STAGING_CLI_TOKEN
 
     const passed = await runSmoke({
       command: 'ocbox',
