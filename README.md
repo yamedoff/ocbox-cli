@@ -56,6 +56,122 @@ limits. See [docs/codex-adapter.md](docs/codex-adapter.md) for the Codex
 routing adapter's plan/apply setup, remove/restore behavior, manifest
 recovery, hook exit contract, Windows discovery, and byte-preserving edits.
 
+## Your first box
+
+This walkthrough takes a new project from the install command above to a
+destroyed box. It uses the hosted staging service.
+
+### 1. Check the install
+
+Install with the command for your platform above, then confirm the CLI runs:
+
+```sh
+ocbox --version
+```
+
+```text
+opencloudbox/0.1.0 linux-x64 node-v24.20.0
+```
+
+### 2. Sign in
+
+```sh
+ocbox auth login
+```
+
+The browser opens the consent page. After you approve access:
+
+```text
+Logged in issuer=https://api.staging.opencloudbox.dev audience=cli scopes=source:read product:read product:edit product:run expires=2026-12-01T09:00:00.000Z (browser opened)
+```
+
+### 3. Initialize the project
+
+Create or enter the project you want to run, then initialize it:
+
+```sh
+mkdir hello-box && cd hello-box
+ocbox init
+```
+
+```text
+Created project prj_7f3c2a1b9d ("hello-box") and wrote opencloudbox.toml
+Using the hosted OpenCloudBox provider (staging at https://api.staging.opencloudbox.dev).
+```
+
+`init` reuses a hosted project with the current directory's name, or creates
+one and saves its ID in `opencloudbox.toml`.
+
+### 4. Start the box
+
+```sh
+ocbox start
+```
+
+```text
+* session=3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b state=active project=prj_7f3c2a1b9d provider=running raw=running
+Next: ocbox sync push
+```
+
+`start` creates a box for the project, or resumes the selected one. The `Next:`
+line points at the source push the new box is waiting for.
+
+### 5. Push the source
+
+```sh
+printf 'hello from the box\n' > hello.txt
+ocbox sync push
+```
+
+```text
+Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); uploaded 1 blob(s), 19 bytes.
+hello.txt
+```
+
+Dependency and build folders such as `node_modules` are left out on purpose;
+when a lockfile is pushed, the output ends with the install command to run in
+the box.
+
+### 6. Run a command and read its output
+
+```sh
+ocbox exec --timeout-seconds 60 -- cat hello.txt
+```
+
+```text
+execution exe_9d6b3eb74aae3741801b93a37e4ff2 started; reattach with: ocbox execution get exe_9d6b3eb74aae3741801b93a37e4ff2
+hello from the box
+```
+
+The command runs in the box's workspace, where `sync push` put the files.
+Tokens after `--` are passed to the program unchanged. The execution ID lets
+you reattach after a disconnect with `ocbox execution get <id>`.
+
+### 7. Stop the box
+
+```sh
+ocbox stop
+```
+
+```text
+* session=3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b state=stopped project=prj_7f3c2a1b9d provider=stopped raw=stopped
+```
+
+Stopping keeps the box's filesystem. Start it again with `ocbox start`.
+
+### 8. Destroy the box
+
+```sh
+ocbox destroy --yes
+```
+
+```text
+  session=3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b state=destroyed project=prj_7f3c2a1b9d provider=unbound raw=unbound
+```
+
+Destroying discards the box and its filesystem. To start a fresh box, run
+`ocbox start` again.
+
 ## Sync to a hosted sandbox
 
 After `ocbox init` and `ocbox start`, upload your current project before running it:
