@@ -27,13 +27,18 @@ shell metacharacters remain literal. Explicit shell mode is
 and maps only to `/bin/bash -lc COMMAND` on a compatible Linux image.
 
 Options include `--session`, normalized absolute sandbox `--cwd`, positive
-millisecond `--timeout`, repeatable non-secret `--env NAME=VALUE`, and mutually
-exclusive `--json`/`--jsonl`. The hosted `ocbox` provider cannot carry `--cwd`
-or `--env` in its create-execution request, so it refuses either option with
-`CAPABILITY_UNSUPPORTED` before dispatch. The fake provider carries both to its
-local helper. Adapter-owned recursion markers used by routed agent hooks are
-tolerated but not transmitted. Parsing and target validation finish before the
-provider mutation. The target must contain the selected active Session, its
+second `--timeout-seconds`, repeatable non-secret `--env NAME=VALUE`, and
+mutually exclusive `--json`/`--jsonl`. The millisecond `--timeout` remains as a
+hidden, deprecated alias: it still works and warns on stderr, while
+`--timeout-seconds 300` sends `timeoutSeconds: 300` to the hosted service. The
+two flags are mutually exclusive, so `--timeout 300000` and
+`--timeout-seconds 300` both ask for five minutes. The hosted
+`ocbox` provider cannot carry `--cwd` or `--env` in its create-execution request,
+so it refuses either option with `CAPABILITY_UNSUPPORTED` before dispatch; omit
+them and use the box workspace, putting any environment setting in the command
+or image. The fake provider carries both to its local helper. Adapter-owned
+recursion markers used by routed agent hooks are tolerated but not transmitted.
+Parsing and target validation finish before the provider mutation. The target must contain the selected active Session, its
 active primary running Sandbox, and streaming plus cancellation capabilities.
 Explicit Session IDs, provider timeout limits, shell compatibility, environment
 names/values, and output mode are checked before execution.
@@ -51,10 +56,16 @@ is the backpressure boundary and output floods do not create an unbounded buffer
 The first Ctrl-C requests provider cancellation. A second Ctrl-C returns 130
 without waiting for a stuck cancellation request and does not destroy the Session.
 Timeout and cancellation are typed terminal outcomes. If cancellation fails but a
-remote terminal result arrives, that result remains authoritative. `exec` prints
-the CLI execution ID that `cancel` reports for the same run. A cancellation
-observed through the event stream or Execution state is the `cancelled` outcome,
-not an infrastructure timeout.
+remote terminal result arrives, that result remains authoritative. When the
+provider accepts the command, human mode writes one stderr line,
+`execution <id> accepted`, before any command output, and never adds it to the
+program's stdout. `--json` carries the same `executionId` as a result field
+instead of a line. On the hosted provider, the printed ID is the hosted execution ID
+that `execution get` and `cancel` accept for the same run; `exec` resolves it from
+the provider's recorded mapping before writing the line. The fake provider prints
+its local execution ID. A cancellation observed through the event
+stream or Execution state is the `cancelled` outcome, not an infrastructure
+timeout.
 
 | Outcome                                    |          CLI exit | Structured discriminator |
 | ------------------------------------------ | ----------------: | ------------------------ |
