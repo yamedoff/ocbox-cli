@@ -1,0 +1,96 @@
+name: Publish release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: true
+      COREPACK_ENABLE_STRICT: 1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          check-latest: false
+      - name: Install exact Corepack
+        run: npm install --global corepack@0.36.0 --force
+      - name: Activate exact pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.24.0 --activate
+      - name: Require the tag to match package.json
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::Tag $RELEASE_TAG does not match package.json version v$version."
+            exit 1
+          fi
+          echo "Tag $RELEASE_TAG matches package.json version $version."
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Build and pack the release files
+        run: pnpm run pack:release
+      - name: Check the release files
+        shell: bash
+        run: |
+          release_dir=dist/release
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          tarball="$release_dir/ocbox-${version}.tgz"
+          sums="$release_dir/SHA256SUMS"
+          latest="$release_dir/LATEST"
+          for asset in "$tarball" "$sums" "$latest"; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::Missing release file $asset."
+              exit 1
+            fi
+          done
+          file_count=$(find "$release_dir" -maxdepth 1 -type f | wc -l)
+          file_count=${file_count//[[:space:]]/}
+          if [ "$file_count" -ne 3 ]; then
+            echo "::error::Expected exactly 3 release files in $release_dir, found $file_count."
+            exit 1
+          fi
+          expected=$(awk -v asset="ocbox-${version}.tgz" '{ name = $2; sub(/^\*/, "", name); if (name == asset) print $1 }' "$sums")
+          if [ -z "$expected" ]; then
+            echo "::error::$sums does not list ocbox-${version}.tgz."
+            exit 1
+          fi
+          actual=$(sha256sum "$tarball" | awk '{ print $1 }')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Checksum mismatch for $tarball."
+            exit 1
+          fi
+          if ! grep -qxF "$version" "$latest"; then
+            echo "::error::$latest does not contain $version."
+            exit 1
+          fi
+          echo "Release files for $version are complete and verified."
+      - name: Publish the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_dir=dist/release
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          tarball="$release_dir/ocbox-${version}.tgz"
+          sums="$release_dir/SHA256SUMS"
+          latest="$release_dir/LATEST"
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --verify-tag "$tarball" "$sums" "$latest"
