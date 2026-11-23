@@ -313,7 +313,7 @@ describe('init command', () => {
     expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
   })
 
-  it('keeps structured stdout clean while naming the hosted provider', async () => {
+  it('keeps structured output clean for the hosted provider in --json mode', async () => {
     const root = await temporaryRoot()
     const config = join(root, 'opencloudbox.toml')
     const state = await logIn(root)
@@ -347,7 +347,27 @@ describe('init command', () => {
       data: { provider: 'ocbox', projectId: 'prj_json' },
     })
     expect(stdout).not.toContain('Using the hosted OpenCloudBox provider')
-    expect(output(stderrSpy)).toBe(`${HOSTED_STAGING_NOTICE}\n`)
+    expect(output(stderrSpy)).toBe('')
+  })
+
+  it('keeps structured output clean for the fake provider in --json mode', async () => {
+    const root = await temporaryRoot()
+    const config = join(root, 'opencloudbox.toml')
+
+    await Init.run(
+      ['--provider', 'fake', '--config', config, '--state-dir', join(root, 'state'), '--json'],
+      { root: process.cwd() },
+    )
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const stdout = output(stdoutSpy)
+    expect(JSON.parse(stdout)).toMatchObject({
+      kind: 'result',
+      name: 'project.initialized',
+      data: { provider: 'fake' },
+    })
+    expect(stdout).not.toContain('Using the local fake provider')
+    expect(output(stderrSpy)).toBe('')
   })
 
   it('says clearly when the saved project is not visible to the signed-in account', async () => {

@@ -37,7 +37,9 @@ export default class Init extends OcboxCommand {
       return result
     })
     if (result === undefined) return
-    // Provider guidance goes to stderr so structured stdout stays clean.
+    // The notice is human guidance only; structured modes must leave stderr empty.
+    if (flags.json === true || flags.jsonl === true) return
+    // Provider guidance goes to stderr so it never mixes with the human message.
     // Environment is an index signature; bracket access is required by TypeScript.
     // biome-ignore lint/complexity/useLiteralKeys: see explanation above
     const notice = providerNotice(result.provider, flags['api-url'] ?? process.env['OCBOX_API_URL'])
