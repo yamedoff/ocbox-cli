@@ -111,7 +111,23 @@ export class OutputWriter {
         typeof nextStep === 'string' && !message.includes(nextStep)
           ? `\nNext: ${safeHumanMessage(nextStep, nextStep)}`
           : ''
-      const rendered = message + suffix + nextLine
+      const details = error instanceof OcboxError ? error.details : undefined
+      const limitName = details?.['limitName']
+      const limitValue = details?.['limitValue']
+      const retryAfterSeconds = details?.['retryAfterSeconds']
+      const limitParts: string[] = []
+      if (typeof limitName === 'string' && typeof limitValue === 'number') {
+        limitParts.push(`limit ${limitName} = ${String(limitValue)}`)
+      } else if (typeof limitName === 'string') {
+        limitParts.push(`limit ${limitName}`)
+      } else if (typeof limitValue === 'number') {
+        limitParts.push(`limit = ${String(limitValue)}`)
+      }
+      if (typeof retryAfterSeconds === 'number') {
+        limitParts.push(`retry after ${String(retryAfterSeconds)} s`)
+      }
+      const limitLine = limitParts.length === 0 ? '' : `\n${limitParts.join('; ')}`
+      const rendered = message + suffix + nextLine + limitLine
       const line = this.#useColor ? `\u001B[31m${rendered}\u001B[0m` : rendered
       this.#stderr.write(`${line}\n`)
     } else {

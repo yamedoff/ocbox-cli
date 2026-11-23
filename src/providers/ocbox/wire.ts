@@ -112,6 +112,9 @@ export const HostedSessionSchema = z
       .strictObject({
         reasonCode: z.string().min(1),
         nextStep: z.string().min(1),
+        limitName: z.string().max(128).optional(),
+        limitValue: z.number().int().min(1).optional(),
+        retryAfterSeconds: z.number().int().min(0).optional(),
       })
       .readonly()
       .exactOptional(),
