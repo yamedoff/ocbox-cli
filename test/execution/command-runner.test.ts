@@ -136,6 +136,24 @@ describe('execution command runner', () => {
     expect(output.stderr.text()).toBe('execution exec_hosted_123 accepted\n')
   })
 
+  it('reads the hosted ID from the execution target after start', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--', process.execPath, '-e', 'process.stdout.write("program bytes")'],
+      () => target(),
+      output,
+      {
+        resolveExecutionId: async (value) =>
+          typeof value === 'object' && value !== null && 'sandbox' in value
+            ? 'exec_hosted_123'
+            : undefined,
+      },
+    )
+    expect(exitCode).toBe(0)
+    expect(output.stdout.text()).toBe('program bytes')
+    expect(output.stderr.text()).toBe('execution exec_hosted_123 accepted\n')
+  })
+
   it('carries the resolved hosted execution ID in the JSON result', async () => {
     const output = io()
     const exitCode = await runExecutionCommand(
