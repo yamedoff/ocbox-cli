@@ -56,17 +56,16 @@ function eventEnvelope(event: ExecEvent): object {
   return { schemaVersion: 1, kind: 'event', outcome: null, event: event.type, ...event }
 }
 
-/** The command that follows an accepted execution without rerunning it. */
-export function executionReattachCommand(executionId: string): string {
-  return `ocbox execution get ${executionId}`
+/** A human diagnostic that must never enter the command's stdout. */
+export async function writeExecutionDiagnostic(
+  stream: ExecutionWritable,
+  message: string,
+): Promise<void> {
+  await write(stream, `${message}\n`)
 }
 
-function executionStartedLine(executionId: string): string {
-  return `execution ${executionId} started; reattach with: ${executionReattachCommand(executionId)}\n`
-}
-
-function executionStreamLostLine(executionId: string): string {
-  return `execution ${executionId} output stream was lost; reattach with: ${executionReattachCommand(executionId)}\n`
+function executionAcceptedLine(executionId: string): string {
+  return `execution ${executionId} accepted\n`
 }
 
 export interface ExecutionEventSinkOptions {
@@ -85,7 +84,7 @@ export function createExecutionEventSink(
     return async (event) => {
       options.onExecutionId?.(event.executionId)
       if (event.type === 'started') {
-        await write(stderr, executionStartedLine(event.executionId))
+        await write(stderr, executionAcceptedLine(event.executionId))
         return
       }
       if (event.type === 'stdout') await write(stdout, event.data)
@@ -141,9 +140,6 @@ export async function writeExecutionCompletion(
         stderr,
         `${completion.outcome.detail?.message ?? 'Execution infrastructure failed'}\n`,
       )
-      if (completion.outcome.error.stage === 'event_stream' && context.executionId !== undefined) {
-        await write(stderr, executionStreamLostLine(context.executionId))
-      }
     }
     return
   }

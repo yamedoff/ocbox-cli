@@ -22,9 +22,11 @@ describe('exec help', () => {
     expect(Exec.description).toContain('ocbox sync push')
   })
 
-  it('states the timeout unit with an example for both flags', () => {
-    expect(flagDescription(Exec, 'timeout')).toContain('milliseconds')
+  it('states the timeout unit with an example and hides the deprecated alias', () => {
+    expect(flagDescription(Exec, 'timeout')).toContain('millisecond')
+    expect(flagDescription(Exec, 'timeout')).toContain('Deprecated')
     expect(flagDescription(Exec, 'timeout')).toContain('--timeout 300000')
+    expect((Exec.flags.timeout as { hidden?: boolean }).hidden).toBe(true)
     expect(flagDescription(Exec, 'timeout-seconds')).toContain('seconds')
     expect(flagDescription(Exec, 'timeout-seconds')).toContain('--timeout-seconds 300')
     expect(flagDescription(Exec, 'timeout-seconds')).toContain('timeoutSeconds')

@@ -43,6 +43,15 @@ cannot be weakened by `--include`. Excluded names are reported by `diff` but are
 never transferred. Provisional caps are 1 GiB total, 100k files, 100k
 directories, and 256 MiB per file.
 
+Gitignore matching follows git: every `.gitignore` applies to its own folder and
+below, with patterns relative to that folder; `.git/info/exclude` is read when
+present; anchored (`/dist`) and escaped (`\#`, `\!`, trailing `\ `) patterns use
+the gitignore spec. A `.gitignore` in a folder the scan does not enter is never
+read. `.opencloudboxignore` and `--exclude`/`--include` keep their existing
+syntax and also accept a leading `/` as anchored at the project root. The
+precedence is built-in exclusions (never re-includable), `.git/info/exclude`,
+each `.gitignore` from the root down, `.opencloudboxignore`, then CLI rules.
+
 Excluded material already present on the target side is not planner-visible, so
 it is also excluded from deletion gates. The transfer therefore carries it into
 the staged root before an atomic swap: a push or pull can only delete entries
@@ -101,10 +110,12 @@ Human output lists additions, modifications, deletions, renames, conflicts,
 blocked paths, and excluded names deterministically. For the manifest-based
 transfer, a push or pull summary also names the dependency, cache, and build
 folders the scanner left out (`Left out: node_modules (dependencies), .next
-(cache)`). When a root lockfile was pushed, it prints the install step for the
-box (`Next: ocbox exec -- npm ci`; `pnpm install --frozen-lockfile` for
-`pnpm-lock.yaml`, `yarn install --frozen-lockfile` for `yarn.lock`). The result
-data carries the same facts as `summary.leftOut` (`path`, `reason`) and
+(cache)`). A push whose dependency folders were left out also says
+`Dependencies are not uploaded; install them on the box.` When a root lockfile
+was pushed, it prints the install step for the box (`Next: ocbox exec -- npm ci`;
+`pnpm install --frozen-lockfile` for `pnpm-lock.yaml`,
+`yarn install --frozen-lockfile` for `yarn.lock`). The result data carries the
+same facts as `summary.leftOut` (`path`, `reason`) and
 `summary.installCommand`; reporting the omission never changes what is
 transferred. `--json`/`--jsonl` emit the single stable envelope
 (`schemaVersion`, `kind`, `name`, `timestamp`, `data`) through the centralized

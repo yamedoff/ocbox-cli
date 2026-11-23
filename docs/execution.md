@@ -27,11 +27,12 @@ shell metacharacters remain literal. Explicit shell mode is
 and maps only to `/bin/bash -lc COMMAND` on a compatible Linux image.
 
 Options include `--session`, normalized absolute sandbox `--cwd`, positive
-millisecond `--timeout`, positive second `--timeout-seconds`, repeatable
-non-secret `--env NAME=VALUE`, and mutually exclusive `--json`/`--jsonl`.
-`--timeout` and `--timeout-seconds` are mutually exclusive: `--timeout 300000`
-and `--timeout-seconds 300` both ask for five minutes, and the second form sends
-the value to the hosted service as `timeoutSeconds` unchanged. The hosted
+second `--timeout-seconds`, repeatable non-secret `--env NAME=VALUE`, and
+mutually exclusive `--json`/`--jsonl`. The millisecond `--timeout` remains as a
+hidden, deprecated alias: it still works and warns on stderr, while
+`--timeout-seconds 300` sends `timeoutSeconds: 300` to the hosted service. The
+two flags are mutually exclusive, so `--timeout 300000` and
+`--timeout-seconds 300` both ask for five minutes. The hosted
 `ocbox` provider cannot carry `--cwd` or `--env` in its create-execution request,
 so it refuses either option with `CAPABILITY_UNSUPPORTED` before dispatch; omit
 them and use the box workspace, putting any environment setting in the command
@@ -57,11 +58,10 @@ without waiting for a stuck cancellation request and does not destroy the Sessio
 Timeout and cancellation are typed terminal outcomes. If cancellation fails but a
 remote terminal result arrives, that result remains authoritative. When the
 provider accepts the command, human mode writes one stderr line,
-`execution <id> started; reattach with: ocbox execution get <id>`, and never adds
-it to the program's stdout. `--json` carries the same `executionId` in its result
-envelope. The printed ID is the CLI execution ID that `cancel` reports for the
-same run. If the event stream is lost after acceptance, the human error names
-the ID and the same reattach command. A cancellation observed through the event
+`execution <id> accepted`, before any command output, and never adds it to the
+program's stdout. `--json` carries the same `executionId` as a result field
+instead of a line. The printed ID is the CLI execution ID that `execution get`
+and `cancel` accept for the same run. A cancellation observed through the event
 stream or Execution state is the `cancelled` outcome, not an infrastructure
 timeout.
 

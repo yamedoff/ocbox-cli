@@ -9,16 +9,17 @@ import type {
 import { OcboxError } from '../../src/errors/index.js'
 
 const INVALID_SESSION_ID_MESSAGE = 'Session ID must be a UUID or ULID; run `ocbox ls` to copy one.'
+
+import { FakeProviderExecution } from '../../src/execution/fake-provider-execution.js'
 import {
-  runExecutionCommand,
-  runExecutionCommandResult,
   type ExecutionInterruptSource,
   type ExecutionWritable,
+  runExecutionCommand,
+  runExecutionCommandResult,
 } from '../../src/execution/index.js'
-import { FakeProviderExecution } from '../../src/execution/fake-provider-execution.js'
 import { collectExecutionEvents } from '../../src/providers/ocbox/executions.js'
-import { seededApi, jsonResponse } from '../providers/doubles.js'
 import { ids, sandbox, session } from '../contracts/test-data.js'
+import { jsonResponse, seededApi } from '../providers/doubles.js'
 
 class MemoryWritable implements ExecutionWritable {
   readonly chunks: Buffer[] = []
@@ -119,11 +120,20 @@ describe('execution command runner', () => {
     )
     expect(exitCode).toBe(0)
     expect(output.stdout.text()).toBe('program bytes')
-    const match = /^execution (\S+) started; reattach with: ocbox execution get (\S+)\n$/u.exec(
-      output.stderr.text(),
+    expect(output.stderr.text()).toMatch(/^execution [0-9a-f-]{36} accepted\n$/u)
+  })
+
+  it('warns on stderr for the deprecated millisecond timeout', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--timeout', '1000', '--', process.execPath, '-e', 'process.stdout.write("program bytes")'],
+      () => target(),
+      output,
     )
-    expect(match).not.toBeNull()
-    expect(match?.[1]).toBe(match?.[2])
+    expect(exitCode).toBe(0)
+    expect(output.stdout.text()).toBe('program bytes')
+    expect(output.stderr.text()).toContain('--timeout is deprecated; use --timeout-seconds')
+    expect(output.stderr.text()).toContain('accepted')
   })
 
   it('carries the accepted execution ID in the JSON result', async () => {
@@ -283,7 +293,7 @@ describe('execution command runner', () => {
     },
   )
 
-  it('names the execution ID and reattach command when the event stream drops', async () => {
+  it('prints the accepted execution ID once when the event stream drops', async () => {
     const never = new Promise<never>(() => {})
     const execute = vi.fn(async (context: OperationContext): Promise<ExecHandle> => {
       async function* events() {
@@ -322,11 +332,8 @@ describe('execution command runner', () => {
     )
     expect(exitCode).toBe(125)
     expect(output.stdout.text()).toBe('')
-    expect(output.stderr.text()).toContain(
-      `execution ${ids.execution} started; reattach with: ocbox execution get ${ids.execution}`,
-    )
-    expect(output.stderr.text()).toContain(
-      `execution ${ids.execution} output stream was lost; reattach with: ocbox execution get ${ids.execution}`,
+    expect(output.stderr.text()).toBe(
+      `execution ${ids.execution} accepted\nExecution infrastructure failed\n`,
     )
   })
 

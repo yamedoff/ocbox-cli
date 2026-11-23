@@ -1,27 +1,28 @@
-import { OcboxError } from '../errors/index.js'
 import type { ExecEvent } from '../contracts.js'
+import { OcboxError } from '../errors/index.js'
 import {
   ExecArgumentError,
-  parseExecArguments,
   type ExecutionOutputMode,
   type ParsedExecArguments,
+  parseExecArguments,
 } from './cli-arguments.js'
 import {
   ExecutionInfrastructureError,
-  exitCodeForExecution,
   type ExecutionOutcome,
   type ExecutionOutcomeDetail,
+  exitCodeForExecution,
 } from './exit-policy.js'
 import {
   createExecutionEventSink,
-  writeExecutionCompletion,
   type ExecutionWritable,
+  writeExecutionCompletion,
+  writeExecutionDiagnostic,
 } from './output.js'
 import {
-  ExecutionService,
   type ExecutionCompletion,
-  type ExecutionRun,
   ExecutionContextError,
+  type ExecutionRun,
+  ExecutionService,
   type ExecutionServiceOptions,
   type ExecutionTarget,
 } from './service.js'
@@ -171,6 +172,9 @@ export async function runExecutionCommandResult(
   try {
     arguments_ = parseExecArguments(input)
     mode = arguments_.outputMode
+    for (const warning of arguments_.deprecationWarnings) {
+      await writeExecutionDiagnostic(io.stderr, warning)
+    }
     const target = await resolveTarget(arguments_)
     const service = new ExecutionService(options)
     run = await service.start(

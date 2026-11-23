@@ -2,9 +2,9 @@ import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
 import { createLifecycleService, type RuntimeFlags } from '../cli/runtime.js'
 import {
+  type ExecutionCommandIo,
   processInterrupts,
   runExecutionCommand,
-  type ExecutionCommandIo,
 } from '../execution/index.js'
 
 const HOST_VALUE_FLAGS = new Set(['config', 'state-dir'])
@@ -56,8 +56,9 @@ export default class Exec extends OcboxCommand {
         'Normalized absolute sandbox working directory; the hosted service refuses this flag, so omit it and use the box workspace (the default)',
     }),
     timeout: Flags.string({
+      hidden: true,
       description:
-        'Positive execution timeout in milliseconds, for example `--timeout 300000` is 5 minutes; the hosted API and MCP take seconds, so use `--timeout-seconds` for that unit',
+        'Deprecated millisecond alias for `--timeout-seconds`, for example `--timeout 300000` is 5 minutes; it still works but warns',
     }),
     'timeout-seconds': Flags.string({
       description:

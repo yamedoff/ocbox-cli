@@ -6,20 +6,20 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ProjectIdSchema, SessionIdSchema, UtcTimestampSchema } from '../../src/contracts.js'
 import { OcboxError } from '../../src/errors/index.js'
 import { OutputWriter } from '../../src/output/index.js'
+import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
 import { createVerifiedBaseline } from '../../src/sync/baseline.js'
 import { cliRules } from '../../src/sync/ignore-rules.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
 import {
-  type SyncApplyView,
-  type SyncContext,
-  type SyncApplyOptions,
   renderSyncApplied,
   renderSyncPlan,
   runSyncApply,
   runSyncDiff,
   runSyncRecover,
+  type SyncApplyOptions,
+  type SyncApplyView,
+  type SyncContext,
 } from '../../src/sync/service.js'
-import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
 
 const roots: string[] = []
 async function root(): Promise<string> {
@@ -244,6 +244,9 @@ describe('sync service', () => {
     expect(renderSyncApplied(result)).toContain(
       'Left out: .next (cache), node_modules (dependencies)',
     )
+    expect(renderSyncApplied(result)).toContain(
+      'Dependencies are not uploaded; install them on the box.',
+    )
     expect(renderSyncApplied(result)).toContain('Next: ocbox exec -- npm ci')
     expect(result.summary).toEqual({
       leftOut: [
@@ -295,6 +298,7 @@ describe('sync service', () => {
     const result = await runSyncApply(sync, 'pull', applyOptions())
 
     expect(renderSyncApplied(result)).toContain('Left out: node_modules (dependencies)')
+    expect(renderSyncApplied(result)).not.toContain('install them on the box')
     expect(result.summary).toEqual({
       leftOut: [{ path: 'node_modules', reason: 'dependency-cache' }],
       installCommand: null,
@@ -316,6 +320,21 @@ describe('sync service', () => {
 
     expect(result.summary?.installCommand).toBe(command)
     expect(renderSyncApplied(result)).toContain(`Next: ${command}`)
+  })
+
+  it('says dependencies must be installed on the box when no lockfile was pushed', async () => {
+    const { context: sync, local } = await pair()
+    await mkdir(join(local, 'node_modules'))
+    await writeFile(join(local, 'node_modules', 'dep.js'), 'dep')
+    await writeFile(join(local, 'app.js'), 'app')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+
+    const rendered = renderSyncApplied(result)
+    expect(rendered).toContain('Left out: node_modules (dependencies)')
+    expect(rendered).toContain('Dependencies are not uploaded; install them on the box.')
+    expect(rendered).not.toContain('Next:')
+    expect(result.summary?.installCommand).toBeNull()
   })
 
   it('does not ask for an install when the pushed lockfile is unchanged', async () => {

@@ -62,10 +62,15 @@ describe('exec CLI grammar', () => {
     })
   })
 
-  it('keeps --timeout in milliseconds', () => {
-    expect(parseExecArguments(['--timeout', '300000', '--', 'node'])).toMatchObject({
-      timeoutMilliseconds: 300_000,
-    })
+  it('keeps --timeout in milliseconds and warns that it is deprecated', () => {
+    const parsed = parseExecArguments(['--timeout', '300000', '--', 'node'])
+    expect(parsed).toMatchObject({ timeoutMilliseconds: 300_000 })
+    expect(parsed.deprecationWarnings).toEqual([
+      '--timeout is deprecated; use --timeout-seconds (seconds) instead',
+    ])
+    expect(
+      parseExecArguments(['--timeout-seconds', '300', '--', 'node']).deprecationWarnings,
+    ).toEqual([])
   })
 
   it('rejects --timeout together with --timeout-seconds in either order', () => {

@@ -1,12 +1,12 @@
 import { posix } from 'node:path'
 import { newRequestId } from '../auth/errors.js'
 import {
-  ExecCommandSchema,
-  ExecEnvironmentSchema,
-  SessionIdSchema,
   type ExecCommand,
+  ExecCommandSchema,
   type ExecEnvironment,
+  ExecEnvironmentSchema,
   type SessionId,
+  SessionIdSchema,
 } from '../contracts.js'
 import { OcboxError } from '../errors/index.js'
 import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
@@ -24,6 +24,8 @@ export interface ParsedExecArguments {
   readonly timeoutMilliseconds: number | null
   readonly environment: ExecEnvironment
   readonly outputMode: ExecutionOutputMode
+  /** Human diagnostics for flags that still work but are deprecated. */
+  readonly deprecationWarnings: readonly string[]
 }
 
 export class ExecArgumentError extends Error {
@@ -126,6 +128,7 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
   let shell: string | undefined
   let argv: readonly string[] | undefined
   const environment: Record<string, string> = {}
+  const deprecationWarnings: string[] = []
 
   for (let index = 0; index < input.length; index++) {
     const item = input[index] ?? ''
@@ -154,6 +157,7 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
       if (timeoutUnit === 'seconds')
         throw new ExecArgumentError('--timeout and --timeout-seconds are mutually exclusive')
       timeoutUnit = 'milliseconds'
+      deprecationWarnings.push('--timeout is deprecated; use --timeout-seconds (seconds) instead')
       timeoutMilliseconds = parseTimeout(takeOptionValue(input, index, name, inline))
       if (inline === null) index++
     } else if (name === '--timeout-seconds') {
@@ -205,5 +209,6 @@ export function parseExecArguments(input: readonly string[]): ParsedExecArgument
     timeoutMilliseconds,
     environment: ExecEnvironmentSchema.parse(environment),
     outputMode,
+    deprecationWarnings,
   }
 }

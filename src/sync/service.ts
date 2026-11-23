@@ -16,31 +16,31 @@ import { isCliOutdatedError } from '../version/gate.js'
 import { encodeSyncArchive, SyncArchiveError } from './archive.js'
 import {
   createVerifiedBaseline,
-  snapshotEntries,
-  snapshotSha256,
   type SyncBaselineEvidence,
   type SyncSnapshotEntry,
+  snapshotEntries,
+  snapshotSha256,
 } from './baseline.js'
 import { SyncBaselineStore, SyncBaselineStoreError } from './baseline-store.js'
+import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
+import { runHostedDiff, runHostedPull } from './cas-pull.js'
+import { runCasPush } from './cas-push.js'
+import type { CasProgress } from './cas-transfer.js'
 import type { IgnoreRule } from './exclusions.js'
 import { loadIgnoreRuleGroups } from './ignore-rules.js'
-import { type BlockedSourceEntry, scanSourceManifest, type SourceManifest } from './manifest.js'
+import { type BlockedSourceEntry, type SourceManifest, scanSourceManifest } from './manifest.js'
 import type { ManifestPath, PathCollision } from './path-policy.js'
 import {
   planSync,
+  type SyncChange,
   type SyncConflict,
   type SyncMode,
   type SyncOperation,
   type SyncPlan,
   type SyncRename,
-  type SyncChange,
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
-import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
-import type { CasProgress } from './cas-transfer.js'
-import { runCasPush } from './cas-push.js'
-import { runHostedDiff, runHostedPull } from './cas-pull.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
@@ -289,7 +289,7 @@ async function targetMatchesSnapshot(
   if (!(await isDirectory(targetRoot))) return desired.length === 0
   let manifest: SourceManifest
   try {
-    manifest = await scanSourceManifest(targetRoot, { ignoreRuleGroups: [] })
+    manifest = await scanSourceManifest(targetRoot)
   } catch {
     return false
   }
@@ -544,7 +544,10 @@ function leftOutLabel(entry: SyncLeftOutView): string {
   return DEPENDENCY_FOLDER_NAMES.has(name) ? 'dependencies' : 'cache'
 }
 
-function renderApplySummary(summary: SyncApplySummaryView | undefined): string[] {
+function renderApplySummary(
+  summary: SyncApplySummaryView | undefined,
+  dependenciesOnBox: boolean,
+): string[] {
   if (summary === undefined) return []
   const lines: string[] = []
   if (summary.leftOut.length > 0) {
@@ -552,6 +555,12 @@ function renderApplySummary(summary: SyncApplySummaryView | undefined): string[]
     const remaining = summary.leftOut.length - shown.length
     const names = shown.map((entry) => `${entry.path} (${leftOutLabel(entry)})`).join(', ')
     lines.push(`Left out: ${names}${remaining === 0 ? '' : `, and ${String(remaining)} more`}`)
+  }
+  if (
+    dependenciesOnBox &&
+    summary.leftOut.some((entry) => leftOutLabel(entry) === 'dependencies')
+  ) {
+    lines.push('Dependencies are not uploaded; install them on the box.')
   }
   if (summary.installCommand !== null) lines.push(`Next: ${summary.installCommand}`)
   return lines
@@ -949,7 +958,7 @@ export function renderSyncPlan(view: SyncPlanView): string {
 }
 
 export function renderSyncApplied(view: SyncApplyView): string {
-  const summary = renderApplySummary(view.summary)
+  const summary = renderApplySummary(view.summary, view.mode === 'push')
   if (view.protocolVersion === 2) {
     if (view.mode === 'pull') {
       const changed = [...view.additions, ...view.modifications]
