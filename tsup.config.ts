@@ -45,6 +45,7 @@ export default defineConfig({
     'commands/providers': 'src/commands/providers.ts',
     'commands/session/get': 'src/commands/session/get.ts',
     'commands/session/list': 'src/commands/session/list.ts',
+    'commands/sizes': 'src/commands/sizes.ts',
     'commands/start': 'src/commands/start.ts',
     'commands/status': 'src/commands/status.ts',
     'commands/stop': 'src/commands/stop.ts',
