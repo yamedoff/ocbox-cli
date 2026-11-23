@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmod, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import { OcboxError } from '../errors/index.js'
@@ -111,8 +111,6 @@ export class WarmSessionServer {
   #listening = false
   #closed = false
   #secretHash: Buffer | undefined
-  #connectionFile: string | undefined
-  #activePipe: string | undefined
   #readinessServer: Server | undefined
 
   constructor(options: WarmSessionServerOptions) {
@@ -211,8 +209,6 @@ export class WarmSessionServer {
       })
       if (this.#platform !== 'win32') {
         await rm(this.#socketPath, { force: true }).catch(() => {})
-      } else {
-        await this.#removeConnectionFile()
       }
     }
     const readiness = this.#readinessServer
@@ -276,24 +272,16 @@ export class WarmSessionServer {
     const secret = randomBytes(SECRET_RANDOM_BYTES).toString('hex')
     this.#secretHash = createHash('sha256').update(secret).digest()
     const file = warmConnectionFile(stateDirectory, this.#socketPath)
+    const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`
     await mkdir(dirname(file), { mode: 0o700, recursive: true })
-    await writeFile(file, JSON.stringify({ pipe, secret }), { mode: 0o600 })
-    await chmod(file, 0o600)
-    this.#connectionFile = file
-    this.#activePipe = pipe
-  }
-
-  async #removeConnectionFile(): Promise<void> {
-    const file = this.#connectionFile
-    const pipe = this.#activePipe
-    if (file === undefined || pipe === undefined) return
+    await writeFile(temporary, JSON.stringify({ pipe, secret }), { mode: 0o600 })
     try {
-      const text = await readFile(file, 'utf8')
-      if (parseWarmConnection(JSON.parse(text))?.pipe === pipe) {
-        await rm(file, { force: true })
-      }
-    } catch {
-      // A missing or already replaced connection file is unusable anyway.
+      await chmod(temporary, 0o600)
+      // A reader must see either the old connection or the complete new one.
+      await rename(temporary, file)
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {})
+      throw error
     }
   }
 

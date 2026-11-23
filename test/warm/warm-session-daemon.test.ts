@@ -424,7 +424,7 @@ describe('warm session daemon', () => {
   })
 })
 
-describe('windows named-pipe owner check', () => {
+describe('windows named-pipe authentication', () => {
   it('serves a client that presents the published secret', async () => {
     const { environment, scope, socketPath } = await handshakeScopeFor('win32-secret')
     const provider = new FakeProvider()
@@ -439,6 +439,7 @@ describe('windows named-pipe owner check', () => {
     // The deterministic name stays connectable so existing harnesses can wait
     // for the daemon, but it never answers a protocol request.
     expect(await isListening(socketPath)).toBe(true)
+    expect(await rawRequest(socketPath, `${JSON.stringify({ op: 'ping', v: 1 })}\n`)).toBe('')
 
     const connection = await connectionFor(scope.stateDirectory)
     expect(connection.pipe).not.toBe(socketPath)
@@ -452,6 +453,19 @@ describe('windows named-pipe owner check', () => {
     }
   })
 
+  it('falls back when no Windows connection file is published', async () => {
+    const { environment, scope, socketPath } = await handshakeScopeFor('win32-no-daemon')
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntryExists: () => false,
+      environment,
+      platform: 'win32',
+      socketPath,
+    })
+
+    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
+  })
+
   it('does not answer a request without the secret and the client falls back', async () => {
     const { environment, scope, socketPath } = await handshakeScopeFor('win32-no-secret')
     const provider = new FakeProvider()
@@ -463,6 +477,8 @@ describe('windows named-pipe owner check', () => {
 
     const reply = await rawRequest(connection.pipe, `${JSON.stringify({ op: 'ping', v: 1 })}\n`)
     expect(reply).toBe('')
+    const oversized = await rawRequest(connection.pipe, 'x'.repeat(1024 * 1024 + 1))
+    expect(oversized).toBe('')
 
     // A published file without a secret cannot be used: the CLI falls back.
     await writeFile(connection.file, JSON.stringify({ pipe: connection.pipe }), { mode: 0o600 })
@@ -518,6 +534,7 @@ describe('windows named-pipe owner check', () => {
     })
     const oldConnection = await connectionFor(scope.stateDirectory)
     await first.close()
+    expect(await isListening(socketPath)).toBe(false)
 
     await startServer(socketPath, provider, {
       platform: 'win32',
