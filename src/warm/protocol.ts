@@ -7,16 +7,21 @@ export const WarmRequestSchema = z.discriminatedUnion('op', [
   z.strictObject({
     hostedSessionId: z.string().min(1),
     op: z.literal('get'),
+    // Windows has no owner-only socket directory, so the first message carries
+    // the connection secret from the daemon's per-user connection file.
+    secret: z.string().min(1).optional(),
     v: z.literal(WARM_PROTOCOL_VERSION),
   }),
   z.strictObject({
     hostedSessionId: z.string().min(1),
     op: z.literal('remember'),
+    secret: z.string().min(1).optional(),
     session: HostedSessionSchema,
     v: z.literal(WARM_PROTOCOL_VERSION),
   }),
   z.strictObject({
     op: z.literal('ping'),
+    secret: z.string().min(1).optional(),
     v: z.literal(WARM_PROTOCOL_VERSION),
   }),
 ])
