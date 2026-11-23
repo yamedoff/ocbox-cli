@@ -40,6 +40,8 @@ Invalid configuration, unsupported capabilities, stale credentials, an absent Se
 
 Opaque source upload endpoints are an outside building: their capability URLs prove a direct PUT path, without identifying infrastructure or another repository's implementation.
 
+`ocbox logs <execution-id>` re-reads a terminal execution's stored result and writes stdout and stderr to the terminal unchanged, so an agent that lost the live stream still sees the run's output. Human output bypasses the general redactor like `ocbox exec`, while `--json`/`--jsonl` keep the existing envelope redaction; a pending or running execution is refused with its state.
+
 ## Read and play
 
 Start with Sign in from the CLI, Start a box from the CLI, Push local files to the box and Run a command from the CLI. Public API connection IDs bridge these client stories to server journeys in Notion. This guide describes source behavior at the commit below; it is not a new live product acceptance report.
@@ -65,3 +67,5 @@ Verified against ocbox-cli @ 872e6f2 plus the init project-check and hosted-defa
 On Windows, the warm daemon's random pipe name and per-user connection-secret file replace the Unix owner-only directory and socket checks; Unix behavior is unchanged.
 
 Verified against ocbox-cli @ 9523af1 plus the Windows named-pipe handshake.
+
+Verified against ocbox-cli @ b00b594 plus the logs command.
