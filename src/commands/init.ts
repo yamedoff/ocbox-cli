@@ -1,7 +1,7 @@
 import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
 import { initializeProject, type ProjectInitialization } from '../cli/runtime.js'
-import { FAKE_PROVIDER_NOTICE } from '../errors/messages.js'
+import { providerNotice } from '../errors/messages.js'
 
 function initializationMessage(result: ProjectInitialization): string {
   if (result.status === 'validated') return 'Validated opencloudbox.toml'
@@ -31,14 +31,20 @@ export default class Init extends OcboxCommand {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(Init)
-    let initialized = false
+    let result: ProjectInitialization | undefined
     await this.emitResult(flags, 'project.initialized', initializationMessage, async () => {
-      const result = await initializeProject(flags)
-      initialized = true
+      result = await initializeProject(flags)
       return result
     })
-    if (initialized && flags.provider === 'fake') {
-      process.stderr.write(`${FAKE_PROVIDER_NOTICE}\n`)
+    if (result === undefined) return
+    // The notice is human guidance only; structured modes must leave stderr empty.
+    if (flags.json === true || flags.jsonl === true) return
+    // Provider guidance goes to stderr so it never mixes with the human message.
+    // Environment is an index signature; bracket access is required by TypeScript.
+    // biome-ignore lint/complexity/useLiteralKeys: see explanation above
+    const notice = providerNotice(result.provider, flags['api-url'] ?? process.env['OCBOX_API_URL'])
+    if (notice !== undefined) {
+      process.stderr.write(`${notice}\n`)
     }
   }
 }
