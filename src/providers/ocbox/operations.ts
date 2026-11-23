@@ -6,7 +6,12 @@ import { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
 import { RequestIdSchema } from '../../domain/ids.js'
 import { IdempotencyKeySchema } from '../../domain/ids.js'
-import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import {
+  envelopeOf,
+  mapApiFailureToOcboxError,
+  toRequestId,
+  withRefusalEnvelope,
+} from '../../api/client/errors.js'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import { admissionError } from './requested-spec.js'
 import {
@@ -179,7 +184,21 @@ function terminalFailureOf(operation: HostedOperation): OcboxError | null {
   }
   if (operation.state === 'failed') {
     const admission = admissionError(operation.error?.reason, toRequestId(operation.requestId))
-    if (admission !== undefined) return admission
+    if (admission !== undefined) {
+      // Keep the provider's own code so the outer admission-friendly rewrite
+      // leaves this enriched error (and its refusal details) intact.
+      const serverCode = operation.error?.code
+      const classified =
+        serverCode === undefined
+          ? admission
+          : new OcboxError({
+              code: admission.code,
+              message: admission.message,
+              requestId: admission.requestId,
+              providerCode: serverCode.slice(0, 128),
+            })
+      return withRefusalEnvelope(classified, operation.error ?? {})
+    }
     return mapApiFailureToOcboxError({
       operation: `operation:${operation.kind}`,
       requestId: operation.requestId,

@@ -105,6 +105,83 @@ function withLimitGuidance(
   return withNext.length <= 1_000 ? withNext : combined
 }
 
+/** The refusal fields a hosted error envelope may carry. */
+export interface RefusalEnvelope {
+  readonly reason?: string | undefined
+  readonly reasonCode?: string | undefined
+  readonly nextStep?: string | undefined
+  readonly limitName?: string | undefined
+  readonly limitValue?: number | undefined
+}
+
+interface ValidatedRefusalFields {
+  readonly nextStep: string | null
+  readonly reason: string | null
+  readonly reasonCode: string | null
+  readonly limitName: string | null
+  readonly limitValue: number | null
+}
+
+/** Validates and redacts every refusal field a server may supply. */
+function validatedRefusalFields(input: RefusalEnvelope): ValidatedRefusalFields {
+  return {
+    nextStep:
+      typeof input.nextStep === 'string' &&
+      RedactedDetailsSchema.safeParse({ nextStep: input.nextStep }).success
+        ? input.nextStep
+        : null,
+    reason: safeReasonDetail(input.reason, 'reason'),
+    reasonCode: safeReasonDetail(input.reasonCode, 'reasonCode'),
+    limitName: safeReasonDetail(input.limitName, 'limitName'),
+    limitValue: safeLimitValue(input.limitValue),
+  }
+}
+
+/**
+ * Carries a refused create's server envelope onto the admission error the
+ * catalogue already classified. The code, provider code, and friendly message
+ * stay; the validated refusal fields travel as redacted details and the
+ * enforced limit and next step join the human message.
+ */
+export function withRefusalEnvelope(error: OcboxError, envelope: RefusalEnvelope): OcboxError {
+  const refusal = validatedRefusalFields(envelope)
+  const details: Record<string, string | number> = {}
+  if (refusal.nextStep !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['nextStep'] = refusal.nextStep
+  }
+  if (refusal.reason !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reason'] = refusal.reason
+  }
+  if (refusal.reasonCode !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['reasonCode'] = refusal.reasonCode
+  }
+  if (refusal.limitName !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitName'] = refusal.limitName
+  }
+  if (refusal.limitValue !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['limitValue'] = refusal.limitValue
+  }
+  const message = withLimitGuidance(
+    error.message,
+    refusal.limitName,
+    refusal.limitValue,
+    refusal.nextStep,
+  )
+  if (Object.keys(details).length === 0 && message === error.message) return error
+  return new OcboxError({
+    code: error.code,
+    message,
+    requestId: error.requestId,
+    ...(error.providerCode === undefined ? {} : { providerCode: error.providerCode }),
+    ...(Object.keys(details).length === 0 ? {} : { details }),
+  })
+}
+
 /**
  * Maps hosted HTTP/envelope failures to the stable public catalogue.
  * The pinned contract publishes the same catalogue the CLI owns, so a server
@@ -136,31 +213,24 @@ export function mapApiFailureToOcboxError(input: ApiFailureInput): OcboxError {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['retryAfterSeconds'] = retryAfter
   }
-  const nextStep =
-    typeof input.nextStep === 'string' &&
-    RedactedDetailsSchema.safeParse({ nextStep: input.nextStep }).success
-      ? input.nextStep
-      : null
+  const refusal = validatedRefusalFields(input)
+  const { nextStep, limitName, limitValue } = refusal
   if (nextStep !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['nextStep'] = nextStep
   }
-  const reason = safeReasonDetail(input.reason, 'reason')
-  if (reason !== null) {
+  if (refusal.reason !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
-    details['reason'] = reason
+    details['reason'] = refusal.reason
   }
-  const reasonCode = safeReasonDetail(input.reasonCode, 'reasonCode')
-  if (reasonCode !== null) {
+  if (refusal.reasonCode !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
-    details['reasonCode'] = reasonCode
+    details['reasonCode'] = refusal.reasonCode
   }
-  const limitName = safeReasonDetail(input.limitName, 'limitName')
   if (limitName !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['limitName'] = limitName
   }
-  const limitValue = safeLimitValue(input.limitValue)
   if (limitValue !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['limitValue'] = limitValue

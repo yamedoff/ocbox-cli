@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { OcboxApiClient } from '../../api/client/client.js'
 import type { ApiResult } from '../../api/generated/client.js'
-import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import {
+  envelopeOf,
+  mapApiFailureToOcboxError,
+  toRequestId,
+  withRefusalEnvelope,
+} from '../../api/client/errors.js'
 import type {
   Operation as HostedOperation,
   Session as HostedSession,
@@ -754,7 +759,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         envelope.reason ?? envelope.code,
         toRequestId(created.requestId),
       )
-      if (denial) throw denial
+      if (denial) throw withRefusalEnvelope(denial, envelope)
       const refusal = sizeRefusalError(envelope.reasonCode, toRequestId(created.requestId))
       if (refusal) throw refusal
     }
