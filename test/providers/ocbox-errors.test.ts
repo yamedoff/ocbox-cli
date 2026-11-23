@@ -4,6 +4,8 @@ import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../src/ap
 import { OcboxError } from '../../src/errors/index.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
+const NEXT_STEP =
+  'You have reached the number of running boxes for your plan; stop or destroy one (session_list) and retry.'
 
 describe('hosted error mapping', () => {
   it('maps auth failures to the stable catalogue and preserves request IDs', () => {
@@ -122,6 +124,118 @@ describe('hosted error mapping', () => {
     })
     expect(envelope.reason).toBe('user_active_limit')
     expect(envelope.code).toBe('SERVICE_UNAVAILABLE')
+  })
+
+  it('reads hosted limit metadata from an error envelope', () => {
+    const envelope = envelopeOf({
+      error: {
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Box admission was refused',
+        reason: 'user_active_limit',
+        reasonCode: 'user_active_limit',
+        nextStep: NEXT_STEP,
+        limitName: 'boxes_per_account',
+        limitValue: 1,
+      },
+      requestId: REQUEST_ID,
+    })
+    expect(envelope.reason).toBe('user_active_limit')
+    expect(envelope.reasonCode).toBe('user_active_limit')
+    expect(envelope.nextStep).toBe(NEXT_STEP)
+    expect(envelope.limitName).toBe('boxes_per_account')
+    expect(envelope.limitValue).toBe(1)
+  })
+
+  it('keeps every refusal field the server supplied in error details', () => {
+    const mapped = mapApiFailureToOcboxError({
+      requestId: REQUEST_ID,
+      serverCode: 'SERVICE_UNAVAILABLE',
+      serverMessage: 'Box admission was refused',
+      status: 503,
+      reason: 'user_active_limit',
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+    })
+    expect(mapped.details).toEqual({
+      reason: 'user_active_limit',
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+    })
+  })
+
+  it('never invents refusal fields the server omitted', () => {
+    const mapped = mapApiFailureToOcboxError({
+      requestId: REQUEST_ID,
+      serverCode: 'SERVICE_UNAVAILABLE',
+      serverMessage: 'Box admission was refused',
+      status: 503,
+      reason: 'user_active_limit',
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+    })
+    expect(mapped.details).toEqual({
+      reason: 'user_active_limit',
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+    })
+    expect(mapped.details).not.toHaveProperty('limitName')
+    expect(mapped.details).not.toHaveProperty('limitValue')
+    expect(mapped.message).toBe('Box admission was refused')
+    expect(mapped.message).not.toContain('boxes_per_account')
+    expect(mapped.message).not.toMatch(/\blimit\b/i)
+  })
+
+  it('drops malformed refusal fields instead of throwing', () => {
+    const mapped = mapApiFailureToOcboxError({
+      requestId: REQUEST_ID,
+      serverCode: 'SERVICE_UNAVAILABLE',
+      serverMessage: 'Box admission was refused',
+      status: 503,
+      reason: 'user_active_limit',
+      reasonCode: 'NOT-A-CODE',
+      limitName: '/etc/passwd',
+      limitValue: 0,
+    })
+    expect(mapped.details).toEqual({ reason: 'user_active_limit' })
+    expect(mapped.message).toBe('Box admission was refused')
+  })
+
+  it('drops a fractional limit value instead of throwing', () => {
+    const mapped = mapApiFailureToOcboxError({
+      requestId: REQUEST_ID,
+      serverCode: 'SERVICE_UNAVAILABLE',
+      serverMessage: 'Box admission was refused',
+      status: 503,
+      limitName: 'boxes_per_account',
+      limitValue: 1.5,
+    })
+    expect(mapped.details).toEqual({ limitName: 'boxes_per_account' })
+    expect(mapped.details).not.toHaveProperty('limitValue')
+  })
+
+  it('names the enforced limit and next step in the human message', () => {
+    const mapped = mapApiFailureToOcboxError({
+      requestId: REQUEST_ID,
+      serverCode: 'SERVICE_UNAVAILABLE',
+      serverMessage: 'Box admission was refused',
+      status: 503,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+      nextStep: NEXT_STEP,
+    })
+    expect(mapped.message).toContain('Box admission was refused')
+    expect(mapped.message).toContain('boxes_per_account')
+    expect(mapped.message).toMatch(/\b1\b/)
+    expect(mapped.message).toContain(`Next: ${NEXT_STEP}`)
+    expect(mapped.details).toEqual({
+      nextStep: NEXT_STEP,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+    })
   })
 
   it('keeps diagnostics free of credential-like material', () => {

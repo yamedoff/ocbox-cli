@@ -225,8 +225,11 @@ export class OcboxApiClient {
       retryAfterSeconds: envelope.retryAfterSeconds ?? null,
       serverCode: envelope.code,
       serverMessage: envelope.message,
+      reason: envelope.reason,
       reasonCode: envelope.reasonCode,
       nextStep: envelope.nextStep,
+      limitName: envelope.limitName,
+      limitValue: envelope.limitValue,
       status: result.status,
     })
   }

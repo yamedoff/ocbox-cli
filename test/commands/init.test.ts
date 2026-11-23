@@ -16,6 +16,8 @@ import { DEFAULT_API_URL } from '../../src/providers/ocbox/defaults.js'
 const NOT_LOGGED_IN_MESSAGE =
   'Not logged in. Run `ocbox auth login`, or pass --provider fake to use the local test harness (nothing runs remotely).'
 const FAKE_PROVIDER_NOTICE = 'Using the local fake provider; nothing runs remotely.'
+const HOSTED_STAGING_NOTICE =
+  'Using the hosted OpenCloudBox provider (staging at https://api.staging.opencloudbox.dev).'
 
 const originalExitCode = process.exitCode
 const originalEnvironment = { ...process.env }
@@ -40,9 +42,9 @@ async function temporaryRoot(): Promise<string> {
   return root
 }
 
-async function logIn(root: string): Promise<string> {
+async function logIn(root: string, apiUrl = DEFAULT_API_URL): Promise<string> {
   const state = join(root, 'state')
-  const endpoints = resolveAuthEndpoints({ 'api-url': DEFAULT_API_URL }, {})
+  const endpoints = resolveAuthEndpoints({ 'api-url': apiUrl }, {})
   const key = defaultCredentialKey()
   const credential = {
     accessToken: 'fixture-access-'.padEnd(48, 'a'),
@@ -148,6 +150,8 @@ describe('init command', () => {
     expect(output(stdoutSpy)).toBe(
       'Created project prj_cold_demo ("cold-demo") and wrote opencloudbox.toml\n',
     )
+    expect(output(stderrSpy)).toBe(`${HOSTED_STAGING_NOTICE}\n`)
+    expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
     expect(calls).toEqual(['GET /v1/projects', 'POST /v1/projects'])
     expect(await readFile(config, 'utf8')).toContain('projectId = "prj_cold_demo"')
   })
@@ -229,7 +233,121 @@ describe('init command', () => {
 
     expect(process.exitCode ?? 0).toBe(0)
     expect(output(stdoutSpy)).toBe('Validated opencloudbox.toml\n')
+    expect(output(stderrSpy)).toBe(`${HOSTED_STAGING_NOTICE}\n`)
+    expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
     expect(calls).toEqual(['GET /v1/projects/prj_existing'])
+  })
+
+  it('names the overridden hosted API when --api-url overrides the default', async () => {
+    const root = await temporaryRoot()
+    const config = join(root, 'opencloudbox.toml')
+    const apiUrl = 'https://api.example.test'
+    const state = await logIn(root, apiUrl)
+    const timestamp = new Date().toISOString()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = new URL(String(input))
+        if (url.pathname === '/v1/projects' && init?.method === 'POST') {
+          return jsonResponse(
+            {
+              id: 'prj_override',
+              name: 'override-demo',
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            },
+            201,
+          )
+        }
+        return jsonResponse({ data: [], nextCursor: null })
+      }),
+    )
+
+    await Init.run(['--config', config, '--state-dir', state, '--api-url', apiUrl], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toBe(
+      'Created project prj_override ("override-demo") and wrote opencloudbox.toml\n',
+    )
+    expect(output(stderrSpy)).toBe(
+      'Using the hosted OpenCloudBox provider (https://api.example.test).\n',
+    )
+    expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
+  })
+
+  it('names the overridden hosted API when OCBOX_API_URL overrides the default', async () => {
+    const root = await temporaryRoot()
+    const config = join(root, 'opencloudbox.toml')
+    const apiUrl = 'https://env.example.test'
+    const state = await logIn(root, apiUrl)
+    const timestamp = new Date().toISOString()
+    await writeFile(
+      config,
+      DEFAULT_PROJECT_CONFIG.replace('name = "fake"', 'name = "ocbox"').replace(
+        'schemaVersion = 1',
+        'schemaVersion = 1\nprojectId = "prj_env"',
+      ),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          id: 'prj_env',
+          name: 'env-demo',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }),
+      ),
+    )
+    process.env['OCBOX_API_URL'] = apiUrl
+
+    await Init.run(['--config', config, '--state-dir', state], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(output(stdoutSpy)).toBe('Validated opencloudbox.toml\n')
+    expect(output(stderrSpy)).toBe(
+      'Using the hosted OpenCloudBox provider (https://env.example.test).\n',
+    )
+    expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
+  })
+
+  it('keeps structured stdout clean while naming the hosted provider', async () => {
+    const root = await temporaryRoot()
+    const config = join(root, 'opencloudbox.toml')
+    const state = await logIn(root)
+    const timestamp = new Date().toISOString()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = new URL(String(input))
+        if (url.pathname === '/v1/projects' && init?.method === 'POST') {
+          return jsonResponse(
+            { id: 'prj_json', name: 'json-demo', createdAt: timestamp, updatedAt: timestamp },
+            201,
+          )
+        }
+        return jsonResponse({ data: [], nextCursor: null })
+      }),
+    )
+
+    await Init.run(
+      ['--config', config, '--state-dir', state, '--api-url', DEFAULT_API_URL, '--json'],
+      {
+        root: process.cwd(),
+      },
+    )
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const stdout = output(stdoutSpy)
+    expect(JSON.parse(stdout)).toMatchObject({
+      kind: 'result',
+      name: 'project.initialized',
+      data: { provider: 'ocbox', projectId: 'prj_json' },
+    })
+    expect(stdout).not.toContain('Using the hosted OpenCloudBox provider')
+    expect(output(stderrSpy)).toBe(`${HOSTED_STAGING_NOTICE}\n`)
   })
 
   it('says clearly when the saved project is not visible to the signed-in account', async () => {
@@ -259,5 +377,7 @@ describe('init command', () => {
     )
     expect(output(stderrSpy)).toContain('projectId in opencloudbox.toml')
     expect(output(stderrSpy)).not.toContain('Validated opencloudbox.toml')
+    expect(output(stderrSpy)).not.toContain('Using the hosted OpenCloudBox provider')
+    expect(output(stderrSpy)).not.toContain(FAKE_PROVIDER_NOTICE)
   })
 })
