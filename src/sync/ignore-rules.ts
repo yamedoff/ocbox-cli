@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises'
-import { join, matchesGlob } from 'node:path'
+import type { Stats } from 'node:fs'
+import { lstat, readFile } from 'node:fs/promises'
+import { isAbsolute, join, matchesGlob, resolve } from 'node:path'
 import ignore from 'ignore'
 import {
   builtInExclusion,
@@ -37,15 +38,52 @@ interface GitignoreMatcher {
 }
 
 /**
- * Reads `core.ignorecase` from the repository config without invoking git. Git
- * only treats a repository as case-insensitive when the setting says so, and
- * defaults to case-sensitive matching when it is absent. A worktree's `.git`
- * is a file, so the config is unreadable there and the default applies.
+ * Resolves the git directory that holds the repository config and the shared
+ * `info/exclude`. A normal checkout has a `.git` directory; a linked worktree
+ * has a `.git` file pointing at a worktree git directory whose `commondir`
+ * file names the common directory. Reading these files avoids invoking git.
  */
-async function readCoreIgnoreCase(root: string): Promise<boolean> {
+async function gitCommonDirectory(root: string): Promise<string | null> {
+  const dotGit = join(root, '.git')
+  let metadata: Stats
+  try {
+    metadata = await lstat(dotGit)
+  } catch (error) {
+    if (isMissing(error)) return null
+    throw error
+  }
+  if (metadata.isDirectory()) return dotGit
+  if (!metadata.isFile()) return null
   let contents: string
   try {
-    contents = await readFile(join(root, '.git', 'config'), 'utf8')
+    contents = await readFile(dotGit, 'utf8')
+  } catch (error) {
+    if (isMissing(error)) return null
+    throw error
+  }
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(contents)?.[1]
+  if (gitdir === undefined) return null
+  const worktreeGitDirectory = isAbsolute(gitdir) ? gitdir : resolve(root, gitdir)
+  try {
+    const common = (await readFile(join(worktreeGitDirectory, 'commondir'), 'utf8')).trim()
+    if (common.length === 0) return worktreeGitDirectory
+    return isAbsolute(common) ? common : resolve(worktreeGitDirectory, common)
+  } catch (error) {
+    if (isMissing(error)) return worktreeGitDirectory
+    throw error
+  }
+}
+
+/**
+ * Reads `core.ignorecase` from the repository config without invoking git. Git
+ * only treats a repository as case-insensitive when the setting says so, and
+ * defaults to case-sensitive matching when it is absent.
+ */
+async function readCoreIgnoreCase(gitDirectory: string | null): Promise<boolean> {
+  if (gitDirectory === null) return false
+  let contents: string
+  try {
+    contents = await readFile(join(gitDirectory, 'config'), 'utf8')
   } catch (error) {
     if (isMissing(error)) return false
     throw error
@@ -102,9 +140,12 @@ export async function loadIgnoreRuleGroups(
   root: string,
   cliRules: readonly IgnoreRule[],
 ): Promise<LoadedIgnoreRules> {
-  const ignorecase = await readCoreIgnoreCase(root)
+  const gitDirectory = await gitCommonDirectory(root)
+  const ignorecase = await readCoreIgnoreCase(gitDirectory)
   const [infoExclude, opencloudboxignore] = await Promise.all([
-    readGitMatcher(join(root, '.git', 'info', 'exclude'), ignorecase),
+    gitDirectory === null
+      ? Promise.resolve(null)
+      : readGitMatcher(join(gitDirectory, 'info', 'exclude'), ignorecase),
     readRuleFile(root, '.opencloudboxignore', 'opencloudboxignore'),
   ])
   return {

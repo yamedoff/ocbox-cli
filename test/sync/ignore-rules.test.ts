@@ -118,6 +118,32 @@ describe('sync ignore rules', () => {
     expect((await loadIgnoreRuleGroups(sensitive, [])).ignorecase).toBe(false)
   })
 
+  it('reads core.ignorecase through a linked worktree .git file', async () => {
+    const main = await root()
+    const parent = await root()
+    execFileSync('git', ['init', '--quiet'], { cwd: main })
+    execFileSync('git', ['config', 'core.ignorecase', 'true'], { cwd: main })
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '--quiet',
+        '--allow-empty',
+        '-m',
+        'init',
+      ],
+      { cwd: main },
+    )
+    const worktree = join(parent, 'linked')
+    execFileSync('git', ['worktree', 'add', '--quiet', worktree], { cwd: main })
+
+    expect((await loadIgnoreRuleGroups(worktree, [])).ignorecase).toBe(true)
+  })
+
   it('accepts an anchored .gitignore rule and anchors it to the project root', async () => {
     const directory = await root()
     await mkdir(join(directory, 'generated'))
