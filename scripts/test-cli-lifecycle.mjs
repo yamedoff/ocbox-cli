@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -43,6 +46,59 @@ async function invokeFailure(cwd, args) {
     assert.notEqual(error, null)
     return error
   }
+}
+
+/** Mirrors src/warm/paths.ts so the harness can own the daemon it talks to. */
+function warmSocketPathFor(environment, scope) {
+  const hash = createHash('sha256')
+    .update([scope.apiUrl, scope.projectId, scope.stateDirectory].join('\0'))
+    .digest('hex')
+    .slice(0, 24)
+  if (process.platform === 'win32') return `\\\\.\\pipe\\ocbox-warm-${hash}`
+  const roots = []
+  const configured = environment.XDG_RUNTIME_DIR
+  if (configured !== undefined && isAbsolute(configured)) roots.push(configured)
+  roots.push(tmpdir(), '/tmp')
+  for (const root of new Set(roots)) {
+    const candidate = join(root, `ocbox-${process.getuid?.() ?? 'user'}`, `warm-${hash}.sock`)
+    if (Buffer.byteLength(candidate) <= 100) return candidate
+  }
+  return join('/tmp', `ocbox-${process.getuid?.() ?? 'user'}`, `warm-${hash}.sock`)
+}
+
+function canConnect(socketPath) {
+  return new Promise((resolvePromise) => {
+    const socket = createConnection(socketPath)
+    let settled = false
+    const done = (value) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolvePromise(value)
+    }
+    socket.setTimeout(100, () => done(false))
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
+}
+
+async function waitForWarmDaemon(child, socketPath) {
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error(`Warm daemon exited before listening (${child.exitCode ?? child.signalCode})`)
+    if (await canConnect(socketPath)) return
+    if (Date.now() >= deadline) throw new Error('Warm daemon did not listen in time')
+    await delay(25)
+  }
+}
+
+/** Stops a child the harness started and resolves only once it has exited. */
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = once(child, 'exit')
+  child.kill()
+  await exited
 }
 
 const projectDirectory = await mkdtemp(join(tmpdir(), 'ocbox-cli-e2e-'))
@@ -190,7 +246,8 @@ async function hostedLifecycle() {
   let executionSessionId
   let executionSandboxId
   let executionStdout = ''
-  let activeChild
+  const activeChildren = new Set()
+  let warmDaemon
   const handler = async (request, response) => {
     const bodyChunks = []
     for await (const chunk of request) bodyChunks.push(chunk)
@@ -360,6 +417,11 @@ async function hostedLifecycle() {
   const origin = `http://127.0.0.1:${server.address().port}`
   const otherOrigin = `http://127.0.0.1:${otherServer.address().port}`
   environment.OCBOX_API_URL = origin
+  const warmSocket = warmSocketPathFor(environment, {
+    apiUrl: origin,
+    projectId: 'hosted_project',
+    stateDirectory: state,
+  })
   const credentials = new infrastructure.ProtectedFileCredentialStore(
     infrastructure.resolvePlatformPaths({
       platform: process.platform,
@@ -388,7 +450,10 @@ async function hostedLifecycle() {
     updatedAt: now,
   }
   const track = (pending) => {
-    activeChild = pending.child
+    const child = pending.child
+    activeChildren.add(child)
+    const forget = () => activeChildren.delete(child)
+    pending.then(forget, forget)
     return pending
   }
   const run = async (args, overrides = {}) => {
@@ -429,6 +494,24 @@ async function hostedLifecycle() {
     return parseEnvelope(result.stderr)
   }
   try {
+    // Start the optional warm daemon ourselves so the harness owns its pid and
+    // can wait for it to exit before deleting the temp root. Its cwd stays out
+    // of the root: on Windows a live process cwd keeps the directory locked.
+    warmDaemon = spawn(process.execPath, [join(repositoryRoot, 'dist', 'warm-daemon.js')], {
+      cwd: tmpdir(),
+      env: {
+        ...environment,
+        OCBOX_WARM_API_URL: origin,
+        OCBOX_WARM_IDLE_MS: '600000',
+        OCBOX_WARM_PROJECT_ID: 'hosted_project',
+        OCBOX_WARM_SOCKET: warmSocket,
+        OCBOX_WARM_STATE_DIR: state,
+        OCBOX_WARM_TTL_MS: '600000',
+      },
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    await waitForWarmDaemon(warmDaemon, warmSocket)
     await credentials.set(key, credential)
     await metadataStore.save(metadata)
     await success(['init', '--json'])
@@ -562,6 +645,15 @@ async function hostedLifecycle() {
         instance.close(done)
         instance.closeAllConnections()
       })
+    }
+    for (const child of activeChildren) await stopChild(child)
+    if (warmDaemon !== undefined) {
+      await stopChild(warmDaemon)
+      assert.equal(
+        warmDaemon.exitCode === null && warmDaemon.signalCode === null,
+        false,
+        'the warm daemon must exit before the temp root is removed',
+      )
     }
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
