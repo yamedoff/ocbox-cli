@@ -18,6 +18,12 @@ export interface WarmSocketPathOptions {
 /** Keeps a Unix socket path inside the platform's sockaddr limit. */
 const MAX_UNIX_SOCKET_PATH_BYTES = 100
 
+/** What a Windows client needs to find and authenticate to one daemon. */
+export interface WarmConnection {
+  readonly pipe: string
+  readonly secret: string
+}
+
 function runtimeRoots(environment: NodeJS.ProcessEnv): string[] {
   const roots: string[] = []
   // Environment is an index signature; bracket access is required by TypeScript.
@@ -35,7 +41,8 @@ function userSuffix(userId: number | undefined): string {
 /**
  * One daemon per API/project/state scope. The path never embeds the URL or a
  * token; only a truncated digest does, and the containing directory is
- * owner-only.
+ * owner-only. On Windows the daemon appends random bits to the returned pipe
+ * name and publishes the result with a connection secret.
  */
 export function warmSocketPath(
   scope: WarmSessionScope,
@@ -60,4 +67,23 @@ export function warmSocketPath(
 /** The owner-only directory that holds a Unix warm-session socket. */
 export function warmSocketDirectory(socketPath: string): string {
   return dirname(socketPath)
+}
+
+/**
+ * The per-user file that publishes one Windows daemon's random pipe name and
+ * connection secret. It lives under the state directory, whose ACL already
+ * limits it to the signed-in user.
+ */
+export function warmConnectionFile(stateDirectory: string, socketPath: string): string {
+  const hash = createHash('sha256').update(socketPath).digest('hex').slice(0, 24)
+  return join(stateDirectory, 'warm', `connection-${hash}.json`)
+}
+
+/** Parses a connection file defensively; anything unexpected means "no daemon". */
+export function parseWarmConnection(value: unknown): WarmConnection | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { pipe, secret } = value as { pipe?: unknown; secret?: unknown }
+  if (typeof pipe !== 'string' || pipe.length === 0) return null
+  if (typeof secret !== 'string' || secret.length === 0) return null
+  return { pipe, secret }
 }

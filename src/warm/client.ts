@@ -1,12 +1,19 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, lstatSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { HostedSessionCache } from '../providers/ocbox/session-cache.js'
 import { type HostedSession, HostedSessionSchema } from '../providers/ocbox/wire.js'
-import { warmSocketPath, type WarmSessionScope } from './paths.js'
+import {
+  parseWarmConnection,
+  type WarmConnection,
+  warmConnectionFile,
+  warmSocketPath,
+  type WarmSessionScope,
+} from './paths.js'
 import {
   encodeWarmMessage,
   type WarmRequest,
@@ -56,6 +63,15 @@ function isPrivateSocket(socketPath: string): boolean {
     return false
   }
 }
+interface WarmSocketConnection {
+  readonly secret: string | undefined
+  readonly socket: Socket
+}
+
+function withSecret(request: WarmRequest, secret: string | undefined): WarmRequest {
+  return secret === undefined ? request : { ...request, secret }
+}
+
 /** Opt out with OCBOX_WARM=0 for debugging or hosts that disallow daemons. */
 export function warmSessionsEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
   // Environment is an index signature; bracket access is required by TypeScript.
@@ -163,24 +179,39 @@ export class WarmSessionClient implements HostedSessionCache {
 
   async #request(request: WarmRequest): Promise<WarmResponse | null> {
     if (this.#closed) return null
-    const socket = await this.#connect()
-    if (socket === null) {
+    const connection = await this.#connect()
+    if (connection === null) {
       this.#start()
       return null
     }
     try {
-      return await this.#roundTrip(socket, request)
+      return await this.#roundTrip(connection.socket, withSecret(request, connection.secret))
     } catch {
       return null
     } finally {
-      socket.destroy()
+      connection.socket.destroy()
     }
   }
 
-  async #connect(): Promise<Socket | null> {
-    if (this.#platform !== 'win32' && !isPrivateSocket(this.#socketPath)) return null
+  async #connect(): Promise<WarmSocketConnection | null> {
+    let socketPath = this.#socketPath
+    let secret: string | undefined
+    if (this.#platform === 'win32') {
+      const connection = await this.#readConnection()
+      if (connection === null) return null
+      socketPath = connection.pipe
+      secret = connection.secret
+    } else if (!isPrivateSocket(socketPath)) {
+      return null
+    }
+    const socket = await this.#openSocket(socketPath)
+    if (socket === null) return null
+    return { secret, socket }
+  }
+
+  #openSocket(socketPath: string): Promise<Socket | null> {
     return new Promise((resolve) => {
-      const socket = createConnection(this.#socketPath)
+      const socket = createConnection(socketPath)
       let settled = false
       const done = (value: Socket | null): void => {
         if (settled) return
@@ -201,6 +232,18 @@ export class WarmSessionClient implements HostedSessionCache {
       // own listen path; unlinking it here could race a daemon that is starting.
       socket.once('error', () => done(null))
     })
+  }
+
+  async #readConnection(): Promise<WarmConnection | null> {
+    try {
+      const text = await readFile(
+        warmConnectionFile(this.#scope.stateDirectory, this.#socketPath),
+        'utf8',
+      )
+      return parseWarmConnection(JSON.parse(text))
+    } catch {
+      return null
+    }
   }
 
   #roundTrip(socket: Socket, request: WarmRequest): Promise<WarmResponse | null> {
@@ -240,9 +283,9 @@ export class WarmSessionClient implements HostedSessionCache {
   async #waitForSocket(timeoutMilliseconds: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMilliseconds
     for (;;) {
-      const socket = await this.#connect()
-      if (socket !== null) {
-        socket.destroy()
+      const connection = await this.#connect()
+      if (connection !== null) {
+        connection.socket.destroy()
         return true
       }
       if (Date.now() >= deadline || this.#closed) return false

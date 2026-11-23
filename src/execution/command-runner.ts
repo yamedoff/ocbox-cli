@@ -1,27 +1,28 @@
-import { OcboxError } from '../errors/index.js'
 import type { ExecEvent } from '../contracts.js'
+import { OcboxError } from '../errors/index.js'
 import {
   ExecArgumentError,
-  parseExecArguments,
   type ExecutionOutputMode,
   type ParsedExecArguments,
+  parseExecArguments,
 } from './cli-arguments.js'
 import {
   ExecutionInfrastructureError,
-  exitCodeForExecution,
   type ExecutionOutcome,
   type ExecutionOutcomeDetail,
+  exitCodeForExecution,
 } from './exit-policy.js'
 import {
   createExecutionEventSink,
-  writeExecutionCompletion,
   type ExecutionWritable,
+  writeExecutionCompletion,
+  writeExecutionDiagnostic,
 } from './output.js'
 import {
-  ExecutionService,
   type ExecutionCompletion,
-  type ExecutionRun,
   ExecutionContextError,
+  type ExecutionRun,
+  ExecutionService,
   type ExecutionServiceOptions,
   type ExecutionTarget,
 } from './service.js'
@@ -64,6 +65,10 @@ export type ExecutionTargetResolver = (
 
 export interface ExecutionCommandOptions extends ExecutionServiceOptions {
   readonly interrupts?: ExecutionInterruptSource
+  /** Reads the hosted execution ID for the target right after the start is accepted. */
+  readonly resolveExecutionId?:
+    | ((target: ExecutionTarget) => Promise<string | undefined>)
+    | undefined
   /**
    * Adapter-owned hook invocations must fail closed: a pre-start argument or
    * Session-resolution failure returns Claude Code's blocking exit 2 instead of
@@ -160,6 +165,17 @@ export async function runExecutionCommandResult(
   let mode = requestedOutputMode(input)
   let arguments_: ParsedExecArguments
   let run: ExecutionRun
+  let executionId: string | undefined
+  /**
+   * The provider clears its local-to-hosted execution mapping as soon as the
+   * event collection finishes, so the hosted ID is read once immediately after
+   * `start` returns. The started event waits for that read before it is printed.
+   */
+  let acceptedExecutionId: string | undefined
+  let releaseAcceptedId!: () => void
+  const acceptedIdReady = new Promise<void>((resolve) => {
+    releaseAcceptedId = resolve
+  })
   /**
    * Once a terminal envelope has been handed to the caller, streaming is closed:
    * later event emissions must stop. The gate is what keeps a stuck or
@@ -170,21 +186,42 @@ export async function runExecutionCommandResult(
   try {
     arguments_ = parseExecArguments(input)
     mode = arguments_.outputMode
+    for (const warning of arguments_.deprecationWarnings) {
+      await writeExecutionDiagnostic(io.stderr, warning)
+    }
     const target = await resolveTarget(arguments_)
     const service = new ExecutionService(options)
     run = await service.start(
       target,
       arguments_,
-      gatedSink(createExecutionEventSink(mode, io.stdout, io.stderr), () => {
-        if (terminalStreamAccepted) {
-          throw new ExecutionInfrastructureError('event_stream', new ExecutionStreamEndedError())
-        }
-        return true
-      }),
+      gatedSink(
+        createExecutionEventSink(mode, io.stdout, io.stderr, {
+          onExecutionId: (id) => {
+            executionId = id
+          },
+          resolveExecutionId: async () => {
+            await acceptedIdReady
+            return acceptedExecutionId
+          },
+        }),
+        () => {
+          if (terminalStreamAccepted) {
+            throw new ExecutionInfrastructureError('event_stream', new ExecutionStreamEndedError())
+          }
+          return true
+        },
+      ),
     )
+    try {
+      acceptedExecutionId = await options.resolveExecutionId?.(target)
+    } catch {
+      acceptedExecutionId = undefined
+    }
+    releaseAcceptedId()
   } catch (error) {
+    releaseAcceptedId()
     const completion = beforeStartFailure(error)
-    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
+    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr, { executionId })
     return {
       started: false,
       outcome: completion.outcome,
@@ -218,7 +255,7 @@ export async function runExecutionCommandResult(
         : { ...settled, outcome: { ...settled.outcome, detail } }
     terminal = true
     terminalStreamAccepted = true
-    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr)
+    await writeExecutionCompletion(mode, completion, io.stdout, io.stderr, { executionId })
     return {
       started: true,
       outcome: completion.outcome,
