@@ -1,6 +1,7 @@
 import type { SpawnOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, mkdtemp, rm, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -80,14 +81,18 @@ async function startServer(
   provider: WarmSessionProvider,
   options: {
     idleTimeoutMilliseconds?: number
+    platform?: NodeJS.Platform
     sessionTtlMilliseconds?: number
+    stateDirectory?: string
   } = {},
 ): Promise<WarmSessionServer> {
   const server = new WarmSessionServer({
     idleTimeoutMilliseconds: options.idleTimeoutMilliseconds ?? 5_000,
+    platform: options.platform ?? process.platform,
     provider: () => provider,
     sessionTtlMilliseconds: options.sessionTtlMilliseconds ?? 5_000,
     socketPath,
+    stateDirectory: options.stateDirectory,
   })
   await server.listen()
   servers.push(server)
@@ -98,12 +103,85 @@ function clientFor(
   scope: WarmSessionScope,
   environment: NodeJS.ProcessEnv,
   socketPath: string,
+  platform: NodeJS.Platform = process.platform,
 ): WarmSessionClient {
   return new WarmSessionClient({
     ...scope,
     environment,
-    platform: process.platform,
+    platform,
     socketPath,
+  })
+}
+
+/**
+ * A base path short enough for a Unix socket plus the daemon's random suffix
+ * when the test forces win32 on a non-Windows host; on Windows it is a pipe.
+ */
+async function handshakeScopeFor(suffix: string): Promise<{
+  directory: string
+  environment: NodeJS.ProcessEnv
+  scope: WarmSessionScope
+  socketPath: string
+}> {
+  const root = process.platform === 'win32' ? tmpdir() : '/tmp'
+  const directory = await mkdtemp(join(root, 'ocbox-warm-'))
+  directories.push(directory)
+  const environment: NodeJS.ProcessEnv = { XDG_RUNTIME_DIR: directory }
+  const scope: WarmSessionScope = {
+    apiUrl: 'https://api.test',
+    projectId: `${HOSTED_PROJECT}_${suffix}`,
+    stateDirectory: join(directory, 'state'),
+  }
+  return {
+    directory,
+    environment,
+    scope,
+    socketPath:
+      process.platform === 'win32'
+        ? warmSocketPath(scope, { platform: 'win32', userId: 4321 })
+        : join(directory, 'warm.sock'),
+  }
+}
+
+interface TestConnection {
+  readonly file: string
+  readonly pipe: string
+  readonly secret: string
+}
+
+async function connectionFor(stateDirectory: string): Promise<TestConnection> {
+  const directory = join(stateDirectory, 'warm')
+  const names = await readdir(directory)
+  const file = join(directory, names.find((name) => name.endsWith('.json')) ?? '')
+  const parsed: unknown = JSON.parse(await readFile(file, 'utf8'))
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('The test expected a published connection')
+  }
+  const { pipe, secret } = parsed as { pipe?: unknown; secret?: unknown }
+  if (typeof pipe !== 'string' || typeof secret !== 'string') {
+    throw new Error('The test expected a published connection')
+  }
+  return { file, pipe, secret }
+}
+
+function rawRequest(pipe: string, message: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = createConnection(pipe)
+    let data = ''
+    let settled = false
+    const done = (value: string): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(1_000, () => done('timeout'))
+    socket.on('data', (chunk) => {
+      data += chunk.toString()
+    })
+    socket.once('error', () => done(data))
+    socket.once('close', () => done(data))
+    socket.once('connect', () => socket.write(message))
   })
 }
 
@@ -111,7 +189,7 @@ describe('warm session daemon', () => {
   it('reuses one owned Session observation across separate client processes', async () => {
     const { environment, scope, socketPath } = await scopeFor('reuse')
     const provider = new FakeProvider()
-    await startServer(socketPath, provider)
+    await startServer(socketPath, provider, { stateDirectory: scope.stateDirectory })
     const first = clientFor(scope, environment, socketPath)
     const second = clientFor(scope, environment, socketPath)
 
@@ -142,7 +220,7 @@ describe('warm session daemon', () => {
       localSessionId: LOCAL_IDS.session,
       spec: testSpec() as never,
     })
-    await startServer(socketPath, daemonProvider)
+    await startServer(socketPath, daemonProvider, { stateDirectory: scope.stateDirectory })
     const cache = clientFor(scope, environment, socketPath)
     const seed = (provider: OcboxSandboxProvider): void => {
       provider.seedForTests({
@@ -184,7 +262,7 @@ describe('warm session daemon', () => {
   it('accepts a direct read so the next command can reuse it', async () => {
     const { environment, scope, socketPath } = await scopeFor('remember')
     const provider = new FakeProvider()
-    await startServer(socketPath, provider)
+    await startServer(socketPath, provider, { stateDirectory: scope.stateDirectory })
     const first = clientFor(scope, environment, socketPath)
     await first.remember(HOSTED_SESSION, sessionFixture())
     const second = clientFor(scope, environment, socketPath)
@@ -205,7 +283,9 @@ describe('warm session daemon', () => {
       socketPath,
       spawn: () => {
         setTimeout(() => {
-          void startServer(socketPath, provider).catch(() => undefined)
+          void startServer(socketPath, provider, {
+            stateDirectory: scope.stateDirectory,
+          }).catch(() => undefined)
         }, 30)
         return { unref: () => undefined }
       },
@@ -286,6 +366,7 @@ describe('warm session daemon', () => {
     const server = await startServer(socketPath, provider, {
       idleTimeoutMilliseconds: 50,
       sessionTtlMilliseconds: 10,
+      stateDirectory: scope.stateDirectory,
     })
     const client = clientFor(scope, environment, socketPath)
 
@@ -324,5 +405,117 @@ describe('warm session daemon', () => {
     const socketMode = (await stat(socketPath)).mode & 0o777
     expect(directoryMode).toBe(0o700)
     expect(socketMode).toBe(0o600)
+  })
+})
+
+describe('windows named-pipe owner check', () => {
+  it('serves a client that presents the published secret', async () => {
+    const { environment, scope, socketPath } = await handshakeScopeFor('win32-secret')
+    const provider = new FakeProvider()
+    await startServer(socketPath, provider, {
+      platform: 'win32',
+      stateDirectory: scope.stateDirectory,
+    })
+    const client = clientFor(scope, environment, socketPath, 'win32')
+
+    expect((await client.get(HOSTED_SESSION))?.id).toBe(HOSTED_SESSION)
+    expect(provider.calls).toBe(1)
+
+    const connection = await connectionFor(scope.stateDirectory)
+    expect(connection.pipe).not.toBe(socketPath)
+    expect(connection.pipe.startsWith(`${socketPath}-`)).toBe(true)
+    // At least 128 random bits in the pipe name.
+    expect(connection.pipe.slice(socketPath.length + 1)).toMatch(/^[0-9a-f]{32,}$/)
+    expect(connection.secret).toMatch(/^[0-9a-f]{64}$/)
+    if (process.platform !== 'win32') {
+      const mode = (await stat(connection.file)).mode & 0o777
+      expect(mode).toBe(0o600)
+    }
+  })
+
+  it('does not answer a request without the secret and the client falls back', async () => {
+    const { environment, scope, socketPath } = await handshakeScopeFor('win32-no-secret')
+    const provider = new FakeProvider()
+    await startServer(socketPath, provider, {
+      platform: 'win32',
+      stateDirectory: scope.stateDirectory,
+    })
+    const connection = await connectionFor(scope.stateDirectory)
+
+    const reply = await rawRequest(connection.pipe, `${JSON.stringify({ op: 'ping', v: 1 })}\n`)
+    expect(reply).toBe('')
+
+    // A published file without a secret cannot be used: the CLI falls back.
+    await writeFile(connection.file, JSON.stringify({ pipe: connection.pipe }), { mode: 0o600 })
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntryExists: () => false,
+      environment,
+      platform: 'win32',
+      socketPath,
+    })
+    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
+    expect(provider.calls).toBe(0)
+  })
+
+  it('does not answer a request with a wrong secret and the client falls back', async () => {
+    const { environment, scope, socketPath } = await handshakeScopeFor('win32-wrong-secret')
+    const provider = new FakeProvider()
+    await startServer(socketPath, provider, {
+      platform: 'win32',
+      stateDirectory: scope.stateDirectory,
+    })
+    const connection = await connectionFor(scope.stateDirectory)
+    const wrongSecret = '00'.repeat(32)
+
+    const reply = await rawRequest(
+      connection.pipe,
+      `${JSON.stringify({ op: 'ping', secret: wrongSecret, v: 1 })}\n`,
+    )
+    expect(reply).toBe('')
+
+    await writeFile(
+      connection.file,
+      JSON.stringify({ pipe: connection.pipe, secret: wrongSecret }),
+      { mode: 0o600 },
+    )
+    const client = new WarmSessionClient({
+      ...scope,
+      daemonEntryExists: () => false,
+      environment,
+      platform: 'win32',
+      socketPath,
+    })
+    await expect(client.get(HOSTED_SESSION)).resolves.toBeNull()
+    expect(provider.calls).toBe(0)
+  })
+
+  it('makes the old secret fail after a restart', async () => {
+    const { environment, scope, socketPath } = await handshakeScopeFor('win32-restart')
+    const provider = new FakeProvider()
+    const first = await startServer(socketPath, provider, {
+      platform: 'win32',
+      stateDirectory: scope.stateDirectory,
+    })
+    const oldConnection = await connectionFor(scope.stateDirectory)
+    await first.close()
+
+    await startServer(socketPath, provider, {
+      platform: 'win32',
+      stateDirectory: scope.stateDirectory,
+    })
+    const newConnection = await connectionFor(scope.stateDirectory)
+    expect(newConnection.pipe).not.toBe(oldConnection.pipe)
+    expect(newConnection.secret).not.toBe(oldConnection.secret)
+
+    const reply = await rawRequest(
+      newConnection.pipe,
+      `${JSON.stringify({ op: 'ping', secret: oldConnection.secret, v: 1 })}\n`,
+    )
+    expect(reply).toBe('')
+
+    const client = clientFor(scope, environment, socketPath, 'win32')
+    expect((await client.get(HOSTED_SESSION))?.id).toBe(HOSTED_SESSION)
+    expect(provider.calls).toBe(1)
   })
 })
