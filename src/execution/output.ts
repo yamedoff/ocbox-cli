@@ -56,20 +56,66 @@ function eventEnvelope(event: ExecEvent): object {
   return { schemaVersion: 1, kind: 'event', outcome: null, event: event.type, ...event }
 }
 
+/** A human diagnostic that must never enter the command's stdout. */
+export async function writeExecutionDiagnostic(
+  stream: ExecutionWritable,
+  message: string,
+): Promise<void> {
+  await write(stream, `${message}\n`)
+}
+
+function executionAcceptedLine(executionId: string): string {
+  return `execution ${executionId} accepted\n`
+}
+
+export interface ExecutionEventSinkOptions {
+  /** Reports the execution ID carried by the accepted stream, before output is written. */
+  readonly onExecutionId?: ((executionId: string) => void) | undefined
+  /**
+   * Maps the CLI-local execution ID carried by the stream to the ID the hosted
+   * read and cancel commands accept. The mapping is resolved before any command
+   * output is written.
+   */
+  readonly resolveExecutionId?:
+    | ((localExecutionId: string) => Promise<string | undefined>)
+    | undefined
+}
+
 /** Writes command output directly; it is never sent through logs or the general redactor. */
 export function createExecutionEventSink(
   mode: ExecutionOutputMode,
   stdout: ExecutionWritable,
   stderr: ExecutionWritable,
+  options: ExecutionEventSinkOptions = {},
 ): (event: ExecEvent) => Promise<void> {
+  let acceptedExecutionId: string | undefined
+  async function accept(event: ExecEvent): Promise<string | undefined> {
+    if (event.type !== 'started' || acceptedExecutionId !== undefined) return acceptedExecutionId
+    const resolved = await options.resolveExecutionId?.(event.executionId)
+    acceptedExecutionId = resolved ?? event.executionId
+    options.onExecutionId?.(acceptedExecutionId)
+    return acceptedExecutionId
+  }
   if (mode === 'human') {
     return async (event) => {
+      if (event.type === 'started') {
+        const executionId = await accept(event)
+        if (executionId !== undefined) await write(stderr, executionAcceptedLine(executionId))
+        return
+      }
       if (event.type === 'stdout') await write(stdout, event.data)
       if (event.type === 'stderr') await write(stderr, event.data)
     }
   }
-  if (mode === 'json') return async () => {}
-  return (event) => write(stdout, `${JSON.stringify(eventEnvelope(event))}\n`)
+  if (mode === 'json') {
+    return async (event) => {
+      await accept(event)
+    }
+  }
+  return async (event) => {
+    await accept(event)
+    await write(stdout, `${JSON.stringify(eventEnvelope(event))}\n`)
+  }
 }
 
 /** Shared result envelope; typed pre-start detail keeps structured output actionable. */
@@ -84,12 +130,17 @@ function resultEnvelope(outcome: ExecutionOutcome): Record<string, unknown> {
   }
 }
 
+export interface ExecutionCompletionContext {
+  readonly executionId?: string | undefined
+}
+
 /** Emits the bounded final envelope for JSON, or a safe terminal diagnostic for human mode. */
 export async function writeExecutionCompletion(
   mode: ExecutionOutputMode,
   completion: ExecutionCompletion,
   stdout: ExecutionWritable,
   stderr: ExecutionWritable,
+  context: ExecutionCompletionContext = {},
 ): Promise<void> {
   if (mode === 'jsonl') {
     if (completion.outcome.kind === 'infrastructure_error' || completion.output === null) {
@@ -124,5 +175,12 @@ export async function writeExecutionCompletion(
           stdout: completion.output.stdout,
           stderr: completion.output.stderr,
         }
-  await write(stdout, `${JSON.stringify(envelope)}\n`)
+  await write(
+    stdout,
+    `${JSON.stringify(
+      context.executionId === undefined
+        ? envelope
+        : { ...envelope, executionId: context.executionId },
+    )}\n`,
+  )
 }

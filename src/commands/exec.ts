@@ -1,11 +1,19 @@
+import { resolve } from 'node:path'
 import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
-import { createLifecycleService, type RuntimeFlags } from '../cli/runtime.js'
 import {
+  createLifecycleService,
+  loadProjectConfig,
+  type RuntimeFlags,
+  resolveAccountStateDirectory,
+  resolveStateDirectory,
+} from '../cli/runtime.js'
+import {
+  type ExecutionCommandIo,
   processInterrupts,
   runExecutionCommand,
-  type ExecutionCommandIo,
 } from '../execution/index.js'
+import { type LifecycleProjectState, LifecycleStore, projectIdForPath } from '../lifecycle/index.js'
 
 const HOST_VALUE_FLAGS = new Set(['config', 'state-dir'])
 const HOST_BOOLEAN_FLAGS = new Set(['no-color'])
@@ -38,6 +46,44 @@ export function executionTokens(argv: readonly string[]): string[] {
   return tokens
 }
 
+/** Resolves the hosted ID recorded for a local Sandbox after an execution starts. */
+export function hostedExecutionIdForSandbox(
+  mappings: LifecycleProjectState['hostedMappings'],
+  sandboxId: string | undefined,
+): string | undefined {
+  if (sandboxId === undefined) return undefined
+  for (const scope of Object.values(mappings)) {
+    for (const [id, mapping] of Object.entries(scope)) {
+      if (id === sandboxId && mapping.lastExecutionId !== undefined) return mapping.lastExecutionId
+    }
+  }
+  return undefined
+}
+
+/**
+ * Lazily builds the lifecycle service and the store that records the hosted
+ * execution mapping. `ocbox execution get` reads the hosted API directly, so
+ * `exec` must print the hosted ID rather than the CLI-local event ID.
+ */
+async function lifecycleContext(runtime: RuntimeFlags): Promise<{
+  readonly service: Awaited<ReturnType<typeof createLifecycleService>>
+  readonly store: LifecycleStore
+}> {
+  const config = await loadProjectConfig(runtime)
+  const stateDirectory = resolveStateDirectory(runtime)
+  const lifecycleStateDirectory = await resolveAccountStateDirectory(
+    runtime,
+    stateDirectory,
+    config.provider.name === 'ocbox',
+  )
+  return {
+    service: await createLifecycleService(runtime, undefined, lifecycleStateDirectory, {
+      warmSessions: true,
+    }),
+    store: new LifecycleStore(lifecycleStateDirectory, projectIdForPath(resolve(process.cwd()))),
+  }
+}
+
 /**
  * `ocbox exec` never invokes a local shell. Structured argv is carried unchanged
  * to the execution runner, which drives the provider-neutral streaming/exit
@@ -51,9 +97,24 @@ export default class Exec extends OcboxCommand {
   static override flags = {
     ...runtimeFlags,
     session: Flags.string({ description: 'Session ID; defaults to the selected Session' }),
-    cwd: Flags.string({ description: 'Normalized absolute sandbox working directory' }),
-    timeout: Flags.string({ description: 'Positive execution timeout in milliseconds' }),
-    env: Flags.string({ multiple: true, description: 'Repeatable non-secret NAME=VALUE setting' }),
+    cwd: Flags.string({
+      description:
+        'Normalized absolute sandbox working directory; the hosted service refuses this flag, so omit it and use the box workspace (the default)',
+    }),
+    timeout: Flags.string({
+      hidden: true,
+      description:
+        'Deprecated millisecond alias for `--timeout-seconds`, for example `--timeout 300000` is 5 minutes; it still works but warns',
+    }),
+    'timeout-seconds': Flags.string({
+      description:
+        'Positive execution timeout in seconds, for example `--timeout-seconds 300` is 5 minutes; sent to the hosted service as timeoutSeconds unchanged, and mutually exclusive with `--timeout`',
+    }),
+    env: Flags.string({
+      multiple: true,
+      description:
+        'Repeatable non-secret NAME=VALUE setting; the hosted service refuses this flag, so omit it and set the value in the command or image',
+    }),
     shell: Flags.string({ description: 'Explicit /bin/bash -lc command string' }),
   }
 
@@ -61,14 +122,29 @@ export default class Exec extends OcboxCommand {
     const { flags } = await this.parse(Exec)
     const runtime: RuntimeFlags = flags
     const io: ExecutionCommandIo = { stdout: process.stdout, stderr: process.stderr }
+    let context: ReturnType<typeof lifecycleContext> | undefined
+    const current = (): ReturnType<typeof lifecycleContext> => {
+      context ??= lifecycleContext(runtime)
+      return context
+    }
     const exitCode = await runExecutionCommand(
       executionTokens(this.argv),
       async (arguments_) =>
-        (
-          await createLifecycleService(runtime, undefined, undefined, { warmSessions: true })
-        ).executionTarget(arguments_.sessionId ?? undefined),
+        (await current()).service.executionTarget(arguments_.sessionId ?? undefined),
       io,
-      { interrupts: processInterrupts },
+      {
+        interrupts: processInterrupts,
+        resolveExecutionId: async (target) => {
+          try {
+            const { store } = await current()
+            const state = await store.load()
+            return hostedExecutionIdForSandbox(state.hostedMappings, target.sandbox?.id)
+          } catch {
+            // Fall back to the local ID rather than breaking execution output.
+          }
+          return undefined
+        },
+      },
     )
     process.exitCode = exitCode
   }

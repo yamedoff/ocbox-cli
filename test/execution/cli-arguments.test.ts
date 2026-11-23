@@ -53,6 +53,37 @@ describe('exec CLI grammar', () => {
     })
   })
 
+  it('accepts --timeout-seconds as the MCP/API unit', () => {
+    expect(parseExecArguments(['--timeout-seconds', '300', '--', 'node'])).toMatchObject({
+      timeoutMilliseconds: 300_000,
+    })
+    expect(parseExecArguments(['--timeout-seconds=300', '--', 'node'])).toMatchObject({
+      timeoutMilliseconds: 300_000,
+    })
+  })
+
+  it('keeps --timeout in milliseconds and warns that it is deprecated', () => {
+    const parsed = parseExecArguments(['--timeout', '300000', '--', 'node'])
+    expect(parsed).toMatchObject({ timeoutMilliseconds: 300_000 })
+    expect(parsed.deprecationWarnings).toEqual([
+      '--timeout is deprecated; use --timeout-seconds (seconds) instead',
+    ])
+    expect(
+      parseExecArguments(['--timeout-seconds', '300', '--', 'node']).deprecationWarnings,
+    ).toEqual([])
+  })
+
+  it('rejects --timeout together with --timeout-seconds in either order', () => {
+    for (const input of [
+      ['--timeout', '300000', '--timeout-seconds', '300', '--', 'node'],
+      ['--timeout-seconds', '300', '--timeout', '300000', '--', 'node'],
+    ]) {
+      expect(() => parseExecArguments(input)).toThrow(
+        '--timeout and --timeout-seconds are mutually exclusive',
+      )
+    }
+  })
+
   it('keeps a value-bearing token after -- out of the option grammar', () => {
     const parsed = parseExecArguments(['--env=NODE_ENV=test', '--', '--env=MALICIOUS=1'])
     expect(parsed.environment).toEqual({ NODE_ENV: 'test' })
