@@ -71,6 +71,14 @@ function executionAcceptedLine(executionId: string): string {
 export interface ExecutionEventSinkOptions {
   /** Reports the execution ID carried by the accepted stream, before output is written. */
   readonly onExecutionId?: ((executionId: string) => void) | undefined
+  /**
+   * Maps the CLI-local execution ID carried by the stream to the ID the hosted
+   * read and cancel commands accept. The mapping is resolved before any command
+   * output is written.
+   */
+  readonly resolveExecutionId?:
+    | ((localExecutionId: string) => Promise<string | undefined>)
+    | undefined
 }
 
 /** Writes command output directly; it is never sent through logs or the general redactor. */
@@ -80,11 +88,19 @@ export function createExecutionEventSink(
   stderr: ExecutionWritable,
   options: ExecutionEventSinkOptions = {},
 ): (event: ExecEvent) => Promise<void> {
+  let acceptedExecutionId: string | undefined
+  async function accept(event: ExecEvent): Promise<string | undefined> {
+    if (event.type !== 'started' || acceptedExecutionId !== undefined) return acceptedExecutionId
+    const resolved = await options.resolveExecutionId?.(event.executionId)
+    acceptedExecutionId = resolved ?? event.executionId
+    options.onExecutionId?.(acceptedExecutionId)
+    return acceptedExecutionId
+  }
   if (mode === 'human') {
     return async (event) => {
-      options.onExecutionId?.(event.executionId)
       if (event.type === 'started') {
-        await write(stderr, executionAcceptedLine(event.executionId))
+        const executionId = await accept(event)
+        if (executionId !== undefined) await write(stderr, executionAcceptedLine(executionId))
         return
       }
       if (event.type === 'stdout') await write(stdout, event.data)
@@ -93,11 +109,11 @@ export function createExecutionEventSink(
   }
   if (mode === 'json') {
     return async (event) => {
-      options.onExecutionId?.(event.executionId)
+      await accept(event)
     }
   }
   return async (event) => {
-    options.onExecutionId?.(event.executionId)
+    await accept(event)
     await write(stdout, `${JSON.stringify(eventEnvelope(event))}\n`)
   }
 }

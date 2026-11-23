@@ -123,6 +123,34 @@ describe('execution command runner', () => {
     expect(output.stderr.text()).toMatch(/^execution [0-9a-f-]{36} accepted\n$/u)
   })
 
+  it('prints the hosted execution ID returned by the resolver', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--', process.execPath, '-e', 'process.stdout.write("program bytes")'],
+      () => target(),
+      output,
+      { resolveExecutionId: async () => 'exec_hosted_123' },
+    )
+    expect(exitCode).toBe(0)
+    expect(output.stdout.text()).toBe('program bytes')
+    expect(output.stderr.text()).toBe('execution exec_hosted_123 accepted\n')
+  })
+
+  it('carries the resolved hosted execution ID in the JSON result', async () => {
+    const output = io()
+    const exitCode = await runExecutionCommand(
+      ['--json', '--', process.execPath, '-e', 'process.exit(0)'],
+      () => target(),
+      output,
+      { resolveExecutionId: async () => 'exec_hosted_123' },
+    )
+    expect(exitCode).toBe(0)
+    expect(JSON.parse(output.stdout.text())).toMatchObject({
+      outcome: 'remote_result',
+      executionId: 'exec_hosted_123',
+    })
+  })
+
   it('warns on stderr for the deprecated millisecond timeout', async () => {
     const output = io()
     const exitCode = await runExecutionCommand(

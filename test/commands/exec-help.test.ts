@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import Exec from '../../src/commands/exec.js'
+import Exec, { hostedExecutionIdFromMappings } from '../../src/commands/exec.js'
 import Pause from '../../src/commands/pause.js'
 import SyncDiff from '../../src/commands/sync/diff.js'
 import SyncPull from '../../src/commands/sync/pull.js'
 import SyncRecover from '../../src/commands/sync/recover.js'
+import type { LifecycleProjectState } from '../../src/lifecycle/index.js'
 
 function flagDescription(
   Command: { readonly flags: Record<string, unknown> },
@@ -20,6 +21,17 @@ describe('exec help', () => {
     expect(lines[0]).toContain('ocbox exec -- npm test')
     expect(Exec.description).toContain("box's workspace folder")
     expect(Exec.description).toContain('ocbox sync push')
+  })
+
+  it('resolves the hosted execution ID recorded for a local execution', () => {
+    const mappings = {
+      scope: {
+        sandbox: { lastExecutionId: 'exec_hosted', lastLocalExecutionId: 'exec_local' },
+        other: { lastExecutionId: 'exec_other' },
+      },
+    } as unknown as LifecycleProjectState['hostedMappings']
+    expect(hostedExecutionIdFromMappings(mappings, 'exec_local')).toBe('exec_hosted')
+    expect(hostedExecutionIdFromMappings(mappings, 'missing')).toBeUndefined()
   })
 
   it('states the timeout unit with an example and hides the deprecated alias', () => {

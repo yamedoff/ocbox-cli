@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join, matchesGlob } from 'node:path'
-import ignore, { type Ignore } from 'ignore'
+import ignore from 'ignore'
 import {
   builtInExclusion,
   type ExclusionReason,
@@ -31,7 +31,12 @@ async function readRuleFile(
   return parseIgnoreRules(contents, source, { allowAnchored: true })
 }
 
-async function readGitMatcher(path: string): Promise<Ignore | null> {
+/** The subset of the `ignore` matcher this module needs, kept local so the public declarations never import the package. */
+interface GitignoreMatcher {
+  test(path: string): { readonly ignored: boolean; readonly unignored: boolean }
+}
+
+async function readGitMatcher(path: string): Promise<GitignoreMatcher | null> {
   let contents: string
   try {
     contents = await readFile(path, 'utf8')
@@ -49,9 +54,9 @@ async function readGitMatcher(path: string): Promise<Ignore | null> {
  */
 export interface LoadedIgnoreRules {
   readonly root: string
-  readonly infoExclude: Ignore | null
+  readonly infoExclude: GitignoreMatcher | null
   readonly userRuleGroups: readonly (readonly IgnoreRule[])[]
-  readonly gitignoreByFolder: Map<string, Promise<Ignore | null>>
+  readonly gitignoreByFolder: Map<string, Promise<GitignoreMatcher | null>>
 }
 
 /**
@@ -76,7 +81,10 @@ export async function loadIgnoreRuleGroups(
   }
 }
 
-async function gitignoreFor(rules: LoadedIgnoreRules, folder: string): Promise<Ignore | null> {
+async function gitignoreFor(
+  rules: LoadedIgnoreRules,
+  folder: string,
+): Promise<GitignoreMatcher | null> {
   const cached = rules.gitignoreByFolder.get(folder)
   if (cached !== undefined) return cached
   const path =
@@ -90,7 +98,7 @@ async function gitignoreFor(rules: LoadedIgnoreRules, folder: string): Promise<I
 
 /** Applies one `.gitignore` matcher to a path relative to that file's folder. */
 function gitDecision(
-  matcher: Ignore,
+  matcher: GitignoreMatcher,
   base: string,
   path: ManifestPath,
   isDirectory: boolean,

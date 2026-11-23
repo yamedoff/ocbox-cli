@@ -65,6 +65,10 @@ export type ExecutionTargetResolver = (
 
 export interface ExecutionCommandOptions extends ExecutionServiceOptions {
   readonly interrupts?: ExecutionInterruptSource
+  /** Maps the CLI-local execution ID to the hosted read/cancel ID, when one exists. */
+  readonly resolveExecutionId?:
+    | ((localExecutionId: string) => Promise<string | undefined>)
+    | undefined
   /**
    * Adapter-owned hook invocations must fail closed: a pre-start argument or
    * Session-resolution failure returns Claude Code's blocking exit 2 instead of
@@ -185,6 +189,7 @@ export async function runExecutionCommandResult(
           onExecutionId: (id) => {
             executionId = id
           },
+          resolveExecutionId: options.resolveExecutionId,
         }),
         () => {
           if (terminalStreamAccepted) {
