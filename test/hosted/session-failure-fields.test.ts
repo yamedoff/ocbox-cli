@@ -99,6 +99,37 @@ describe('hosted session failure fields', () => {
     )
   })
 
+  it('carries the fields in the session get JSON result envelope', () => {
+    const session = HostedSessionRuntimeSchema.parse(
+      sessionBody({
+        reasonCode: 'user_active_limit',
+        nextStep: NEXT_STEP,
+        limitName: 'boxes_per_account',
+        limitValue: 1,
+        retryAfterSeconds: 30,
+      }),
+    )
+    const stdout = new MemoryStream(false)
+    const writer = new OutputWriter({
+      mode: 'json',
+      stdout,
+      stderr: new MemoryStream(false),
+    })
+
+    writer.result('session.inspected', { session }, { humanMessage: sessionLine(session) })
+
+    const envelope = JSON.parse(stdout.value) as {
+      data: { session: { failure?: Record<string, unknown> } }
+    }
+    expect(envelope.data.session.failure).toEqual({
+      reasonCode: 'user_active_limit',
+      nextStep: NEXT_STEP,
+      limitName: 'boxes_per_account',
+      limitValue: 1,
+      retryAfterSeconds: 30,
+    })
+  })
+
   it('keeps every refusal field, including when to retry, on the mapped error', () => {
     const base = new OcboxError({
       code: 'USAGE_LIMIT',
