@@ -128,23 +128,27 @@ Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); uploaded 1 blob(
 hello.txt
 ```
 
-Dependency and build folders such as `node_modules` are left out on purpose;
-when a lockfile is pushed, the output ends with the install command to run in
-the box.
+Dependency and build folders such as `node_modules` are left out on purpose.
+The push names them (`Left out: node_modules (dependencies)`), says
+`Dependencies are not uploaded; install them on the box.`, and, when a root
+lockfile is pushed, ends with the install step for the box (`Next: ocbox exec --
+npm ci` for npm).
 
 ### 6. Run a command and read its output
 
 ```sh
-ocbox exec --timeout 60000 -- cat hello.txt
+ocbox exec --timeout-seconds 60 -- cat hello.txt
 ```
 
 ```text
+execution exe_9d6b3eb74aae3741801b93a37e4ff2 accepted
 hello from the box
 ```
 
-`--timeout 60000` bounds the run at 60 seconds. The command runs in the box's
-workspace, where `sync push` put the files. Tokens after `--` are passed to the
-program unchanged.
+`--timeout-seconds 60` bounds the run at 60 seconds. The command runs in the
+box's workspace, where `sync push` put the files. Tokens after `--` are passed
+to the program unchanged. The execution ID lets you reattach after a disconnect
+with `ocbox execution get <id>`.
 
 ### 7. Stop the box
 
