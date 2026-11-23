@@ -90,7 +90,7 @@ function parseTimeout(value: string): number {
   return milliseconds
 }
 
-/** `--timeout-seconds` is the MCP/API unit; it becomes milliseconds only at the provider boundary. */
+/** `--timeout-seconds` is the MCP/API unit; the internal millisecond value maps back to whole seconds at the provider boundary. */
 function parseTimeoutSeconds(value: string): number {
   if (!/^[1-9][0-9]*$/.test(value)) {
     throw new ExecArgumentError('--timeout-seconds must be a positive integer in seconds')
