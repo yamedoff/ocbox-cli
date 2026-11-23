@@ -60,9 +60,10 @@ remote terminal result arrives, that result remains authoritative. When the
 provider accepts the command, human mode writes one stderr line,
 `execution <id> accepted`, before any command output, and never adds it to the
 program's stdout. `--json` carries the same `executionId` as a result field
-instead of a line. The printed ID is the hosted execution ID that `execution get`
-and `cancel` accept for the same run; `exec` resolves it from the provider's
-recorded mapping before writing the line. A cancellation observed through the event
+instead of a line. On the hosted provider, the printed ID is the hosted execution ID
+that `execution get` and `cancel` accept for the same run; `exec` resolves it from
+the provider's recorded mapping before writing the line. The fake provider prints
+its local execution ID. A cancellation observed through the event
 stream or Execution state is the `cancelled` outcome, not an infrastructure
 timeout.
 

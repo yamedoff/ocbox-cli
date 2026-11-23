@@ -78,8 +78,9 @@ Every mutating MCP tool requires `idempotencyKey` in the arguments (or an
   `timeoutSeconds` unchanged. The millisecond `--timeout` is a hidden,
   deprecated alias that still works and warns; the two flags are mutually
   exclusive, so `--timeout 300000` and `--timeout-seconds 300` both mean five
-  minutes. `ocbox exec` prints `execution <id> accepted` on stderr, so the ID
-  works with `ocbox execution get` and `ocbox cancel`. The CLI always waits for
+  minutes. On the hosted provider, `ocbox exec` prints `execution <id> accepted`
+  on stderr, so the ID works with `ocbox execution get` and `ocbox cancel`. The
+  fake provider prints its local execution ID. The CLI always waits for
   the command to finish and streams its output, so it has no `wait` flag.
 - `session_create`: the MCP `requestedSpec.memory` is in MiB, while
   `ocbox start --memory` is in bytes, matching the existing CLI resource flags.
