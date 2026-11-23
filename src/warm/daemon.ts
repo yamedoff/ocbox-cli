@@ -85,10 +85,10 @@ function errorResponse(error: unknown): WarmResponse {
 }
 
 /**
- * Local, owner-only socket that keeps one owned hosted Session observation and
- * the API client warm for later CLI commands. It never writes session state to
- * disk and exits after a bounded idle period; every miss falls back to the
- * CLI's direct API read.
+ * Local, owner-only socket (an authenticated named pipe on Windows) that keeps
+ * one owned hosted Session observation and the API client warm for later CLI
+ * commands. It never writes session state to disk and exits after a bounded
+ * idle period; every miss falls back to the CLI's direct API read.
  */
 export class WarmSessionServer {
   readonly #socketPath: string

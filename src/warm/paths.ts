@@ -41,7 +41,8 @@ function userSuffix(userId: number | undefined): string {
 /**
  * One daemon per API/project/state scope. The path never embeds the URL or a
  * token; only a truncated digest does, and the containing directory is
- * owner-only.
+ * owner-only. On Windows the daemon appends random bits to the returned pipe
+ * name and publishes the result with a connection secret.
  */
 export function warmSocketPath(
   scope: WarmSessionScope,
