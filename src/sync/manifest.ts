@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { lstat, opendir, open, realpath } from 'node:fs/promises'
+import { lstat, open, opendir, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
-import { type ExclusionReason, exclusionForPath, type IgnoreRule } from './exclusions.js'
+import type { ExclusionReason } from './exclusions.js'
+import { type LoadedIgnoreRules, sourceExclusionForPath } from './ignore-rules.js'
 import {
   findPathCollisions,
   hasControlCharacter,
@@ -115,7 +116,7 @@ export interface SourceManifest {
 export interface ScanManifestOptions {
   /** Exact local state paths pruned before scanning, independent of user rules. */
   readonly excludePaths?: readonly string[]
-  readonly ignoreRuleGroups?: readonly (readonly IgnoreRule[])[]
+  readonly ignoreRuleGroups?: LoadedIgnoreRules
   readonly maxBytes?: number
   readonly maxDirectories?: number
   readonly maxFileBytes?: number
@@ -383,9 +384,11 @@ export async function scanSourceManifest(
         addBlocked({ path, reason: 'symlink' })
         continue
       }
-      const exclusionReason: ExclusionReason | null = exclusionForPath(
+      const exclusionReason: ExclusionReason | null = await sourceExclusionForPath(
+        options.ignoreRuleGroups,
+        rawSegments.join('/'),
         path,
-        options.ignoreRuleGroups ?? [],
+        metadata.isDirectory(),
       )
       const common = {
         path,

@@ -126,7 +126,8 @@ try {
   )
   assert.equal(binary.code, 0)
   assert.deepEqual([...binary.stdout], [0, 255, 1, 10])
-  assert.equal(binary.stderr.toString('utf8'), '日本語')
+  // The accepted-execution ID is one stderr line; the program's own stderr follows byte for byte.
+  assert.match(binary.stderr.toString('utf8'), /^execution [0-9a-f-]{36} accepted\n日本語$/u)
 
   // 3. Explicit `--session` selects that Session's primary Sandbox binding.
   const explicit = await run(

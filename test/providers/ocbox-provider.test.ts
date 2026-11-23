@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import { parseProjectConfig, toSandboxSpec } from '../../src/config/index.js'
+import { parseExecArguments } from '../../src/execution/cli-arguments.js'
 import { MemoryOperationCheckpointStore } from '../../src/providers/ocbox/operations.js'
 import {
   executionWaitDeadlineMilliseconds,
@@ -696,6 +697,90 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(operation.action).toBe('exec_cancel')
     expect(cancelled).toEqual(['cancel'])
     await expect(handle.result).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+  })
+
+  it('sends --timeout-seconds 300 and --timeout 300000 as timeoutSeconds 300', async () => {
+    const HOSTED_EXECUTION = 'exec_hosted_timeout'
+    const STARTED_AT = '2026-09-12T10:00:00.000Z'
+    const bodies: Array<{ timeoutSeconds?: unknown }> = []
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedSessionFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}/executions`) && method === 'POST') {
+        bodies.push(JSON.parse(String(init?.body)) as { timeoutSeconds?: unknown })
+        return Promise.resolve(
+          jsonResponse(
+            {
+              createdAt: STARTED_AT,
+              id: HOSTED_EXECUTION,
+              sandboxId: HOSTED_SANDBOX,
+              sessionId: HOSTED_SESSION,
+              state: 'running',
+            },
+            202,
+          ),
+        )
+      }
+      if (url.includes(`/executions/${HOSTED_EXECUTION}/events`)) {
+        return Promise.resolve(
+          jsonResponse({
+            data: [
+              { at: STARTED_AT, kind: 'started', message: '', sequence: 0, stream: null },
+              { at: STARTED_AT, kind: 'completed', message: '', sequence: 1, stream: null },
+            ],
+            nextCursor: null,
+          }),
+        )
+      }
+      if (url.includes(`/executions/${HOSTED_EXECUTION}/result`)) {
+        return Promise.resolve(
+          jsonResponse({
+            encoding: { stderr: 'utf-8', stdout: 'utf-8' },
+            exitCode: 0,
+            kind: 'command',
+            outputBytes: 0,
+            outputLimitBytes: 1048576,
+            stderr: '',
+            stdout: '',
+            truncated: false,
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({ api, hostedProjectId: HOSTED_PROJECT })
+    provider.seedForTests({
+      hostedSandboxId: HOSTED_SANDBOX,
+      hostedSessionId: HOSTED_SESSION,
+      localId: LOCAL_IDS.sandbox,
+      localProjectId: LOCAL_IDS.project,
+      localSessionId: LOCAL_IDS.session,
+      spec: testSpec() as never,
+    })
+    for (const argv of [
+      ['--timeout-seconds', '300', '--', 'true'],
+      ['--timeout', '300000', '--', 'true'],
+    ]) {
+      const parsed = parseExecArguments(argv)
+      const handle = await provider.exec.execute(
+        operationContext() as never,
+        {
+          command: parsed.command,
+          environment: parsed.environment,
+          sandboxId: LOCAL_IDS.sandbox,
+          timeoutMilliseconds: parsed.timeoutMilliseconds,
+          workingDirectory: parsed.workingDirectory,
+        } as never,
+      )
+      await handle.result
+    }
+    expect(bodies.map((body) => body.timeoutSeconds)).toEqual([300, 300])
   })
 
   it('rejects cwd and environment options the hosted API cannot carry', async () => {

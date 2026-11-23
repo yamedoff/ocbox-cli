@@ -16,31 +16,31 @@ import { isCliOutdatedError } from '../version/gate.js'
 import { encodeSyncArchive, SyncArchiveError } from './archive.js'
 import {
   createVerifiedBaseline,
-  snapshotEntries,
-  snapshotSha256,
   type SyncBaselineEvidence,
   type SyncSnapshotEntry,
+  snapshotEntries,
+  snapshotSha256,
 } from './baseline.js'
 import { SyncBaselineStore, SyncBaselineStoreError } from './baseline-store.js'
+import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
+import { runHostedDiff, runHostedPull } from './cas-pull.js'
+import { runCasPush } from './cas-push.js'
+import type { CasProgress } from './cas-transfer.js'
 import type { IgnoreRule } from './exclusions.js'
 import { loadIgnoreRuleGroups } from './ignore-rules.js'
-import { type BlockedSourceEntry, scanSourceManifest, type SourceManifest } from './manifest.js'
+import { type BlockedSourceEntry, type SourceManifest, scanSourceManifest } from './manifest.js'
 import type { ManifestPath, PathCollision } from './path-policy.js'
 import {
   planSync,
+  type SyncChange,
   type SyncConflict,
   type SyncMode,
   type SyncOperation,
   type SyncPlan,
   type SyncRename,
-  type SyncChange,
 } from './planner.js'
 import { createTransferAdapter } from './provider-adapter.js'
 import { TransferError } from './transfer.js'
-import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
-import type { CasProgress } from './cas-transfer.js'
-import { runCasPush } from './cas-push.js'
-import { runHostedDiff, runHostedPull } from './cas-pull.js'
 
 /** Everything the sync command needs, already resolved through T4/T5 services. */
 export interface SyncContext {
@@ -116,6 +116,18 @@ export interface SyncPlanView {
   readonly excluded: readonly SyncExcludedView[]
 }
 
+/** A dependency, cache, or build folder that was present but never transferred. */
+export interface SyncLeftOutView {
+  readonly path: string
+  readonly reason: 'build-cache' | 'dependency-cache'
+}
+
+/** What a push or pull left out, and the install step to run on the box. */
+export interface SyncApplySummaryView {
+  readonly leftOut: readonly SyncLeftOutView[]
+  readonly installCommand: string | null
+}
+
 export interface SyncApplyView extends SyncPlanView {
   readonly applied: boolean
   readonly baselineUpdated: boolean
@@ -128,6 +140,8 @@ export interface SyncApplyView extends SyncPlanView {
   readonly protocolVersion?: 2
   readonly archiveBytes?: number
   readonly manifestId?: string
+  /** Present on push/pull applies; `diff` has no apply summary. */
+  readonly summary?: SyncApplySummaryView
   /** Identity of the applied operation, or null when the plan was a no-op. */
   readonly operationId: string | null
 }
@@ -275,7 +289,7 @@ async function targetMatchesSnapshot(
   if (!(await isDirectory(targetRoot))) return desired.length === 0
   let manifest: SourceManifest
   try {
-    manifest = await scanSourceManifest(targetRoot, { ignoreRuleGroups: [] })
+    manifest = await scanSourceManifest(targetRoot)
   } catch {
     return false
   }
@@ -467,6 +481,131 @@ function toPlanView(plan: SyncPlan, context: SyncContext, inputs: PlanInputs): S
       ...excludedView('remote', inputs.remoteManifest),
     ],
   }
+}
+
+const DEPENDENCY_FOLDER_NAMES = new Set(['bower_components', 'node_modules', 'vendor'])
+const LOCKFILE_INSTALL_COMMANDS: Readonly<Record<string, string>> = {
+  'npm-shrinkwrap.json': 'npm ci',
+  'package-lock.json': 'npm ci',
+  'pnpm-lock.yaml': 'pnpm install --frozen-lockfile',
+  'yarn.lock': 'yarn install --frozen-lockfile',
+}
+
+/** The source-side dependency/cache folders the transfer intentionally skipped. */
+function leftOutFor(
+  inputs: PlanInputs,
+  mode: Exclude<SyncMode, 'diff'>,
+): readonly SyncLeftOutView[] {
+  // The plan view caps its `excluded` list, but the summary must name every
+  // left-out folder, so read the uncapped source manifest instead.
+  return leftOutFromManifest(mode === 'push' ? inputs.localManifest : inputs.remoteManifest)
+}
+
+/**
+ * A root lockfile that this apply writes means the box needs its dependencies
+ * installed before tests run. Nested lockfiles do not produce a root command.
+ */
+function installCommandFor(view: SyncPlanView): string | null {
+  const written = view.operations
+    .filter((operation) => operation.kind === 'put-file' || operation.kind === 'rename')
+    .map((operation) => operation.path)
+  for (const path of written) {
+    if (path.includes('/')) continue
+    const command = LOCKFILE_INSTALL_COMMANDS[path]
+    if (command !== undefined) return `ocbox exec -- ${command}`
+  }
+  return null
+}
+
+function applySummaryFor(
+  view: SyncPlanView,
+  mode: Exclude<SyncMode, 'diff'>,
+  inputs: PlanInputs,
+): SyncApplySummaryView {
+  return {
+    leftOut: leftOutFor(inputs, mode),
+    installCommand: mode === 'push' ? installCommandFor(view) : null,
+  }
+}
+
+/** Left-out built-in dependency/build folders from a manifest scan. */
+function leftOutFromManifest(manifest: SourceManifest): readonly SyncLeftOutView[] {
+  return manifest.entries.flatMap((entry) => {
+    const reason = entry.exclusionReason
+    if (reason !== 'build-cache' && reason !== 'dependency-cache') return []
+    return [{ path: entry.path, reason }]
+  })
+}
+
+/** The install step for a root lockfile in the files this push actually sent. */
+function installCommandForUploaded(paths: readonly string[] | undefined): string | null {
+  if (paths === undefined) return null
+  for (const path of paths) {
+    if (path.includes('/')) continue
+    const command = LOCKFILE_INSTALL_COMMANDS[path]
+    if (command !== undefined) return `ocbox exec -- ${command}`
+  }
+  return null
+}
+
+/**
+ * The hosted v2 push returns a plan view without the local scanner's excluded
+ * entries. Re-scan the local tree cheaply (no file hashing) so the summary the
+ * user sees matches the fake-provider push.
+ */
+async function hostedPushSummary(
+  context: SyncContext,
+  options: SyncApplyOptions,
+  view: SyncApplyView,
+): Promise<SyncApplySummaryView | undefined> {
+  try {
+    const stateRelative = relative(context.localRoot, context.stateDirectory).split(sep).join('/')
+    const statePaths =
+      !isAbsolute(stateRelative) && stateRelative !== '..' && !stateRelative.startsWith('../')
+        ? [stateRelative]
+        : []
+    const groups = await loadIgnoreRuleGroups(context.localRoot, options.cliRules)
+    const manifest = await scanSourceManifest(context.localRoot, {
+      ignoreRuleGroups: groups,
+      excludePaths: ['.ocb', '.ocb-cas-owned.json', ...statePaths],
+      maxFiles: 0,
+    })
+    return {
+      leftOut: leftOutFromManifest(manifest),
+      installCommand: installCommandForUploaded(view.uploadedFiles),
+    }
+  } catch {
+    // The push already applied; a summary scan failure must not turn it into an error.
+    return undefined
+  }
+}
+
+function leftOutLabel(entry: SyncLeftOutView): string {
+  if (entry.reason === 'build-cache') return 'build output'
+  const name = entry.path.split('/').at(-1)?.toLowerCase() ?? ''
+  return DEPENDENCY_FOLDER_NAMES.has(name) ? 'dependencies' : 'cache'
+}
+
+function renderApplySummary(
+  summary: SyncApplySummaryView | undefined,
+  dependenciesOnBox: boolean,
+): string[] {
+  if (summary === undefined) return []
+  const lines: string[] = []
+  if (summary.leftOut.length > 0) {
+    const names = summary.leftOut
+      .map((entry) => `${entry.path} (${leftOutLabel(entry)})`)
+      .join(', ')
+    lines.push(`Left out: ${names}`)
+  }
+  if (
+    dependenciesOnBox &&
+    summary.leftOut.some((entry) => leftOutLabel(entry) === 'dependencies')
+  ) {
+    lines.push('Dependencies are not uploaded; install them on the box.')
+  }
+  if (summary.installCommand !== null) lines.push(`Next: ${summary.installCommand}`)
+  return lines
 }
 
 const SIZE_LIMIT_REASONS = new Set<BlockedSourceEntry['reason']>([
@@ -686,9 +825,11 @@ export async function runSyncApply(
   if (context.providerName === 'ocbox') {
     if (mode === 'pull')
       return withSyncLock(context, options, () => runHostedPull(context, options))
-    return withSyncLock(context, options, () => {
+    return withSyncLock(context, options, async () => {
       if (context.casTransport === undefined) throw hostedUnsupported('push')
-      return runCasPush(context, options)
+      const view = await runCasPush(context, options)
+      const summary = await hostedPushSummary(context, options, view)
+      return summary === undefined ? view : { ...view, summary }
     })
   }
   const now = options.now ?? (() => new Date())
@@ -709,8 +850,9 @@ export async function runSyncApply(
     assertManifestsTransferable([sourceManifest, targetManifest])
     if (inputs.plan.conflicts.length > 0) throw conflictError(inputs.plan.conflicts)
     const view = toPlanView(inputs.plan, context, inputs)
+    const summary = applySummaryFor(view, mode, inputs)
     if (inputs.plan.operations.length === 0) {
-      return { ...view, applied: false, baselineUpdated: false, operationId: null }
+      return { ...view, summary, applied: false, baselineUpdated: false, operationId: null }
     }
 
     if (inputs.plan.requiresDeletionApproval) {
@@ -782,7 +924,7 @@ export async function runSyncApply(
         'The sync applied but its baseline could not be persisted; retry or run ocbox sync recover',
       )
     }
-    return { ...view, applied: true, baselineUpdated: true, operationId }
+    return { ...view, summary, applied: true, baselineUpdated: true, operationId }
   })
 }
 
@@ -860,13 +1002,16 @@ export function renderSyncPlan(view: SyncPlanView): string {
 }
 
 export function renderSyncApplied(view: SyncApplyView): string {
+  const summary = renderApplySummary(view.summary, view.mode === 'push')
   if (view.protocolVersion === 2) {
     if (view.mode === 'pull') {
       const changed = [...view.additions, ...view.modifications]
       const deleted = view.deletedFiles ?? []
       const skipped =
         view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
-      if (changed.length === 0 && deleted.length === 0 && !skipped) return 'Source unchanged.'
+      if (changed.length === 0 && deleted.length === 0 && !skipped) {
+        return ['Source unchanged.', ...summary].join('\n')
+      }
       const changedPaths = [...view.additions, ...view.modifications].map((entry) => entry.path)
       const shown = [...changedPaths, ...deleted].slice(0, 10)
       const remaining = changedPaths.length + deleted.length - shown.length
@@ -877,16 +1022,18 @@ export function renderSyncApplied(view: SyncApplyView): string {
         `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
         ...shown,
         ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+        ...summary,
       ].join('\n')
     }
     const changed = [...view.additions, ...view.modifications, ...view.deletions]
-    if (changed.length === 0) return 'Source unchanged.'
+    if (changed.length === 0) return ['Source unchanged.', ...summary].join('\n')
     const shown = changed.slice(0, 10)
     const remaining = changed.length - shown.length
     return [
       `Source synced: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s), ${String(view.deletions.length)} deletion(s); uploaded ${String(view.uploadedBlobs ?? 0)} blob(s), ${String(view.uploadedBytes ?? 0)} bytes.`,
       ...shown.map((entry) => entry.path),
       ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+      ...summary,
     ].join('\n')
   }
   if (view.uploadedFiles !== undefined)
@@ -894,7 +1041,10 @@ export function renderSyncApplied(view: SyncApplyView): string {
       ? `Uploaded ${view.uploadedFiles.length} file(s), ${view.uploadedBytes} bytes (${view.archiveBytes} archive bytes) to the hosted sandbox:\n${view.uploadedFiles.join('\n')}`
       : 'Push skipped: hosted source is already verified; uploaded 0 files, 0 bytes.'
   if (!view.applied) {
-    return `${view.mode === 'push' ? 'Push' : 'Pull'} skipped: no changes to apply.`
+    return [
+      `${view.mode === 'push' ? 'Push' : 'Pull'} skipped: no changes to apply.`,
+      ...summary,
+    ].join('\n')
   }
   const deletions = view.operations.filter((operation) => operation.kind === 'delete').length
   const files = view.operations.filter((operation) => operation.kind === 'put-file').length
@@ -903,7 +1053,10 @@ export function renderSyncApplied(view: SyncApplyView): string {
   ).length
   const renames = view.operations.filter((operation) => operation.kind === 'rename').length
   const verb = view.mode === 'push' ? 'Pushed' : 'Pulled'
-  return `${verb} ${String(files)} file(s), ${String(directories)} directory(ies), ${String(renames)} rename(s), ${String(deletions)} deletion(s); baseline updated.`
+  return [
+    `${verb} ${String(files)} file(s), ${String(directories)} directory(ies), ${String(renames)} rename(s), ${String(deletions)} deletion(s); baseline updated.`,
+    ...summary,
+  ].join('\n')
 }
 
 export function renderSyncRecover(view: SyncRecoverView): string {

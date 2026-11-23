@@ -191,8 +191,9 @@ describe('hosted asynchronous lifecycle', () => {
       provider.create(operationContext() as never, createRequest as never),
     ).rejects.toMatchObject({
       code: 'USAGE_LIMIT',
-      message: ADMISSION_MESSAGES['user_active_limit'],
+      message: `${ADMISSION_MESSAGES['user_active_limit']} The boxes_per_account limit is 1.`,
       providerCode: 'user_active_limit',
+      details: { limitName: 'boxes_per_account', limitValue: 1 },
     })
   })
 
