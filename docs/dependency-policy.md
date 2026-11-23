@@ -7,12 +7,13 @@ CI installs it with `--frozen-lockfile`.
 
 The foundation versions below were inspected in the public npm registry on
 2026-08-30; the contract-layer additions (`zod` and `fast-check`) were inspected
-on 2026-09-04. Their integrity values are also captured by `pnpm-lock.yaml`:
+on 2026-09-04, and `zod` 4.6.7 was inspected on 2026-11-22. Their integrity
+values are also captured by `pnpm-lock.yaml`:
 
 | Package | Version | Registry integrity |
 | --- | --- | --- |
 | `@oclif/core` | `4.14.0` | `sha512-QCJIZoVJxV7jywgVAUlsQwl3dr3Sa21kfi5z9KrYolbexWJUtFSEtMoNiBWojD05mYycLnB50gp/VxlGdaOCRA==` |
-| `zod` | `4.5.4` | `sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==` |
+| `zod` | `4.6.7` | `sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==` |
 | `@biomejs/biome` | `2.5.11` | `sha512-Tj0dnkLPdW0ASjHfj2D/ZkkvPU2wrFmnE1jWTD2xzV1ycapV1DutbYXk4NDnR3rYTi1ZCbNFD4G2gRMEY65WaA==` |
 | `@types/node` | `24.13.3` | `sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==` |
 | `corepack` | `0.36.0` | `sha512-SiiJsBhZqdBiPHTEl6OT3sASrRrKIcYTQMsVGXx6EE/gM8WFMwYjeIX8Tt8RiU4Iv2J6LbT8KpGfCOsBpRWB/w==` |

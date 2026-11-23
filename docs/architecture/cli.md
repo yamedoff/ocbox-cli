@@ -20,7 +20,7 @@ The command runtime builds a LifecycleService, an authenticated generated client
 
 ## Warm session cache
 
-`ocbox exec` may start one optional local daemon on first use. It listens on an owner-only socket in the user's runtime directory (a named pipe on Windows), keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. A cached observation is advisory: the execution start remains authoritative for a state change the daemon has not seen. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
+`ocbox exec` may start one optional local daemon on first use. On Unix it listens on an owner-only socket in the user's runtime directory; on Windows it listens on a named pipe whose name includes 128 random bits and publishes that pipe name plus a random connection secret in an owner-only file under the per-user state directory. The first client message must carry that secret; a missing or wrong secret closes the connection without a reply, so the command falls back to the direct API path. It keeps one owned hosted Session observation and its authenticated API client warm, and exits after an idle timeout. The first command reads the Session once; a later command reuses the observation, so it makes no extra box read. If the socket is absent, stale, or slow, or `OCBOX_WARM=0` is set, the command falls back to the direct API path. A cached observation is advisory: the execution start remains authoritative for a state change the daemon has not seen. The daemon never writes session state or credentials to disk. `scripts/measure-cli-latency.mjs` runs the same command repeatedly and reports p50/p95 of CLI wall time minus the product's recorded execution window.
 
 ## Data it keeps
 
@@ -61,3 +61,7 @@ Verified against ocbox-cli @ cd231a4 plus auth failure reporting changes.
 `init` verifies a saved hosted project against the signed-in account, and hosted configs omit the offline image/region placeholders so status shows the server's observed default.
 
 Verified against ocbox-cli @ 872e6f2 plus the init project-check and hosted-default changes.
+
+On Windows, the warm daemon's random pipe name and per-user connection-secret file replace the Unix owner-only directory and socket checks; Unix behavior is unchanged.
+
+Verified against ocbox-cli @ 9523af1 plus the Windows named-pipe handshake.

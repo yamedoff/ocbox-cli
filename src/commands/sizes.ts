@@ -17,7 +17,9 @@ export default class Sizes extends OcboxCommand {
         flags,
         'sizes.listed',
         (result) =>
-          result.sizes.length === 0 ? 'No sizes on your plan' : result.sizes.map(sizeLine).join('\n'),
+          result.sizes.length === 0
+            ? 'No sizes on your plan'
+            : result.sizes.map(sizeLine).join('\n'),
         () => listSizes(createMetadataClient(flags), interrupt.signal),
       )
     } finally {

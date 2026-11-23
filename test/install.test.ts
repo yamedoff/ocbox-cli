@@ -483,7 +483,10 @@ describe('install.ps1', () => {
             ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(repoRoot, 'install.ps1')],
             { encoding: 'utf8', env, timeout: 120_000 },
           )
-          expect(installed.status).toBe(0)
+          expect(
+            installed.status,
+            `stdout:\n${installed.stdout}\nstderr:\n${installed.stderr}`,
+          ).toBe(0)
           expect(installed.stdout.trim().split(/\r?\n/).at(-1)).toBe(packageVersion)
           expect(existsSync(join(localAppData, 'ocbox', 'ocbox.cmd'))).toBe(true)
           const userPath = execFileSync(

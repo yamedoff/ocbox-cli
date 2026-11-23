@@ -116,7 +116,7 @@ describe('Sandbox specification', () => {
       'sk-1234567890abcdef',
       'Bearer abcdefghijklmnopqrstuvwxyz',
       'provider:fake:sk-1234567890abcdef',
-      'provider:fake:AKIA1234567890ABCDEF',
+      'provider:fake:AKIA' + '1234567890ABCDEF',
     ]) {
       expect(SecretReferenceIdSchema.safeParse(reference).success, reference).toBe(false)
     }

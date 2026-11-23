@@ -56,9 +56,7 @@ export function sizeLine(size: BoxSize): string {
   const parts: string[] = []
   if (size.gpuCount !== undefined)
     parts.push(
-      size.gpuCount === 0 || size.gpuType == null
-        ? 'no GPU'
-        : `${size.gpuCount} x ${size.gpuType}`,
+      size.gpuCount === 0 || size.gpuType == null ? 'no GPU' : `${size.gpuCount} x ${size.gpuType}`,
     )
   if (size.cpuMillicores !== undefined) parts.push(`${size.cpuMillicores / 1000} CPU`)
   if (size.memoryBytes !== undefined) parts.push(`${amount(size.memoryBytes)} memory`)
