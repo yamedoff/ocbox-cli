@@ -544,9 +544,7 @@ function installCommandForUploaded(paths: readonly string[] | undefined): string
   if (paths === undefined) return null
   for (const path of paths) {
     if (path.includes('/')) continue
-    const command = Object.hasOwn(LOCKFILE_INSTALL_COMMANDS, path)
-      ? LOCKFILE_INSTALL_COMMANDS[path]
-      : undefined
+    const command = LOCKFILE_INSTALL_COMMANDS[path]
     if (command !== undefined) return `ocbox exec -- ${command}`
   }
   return null
