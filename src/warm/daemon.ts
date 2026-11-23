@@ -1,5 +1,7 @@
-import { chmod, lstat, mkdir, rm } from 'node:fs/promises'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
+import { dirname } from 'node:path'
 import { OcboxError } from '../errors/index.js'
 import { type HostedSession, HostedSessionSchema } from '../providers/ocbox/wire.js'
 import {
@@ -8,7 +10,7 @@ import {
   type WarmResponse,
   WarmRequestSchema,
 } from './protocol.js'
-import { warmSocketDirectory } from './paths.js'
+import { parseWarmConnection, warmConnectionFile, warmSocketDirectory } from './paths.js'
 
 /** The provider operation the daemon needs; the hosted provider implements it. */
 export interface WarmSessionProvider {
@@ -23,6 +25,8 @@ export interface WarmSessionServerOptions {
   readonly now?: (() => number) | undefined
   readonly platform?: NodeJS.Platform | undefined
   readonly maxRequestBytes?: number | undefined
+  /** The per-user state directory that publishes a Windows daemon's connection. */
+  readonly stateDirectory?: string | undefined
   /** Called after the server has closed itself because no client needed it. */
   readonly onIdle?: (() => void) | undefined
 }
@@ -30,10 +34,20 @@ export interface WarmSessionServerOptions {
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 10 * 60_000
 const DEFAULT_SESSION_TTL_MILLISECONDS = 10 * 60_000
 const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024
+/** 128 random bits make the Windows pipe name unguessable to another user. */
+const PIPE_RANDOM_BYTES = 16
+const SECRET_RANDOM_BYTES = 32
 
 interface CachedSession {
   readonly expiresAt: number
   readonly session: HostedSession
+}
+
+function environmentStateDirectory(): string | undefined {
+  // Environment is an index signature; bracket access is required by TypeScript.
+  // biome-ignore lint/complexity/useLiteralKeys: see explanation above
+  const value = process.env['OCBOX_WARM_STATE_DIR']
+  return value === undefined || value.length === 0 ? undefined : value
 }
 
 function canConnect(socketPath: string, timeoutMilliseconds = 100): Promise<boolean> {
@@ -71,10 +85,10 @@ function errorResponse(error: unknown): WarmResponse {
 }
 
 /**
- * Local, owner-only socket that keeps one owned hosted Session observation and
- * the API client warm for later CLI commands. It never writes session state to
- * disk and exits after a bounded idle period; every miss falls back to the
- * CLI's direct API read.
+ * Local, owner-only socket (an authenticated named pipe on Windows) that keeps
+ * one owned hosted Session observation and the API client warm for later CLI
+ * commands. It never writes session state to disk and exits after a bounded
+ * idle period; every miss falls back to the CLI's direct API read.
  */
 export class WarmSessionServer {
   readonly #socketPath: string
@@ -84,6 +98,7 @@ export class WarmSessionServer {
   readonly #now: () => number
   readonly #platform: NodeJS.Platform
   readonly #maxRequestBytes: number
+  readonly #stateDirectory: string | undefined
   readonly #onIdle: (() => void) | undefined
   readonly #server: Server
   readonly #cache = new Map<string, CachedSession>()
@@ -95,6 +110,8 @@ export class WarmSessionServer {
   #idleTimer: NodeJS.Timeout | undefined
   #listening = false
   #closed = false
+  #secretHash: Buffer | undefined
+  #readinessServer: Server | undefined
 
   constructor(options: WarmSessionServerOptions) {
     this.#socketPath = options.socketPath
@@ -106,6 +123,7 @@ export class WarmSessionServer {
     this.#now = options.now ?? Date.now
     this.#platform = options.platform ?? process.platform
     this.#maxRequestBytes = options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES
+    this.#stateDirectory = options.stateDirectory ?? environmentStateDirectory()
     this.#onIdle = options.onIdle
     this.#closedPromise = new Promise<void>((resolve) => {
       this.#resolveClosed = resolve
@@ -127,6 +145,10 @@ export class WarmSessionServer {
   async listen(): Promise<void> {
     if (this.#listening || this.#closed)
       throw new TypeError('The warm session server cannot listen')
+    const socketPath =
+      this.#platform === 'win32'
+        ? `${this.#socketPath}-${randomBytes(PIPE_RANDOM_BYTES).toString('hex')}`
+        : this.#socketPath
     if (this.#platform !== 'win32') {
       const directory = warmSocketDirectory(this.#socketPath)
       await mkdir(directory, { mode: 0o700, recursive: true })
@@ -135,8 +157,13 @@ export class WarmSessionServer {
         throw new Error('The warm session directory is not owned by the current user')
       }
       await chmod(directory, 0o700)
+    } else {
+      const existing = await this.#existingPipe()
+      if (existing !== null && (await canConnect(existing))) {
+        throw new Error('A warm session daemon is already listening on this socket')
+      }
     }
-    if (await canConnect(this.#socketPath)) {
+    if (await canConnect(socketPath)) {
       throw new Error('A warm session daemon is already listening on this socket')
     }
     if (this.#platform !== 'win32') await rm(this.#socketPath, { force: true })
@@ -151,9 +178,21 @@ export class WarmSessionServer {
       }
       this.#server.once('error', onError)
       this.#server.once('listening', onListening)
-      this.#server.listen(this.#socketPath)
+      this.#server.listen(socketPath)
     })
-    if (this.#platform !== 'win32') await chmod(this.#socketPath, 0o600)
+    if (this.#platform !== 'win32') {
+      await chmod(this.#socketPath, 0o600)
+    } else {
+      try {
+        await this.#publishConnection(socketPath)
+      } catch (error) {
+        await new Promise<void>((resolve) => {
+          this.#server.close(() => resolve())
+        })
+        throw error
+      }
+      await this.#listenReadiness()
+    }
     this.#listening = true
     this.#resetIdleTimer()
   }
@@ -168,9 +207,92 @@ export class WarmSessionServer {
       await new Promise<void>((resolve) => {
         this.#server.close(() => resolve())
       })
-      if (this.#platform !== 'win32') await rm(this.#socketPath, { force: true }).catch(() => {})
+      if (this.#platform !== 'win32') {
+        await rm(this.#socketPath, { force: true }).catch(() => {})
+      }
+    }
+    const readiness = this.#readinessServer
+    if (readiness !== undefined) {
+      this.#readinessServer = undefined
+      await new Promise<void>((resolve) => {
+        readiness.close(() => resolve())
+      })
+      // Only a forced win32 run on a Unix host leaves a file behind.
+      if (process.platform !== 'win32') await rm(this.#socketPath, { force: true }).catch(() => {})
     }
     this.#resolveClosed()
+  }
+
+  /**
+   * Keeps the deterministic name answerable as a readiness signal for test
+   * harnesses that wait on it. It never speaks the protocol; the random pipe
+   * published in the connection file remains the only way to act.
+   */
+  async #listenReadiness(): Promise<void> {
+    const server = createServer((socket) => socket.destroy())
+    server.on('error', () => {})
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => {
+          server.removeListener('listening', onListening)
+          reject(error)
+        }
+        const onListening = (): void => {
+          server.removeListener('error', onError)
+          resolve()
+        }
+        server.once('error', onError)
+        server.once('listening', onListening)
+        server.listen(this.#socketPath)
+      })
+      this.#readinessServer = server
+    } catch {
+      // Another process may already own the deterministic name. The random
+      // pipe is still the only one that can answer a protocol request.
+      server.close(() => {})
+    }
+  }
+
+  async #existingPipe(): Promise<string | null> {
+    const stateDirectory = this.#stateDirectory
+    if (stateDirectory === undefined) return null
+    try {
+      const text = await readFile(warmConnectionFile(stateDirectory, this.#socketPath), 'utf8')
+      return parseWarmConnection(JSON.parse(text))?.pipe ?? null
+    } catch {
+      return null
+    }
+  }
+
+  async #publishConnection(pipe: string): Promise<void> {
+    const stateDirectory = this.#stateDirectory
+    if (stateDirectory === undefined) {
+      throw new Error('The warm session daemon requires a state directory on Windows')
+    }
+    const secret = randomBytes(SECRET_RANDOM_BYTES).toString('hex')
+    this.#secretHash = createHash('sha256').update(secret).digest()
+    const file = warmConnectionFile(stateDirectory, this.#socketPath)
+    const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`
+    await mkdir(dirname(file), { mode: 0o700, recursive: true })
+    await writeFile(temporary, JSON.stringify({ pipe, secret }), { mode: 0o600 })
+    try {
+      await chmod(temporary, 0o600)
+      // A reader must see either the old connection or the complete new one.
+      await rename(temporary, file)
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  #authorized(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null) return false
+    const secret = (value as { secret?: unknown }).secret
+    if (typeof secret !== 'string' || secret.length === 0) return false
+    const expected = this.#secretHash
+    if (expected === undefined) return false
+    const actual = createHash('sha256').update(secret).digest()
+    return timingSafeEqual(actual, expected)
   }
 
   #resetIdleTimer(): void {
@@ -207,13 +329,30 @@ export class WarmSessionServer {
       if (handled) return
       buffer += chunk.toString('utf8')
       if (Buffer.byteLength(buffer) > this.#maxRequestBytes) {
+        if (this.#platform === 'win32') {
+          // An unauthenticated client must not get even an error frame back.
+          handled = true
+          socket.destroy()
+          return
+        }
         finish(errorResponse(new TypeError('Warm session request exceeded its limit')))
         return
       }
       const newline = buffer.indexOf('\n')
       if (newline === -1) return
       const line = buffer.slice(0, newline)
-      void this.#handleLine(line).then(finish, (error: unknown) => finish(errorResponse(error)))
+      void this.#handleLine(line).then(
+        (response) => {
+          if (response === null) {
+            // A missing or wrong secret must not learn anything from the daemon.
+            handled = true
+            socket.destroy()
+            return
+          }
+          finish(response)
+        },
+        (error: unknown) => finish(errorResponse(error)),
+      )
     })
     socket.once('close', () => {
       this.#connections.delete(socket)
@@ -225,11 +364,15 @@ export class WarmSessionServer {
     })
   }
 
-  async #handleLine(line: string): Promise<WarmResponse> {
+  async #handleLine(line: string): Promise<WarmResponse | null> {
     let parsed: unknown
     try {
       parsed = JSON.parse(line)
     } catch {
+      parsed = undefined
+    }
+    if (this.#platform === 'win32' && !this.#authorized(parsed)) return null
+    if (parsed === undefined) {
       return errorResponse(new TypeError('Warm session request is not JSON'))
     }
     const request = WarmRequestSchema.safeParse(parsed)
