@@ -12,8 +12,6 @@ export const NOT_LOGGED_IN_MESSAGE =
 
 export const FAKE_PROVIDER_NOTICE = 'Using the local fake provider; nothing runs remotely.'
 
-export const HOSTED_PROVIDER_NOTICE = `Using the hosted OpenCloudBox provider (staging at ${DEFAULT_API_URL}).`
-
 /**
  * Names the provider a project was set up with. Hosted also names the API the
  * CLI talks to, marking the default staging base explicitly.
@@ -22,7 +20,11 @@ export function providerNotice(provider: string, apiUrl?: string | undefined): s
   if (provider === 'fake') return FAKE_PROVIDER_NOTICE
   if (provider !== 'ocbox') return undefined
   const resolved = apiUrl === undefined ? DEFAULT_API_URL : apiUrl
-  return resolved === DEFAULT_API_URL
-    ? HOSTED_PROVIDER_NOTICE
-    : `Using the hosted OpenCloudBox provider (${resolved}).`
+  // Name the staging service only while the default base is a staging host;
+  // an override (or the production default later) is named by its URL.
+  const service =
+    resolved === DEFAULT_API_URL && resolved.includes('staging')
+      ? `staging at ${resolved}`
+      : resolved
+  return `Using the hosted OpenCloudBox provider (${service}).`
 }
