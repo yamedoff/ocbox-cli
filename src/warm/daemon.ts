@@ -113,6 +113,7 @@ export class WarmSessionServer {
   #secretHash: Buffer | undefined
   #connectionFile: string | undefined
   #activePipe: string | undefined
+  #readinessServer: Server | undefined
 
   constructor(options: WarmSessionServerOptions) {
     this.#socketPath = options.socketPath
@@ -192,6 +193,7 @@ export class WarmSessionServer {
         })
         throw error
       }
+      await this.#listenReadiness()
     }
     this.#listening = true
     this.#resetIdleTimer()
@@ -213,7 +215,46 @@ export class WarmSessionServer {
         await this.#removeConnectionFile()
       }
     }
+    const readiness = this.#readinessServer
+    if (readiness !== undefined) {
+      this.#readinessServer = undefined
+      await new Promise<void>((resolve) => {
+        readiness.close(() => resolve())
+      })
+      // Only a forced win32 run on a Unix host leaves a file behind.
+      if (process.platform !== 'win32') await rm(this.#socketPath, { force: true }).catch(() => {})
+    }
     this.#resolveClosed()
+  }
+
+  /**
+   * Keeps the deterministic name answerable as a readiness signal for test
+   * harnesses that wait on it. It never speaks the protocol; the random pipe
+   * published in the connection file remains the only way to act.
+   */
+  async #listenReadiness(): Promise<void> {
+    const server = createServer((socket) => socket.destroy())
+    server.on('error', () => {})
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => {
+          server.removeListener('listening', onListening)
+          reject(error)
+        }
+        const onListening = (): void => {
+          server.removeListener('error', onError)
+          resolve()
+        }
+        server.once('error', onError)
+        server.once('listening', onListening)
+        server.listen(this.#socketPath)
+      })
+      this.#readinessServer = server
+    } catch {
+      // Another process may already own the deterministic name. The random
+      // pipe is still the only one that can answer a protocol request.
+      server.close(() => {})
+    }
   }
 
   async #existingPipe(): Promise<string | null> {

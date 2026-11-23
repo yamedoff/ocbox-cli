@@ -164,6 +164,22 @@ async function connectionFor(stateDirectory: string): Promise<TestConnection> {
   return { file, pipe, secret }
 }
 
+function isListening(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(socketPath)
+    let settled = false
+    const done = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(1_000, () => done(false))
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
+}
+
 function rawRequest(pipe: string, message: string): Promise<string> {
   return new Promise((resolve) => {
     const socket = createConnection(pipe)
@@ -420,6 +436,9 @@ describe('windows named-pipe owner check', () => {
 
     expect((await client.get(HOSTED_SESSION))?.id).toBe(HOSTED_SESSION)
     expect(provider.calls).toBe(1)
+    // The deterministic name stays connectable so existing harnesses can wait
+    // for the daemon, but it never answers a protocol request.
+    expect(await isListening(socketPath)).toBe(true)
 
     const connection = await connectionFor(scope.stateDirectory)
     expect(connection.pipe).not.toBe(socketPath)
