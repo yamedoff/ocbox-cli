@@ -1,8 +1,12 @@
 name: Publish release
 
 on:
-  push:
-    tags: ["v*"]
+  # CONTRIBUTING.md requires all three OS smoke jobs to pass before publishing.
+  # Chaining off the smoke workflow makes the publish wait for that whole run
+  # instead of racing it on the same tag push.
+  workflow_run:
+    workflows: ["Release staging smoke"]
+    types: [completed]
 
 permissions:
   contents: write
@@ -10,15 +14,17 @@ permissions:
 jobs:
   publish:
     name: Publish release
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       CI: true
       COREPACK_ENABLE_STRICT: 1
     steps:
-      - name: Check out repository
+      - name: Check out the smoke-tested commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Node.js
@@ -32,10 +38,42 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@11.24.0 --activate
-      - name: Require the tag to match package.json
+      - name: Resolve the release tag
+        id: tag
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          tag=''
+          case "$HEAD_BRANCH" in
+            v*)
+              if git rev-parse --verify --quiet "refs/tags/$HEAD_BRANCH" >/dev/null; then
+                tag="$HEAD_BRANCH"
+              fi
+              ;;
+          esac
+          if [ -z "$tag" ]; then
+            tags=$(git tag --points-at "$HEAD_SHA" --list 'v*')
+            count=$(printf '%s\n' "$tags" | grep -c . || true)
+            if [ "$count" -gt 1 ]; then
+              echo "::error::More than one v* tag points at $HEAD_SHA: $tags"
+              exit 1
+            fi
+            tag=$(printf '%s\n' "$tags" | head -n 1)
+          fi
+          if [ -z "$tag" ]; then
+            echo "::notice::No v* release tag points at $HEAD_SHA; nothing to publish."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $HEAD_SHA."
+      - name: Require the tag to match package.json
+        if: steps.tag.outputs.tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
           version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
           if [ "$RELEASE_TAG" != "v$version" ]; then
@@ -44,10 +82,13 @@ jobs:
           fi
           echo "Tag $RELEASE_TAG matches package.json version $version."
       - name: Install dependencies from lockfile
+        if: steps.tag.outputs.tag != ''
         run: pnpm install --frozen-lockfile
       - name: Build and pack the release files
+        if: steps.tag.outputs.tag != ''
         run: pnpm run pack:release
       - name: Check the release files
+        if: steps.tag.outputs.tag != ''
         shell: bash
         run: |
           release_dir=dist/release
@@ -83,10 +124,11 @@ jobs:
           fi
           echo "Release files for $version are complete and verified."
       - name: Publish the GitHub release
+        if: steps.tag.outputs.tag != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
           release_dir=dist/release
           version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")

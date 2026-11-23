@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -106,9 +106,30 @@ async function makeReleaseFixture(): Promise<string> {
   return root
 }
 
+/** A real commit so the workflow can resolve a tag pointing at it. */
+async function makeTaggedCommit(tag?: string): Promise<{ root: string; sha: string }> {
+  const root = await makeTempDir('ocbox-release-resolve-')
+  execFileSync('git', ['init', '-q'], { cwd: root })
+  execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: root })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root })
+  await writePackageJson(root, '1.2.3')
+  execFileSync('git', ['add', '.'], { cwd: root })
+  execFileSync('git', ['commit', '-q', '-m', 'fixture'], { cwd: root })
+  if (tag !== undefined) execFileSync('git', ['tag', tag], { cwd: root })
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+  return { root, sha }
+}
+
 describe('release workflow', () => {
-  it('runs on v* tags, may write contents, and pins every action to a commit', () => {
-    expect(workflow).toMatch(/tags:\s*\[\s*["']v\*["']\s*\]/)
+  it('waits for the three-OS staging smoke run before it may publish', () => {
+    expect(workflow).toMatch(
+      /workflow_run:\s*\n\s+workflows:\s*\[\s*["']Release staging smoke["']\s*\]/,
+    )
+    expect(workflow).toMatch(/types:\s*\[\s*completed\s*\]/)
+    expect(workflow).toMatch(/if:\s*github\.event\.workflow_run\.conclusion\s*==\s*'success'/)
+    expect(workflow).toMatch(/ref:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/)
+    // A direct tag trigger would race the smoke workflow instead of gating on it.
+    expect(workflow).not.toMatch(/^\s*push:/m)
     expect(workflow).toContain('contents: write')
     expect(workflow).toContain('gh release create')
 
@@ -125,11 +146,62 @@ describe('release workflow', () => {
 describe('release workflow: tag matches package.json', () => {
   const script = () => runBlock(workflow, 'Require the tag to match package.json')
 
-  it('reads the pushed tag from github.ref_name', () => {
+  it('resolves the tag from the smoke-tested commit, not the workflow ref', () => {
+    const resolve = stepText(workflow, 'Resolve the release tag')
+    expect(resolve).toMatch(/HEAD_SHA:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha\s*\}\}/)
+    expect(resolve).toMatch(
+      /HEAD_BRANCH:\s*\$\{\{\s*github\.event\.workflow_run\.head_branch\s*\}\}/,
+    )
+    expect(resolve).toContain("--list 'v*'")
     expect(stepText(workflow, 'Require the tag to match package.json')).toMatch(
-      /RELEASE_TAG:\s*\$\{\{\s*github\.ref_name\s*\}\}/,
+      /RELEASE_TAG:\s*\$\{\{\s*steps\.tag\.outputs\.tag\s*\}\}/,
     )
   })
+
+  it.skipIf(skipOnWindows)(
+    'finds the v* tag on the smoke-tested commit when head_branch is empty',
+    async () => {
+      const { root, sha } = await makeTaggedCommit('v1.2.3')
+      const output = join(root, 'github-output')
+      await writeFile(output, '')
+
+      const result = spawnSync(
+        'bash',
+        ['-e', '-c', runBlock(workflow, 'Resolve the release tag')],
+        {
+          cwd: root,
+          env: { ...process.env, HEAD_SHA: sha, HEAD_BRANCH: '', GITHUB_OUTPUT: output },
+          encoding: 'utf8',
+        },
+      )
+
+      expect(result.status, commandOutput(result)).toBe(0)
+      expect(await readFile(output, 'utf8')).toContain('tag=v1.2.3')
+    },
+  )
+
+  it.skipIf(skipOnWindows)(
+    'publishes nothing when the smoke-tested commit has no v* tag',
+    async () => {
+      const { root, sha } = await makeTaggedCommit()
+      const output = join(root, 'github-output')
+      await writeFile(output, '')
+
+      const result = spawnSync(
+        'bash',
+        ['-e', '-c', runBlock(workflow, 'Resolve the release tag')],
+        {
+          cwd: root,
+          env: { ...process.env, HEAD_SHA: sha, HEAD_BRANCH: 'main', GITHUB_OUTPUT: output },
+          encoding: 'utf8',
+        },
+      )
+
+      expect(result.status, commandOutput(result)).toBe(0)
+      expect(await readFile(output, 'utf8')).toContain('tag=\n')
+      expect(commandOutput(result)).toContain('nothing to publish')
+    },
+  )
 
   it.skipIf(skipOnWindows)('accepts v<version> from package.json', async () => {
     const root = await makeTempDir('ocbox-release-tag-')
@@ -245,9 +317,9 @@ describe('release workflow: published assets', () => {
   // Resolves to tarball="$release_dir/ocbox-${version}.tgz".
   const tarballExpression = `tarball="$release_dir/${releaseTarballName('${version}')}"`
 
-  it('authenticates with GITHUB_TOKEN and names the tag', () => {
+  it('authenticates with GITHUB_TOKEN and names the resolved tag', () => {
     expect(publishStep()).toMatch(/GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/)
-    expect(publishStep()).toMatch(/RELEASE_TAG:\s*\$\{\{\s*github\.ref_name\s*\}\}/)
+    expect(publishStep()).toMatch(/RELEASE_TAG:\s*\$\{\{\s*steps\.tag\.outputs\.tag\s*\}\}/)
   })
 
   it('uploads the same three asset names the clients download', () => {
