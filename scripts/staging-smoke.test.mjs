@@ -7,6 +7,7 @@ import {
   parseResultEnvelope,
   selfTest,
   smallestSize,
+  windowsCommandLine,
 } from './staging-smoke.mjs'
 
 const timestamp = '2026-01-01T00:00:00.000Z'
@@ -108,6 +109,22 @@ test('formatCliFailure names the command, exit code and only the CLI error line'
   assert.equal(
     formatCliFailure('exec', { status: null, stderr: '', stdout: '', timedOut: true }),
     'ocbox exec failed with exit code none (timed out): the CLI printed no error line',
+  )
+})
+
+test('windowsCommandLine keeps a bare command name unquoted so a .cmd shim finds itself', () => {
+  assert.equal(windowsCommandLine('ocbox', ['sizes', '--json']), '"ocbox sizes --json"')
+  assert.equal(
+    windowsCommandLine('ocbox', ['exec', '--jsonl', '--', 'echo', 'ocb-smoke-selftest']),
+    '"ocbox exec --jsonl -- echo ocb-smoke-selftest"',
+  )
+  assert.equal(
+    windowsCommandLine('C:\\Users\\smoke\\ocbox.cmd', ['destroy', '--yes', '--json']),
+    '"C:\\Users\\smoke\\ocbox.cmd destroy --yes --json"',
+  )
+  assert.equal(
+    windowsCommandLine('C:\\Program Files\\ocbox\\ocbox.cmd', ['sizes']),
+    '""C:\\Program Files\\ocbox\\ocbox.cmd" sizes"',
   )
 })
 

@@ -195,14 +195,23 @@ function quoteWindowsArgument(value) {
   return `"${value.replaceAll('"', '\\"')}"`
 }
 
+/**
+ * Builds the `cmd.exe /c` line for the Windows runners. A bare command name
+ * stays unquoted: cmd expands `%~dp0` to the current directory when a batch
+ * file is invoked as `"ocbox"`, so the installed npm-style `ocbox.cmd` would
+ * look for its files in the workspace. A quoted full path still expands
+ * correctly, so only arguments (and paths with spaces) get quotes.
+ */
+export function windowsCommandLine(command, args) {
+  // cmd.exe /s strips the outer quote pair; the inner command line is what runs.
+  return `"${[command, ...args].map(quoteWindowsArgument).join(' ')}"`
+}
+
 function invocationFor(command, args) {
   if (process.platform !== 'win32') return { command, args }
-  // cmd.exe /s strips the outer quote pair; keep the quoted command inside it
-  // so a prefix path with spaces still runs the installed .cmd shim.
-  const commandLine = `""${command}" ${args.map(quoteWindowsArgument).join(' ')}"`
   return {
     command: process.env.ComSpec ?? 'cmd.exe',
-    args: ['/d', '/s', '/c', commandLine],
+    args: ['/d', '/s', '/c', windowsCommandLine(command, args)],
     windowsVerbatimArguments: true,
   }
 }
