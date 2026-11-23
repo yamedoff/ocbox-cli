@@ -102,8 +102,8 @@ jobs:
               exit 1
             fi
           done
-          file_count=$(find "$release_dir" -maxdepth 1 -type f | wc -l)
-          file_count=${file_count//[[:space:]]/}
+          # BSD find (macOS) lacks max-depth, so count direct files with -path.
+          file_count=$(find "$release_dir" -type f ! -path "$release_dir/*/*" | wc -l | tr -d '[:space:]')
           if [ "$file_count" -ne 3 ]; then
             echo "::error::Expected exactly 3 release files in $release_dir, found $file_count."
             exit 1
@@ -113,7 +113,17 @@ jobs:
             echo "::error::$sums does not list ocbox-${version}.tgz."
             exit 1
           fi
-          actual=$(sha256sum "$tarball" | awk '{ print $1 }')
+          # macOS ships shasum, not sha256sum; match install.sh's fallback order.
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$tarball" | awk '{ print $1 }')
+          elif command -v shasum >/dev/null 2>&1; then
+            actual=$(shasum -a 256 "$tarball" | awk '{ print $1 }')
+          elif command -v openssl >/dev/null 2>&1; then
+            actual=$(openssl dgst -sha256 "$tarball" | awk '{ print $NF }')
+          else
+            echo "::error::No SHA-256 tool was found (sha256sum, shasum, or openssl)."
+            exit 1
+          fi
           if [ "$actual" != "$expected" ]; then
             echo "::error::Checksum mismatch for $tarball."
             exit 1

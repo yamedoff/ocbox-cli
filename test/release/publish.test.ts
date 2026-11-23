@@ -253,6 +253,13 @@ describe('release workflow: release files', () => {
     expect(workflow).toContain('pnpm run pack:release')
   })
 
+  it('checks the files on the macOS runner without GNU-only tools', () => {
+    const check = script()
+    expect(check).not.toContain('-maxdepth')
+    expect(check).toContain('shasum -a 256')
+    expect(check).toContain('openssl dgst -sha256')
+  })
+
   it.skipIf(skipOnWindows)('accepts the three assets pack-release writes', async () => {
     const root = await makeReleaseFixture()
 
