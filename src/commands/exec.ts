@@ -46,14 +46,15 @@ export function executionTokens(argv: readonly string[]): string[] {
   return tokens
 }
 
-/** Resolves the hosted ID recorded for a CLI-local execution ID, if any. */
-export function hostedExecutionIdFromMappings(
+/** Resolves the hosted ID recorded for a local Sandbox after an execution starts. */
+export function hostedExecutionIdForSandbox(
   mappings: LifecycleProjectState['hostedMappings'],
-  localExecutionId: string,
+  sandboxId: string | undefined,
 ): string | undefined {
+  if (sandboxId === undefined) return undefined
   for (const scope of Object.values(mappings)) {
-    for (const mapping of Object.values(scope)) {
-      if (mapping.lastLocalExecutionId === localExecutionId) return mapping.lastExecutionId
+    for (const [id, mapping] of Object.entries(scope)) {
+      if (id === sandboxId && mapping.lastExecutionId !== undefined) return mapping.lastExecutionId
     }
   }
   return undefined
@@ -133,11 +134,11 @@ export default class Exec extends OcboxCommand {
       io,
       {
         interrupts: processInterrupts,
-        resolveExecutionId: async (localExecutionId) => {
+        resolveExecutionId: async (target) => {
           try {
             const { store } = await current()
             const state = await store.load()
-            return hostedExecutionIdFromMappings(state.hostedMappings, localExecutionId)
+            return hostedExecutionIdForSandbox(state.hostedMappings, target.sandbox?.id)
           } catch {
             // Fall back to the local ID rather than breaking execution output.
           }

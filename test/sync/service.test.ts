@@ -8,6 +8,7 @@ import { OcboxError } from '../../src/errors/index.js'
 import { OutputWriter } from '../../src/output/index.js'
 import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
 import { createVerifiedBaseline } from '../../src/sync/baseline.js'
+import type { CasResult, CasTransport } from '../../src/sync/cas-contract.js'
 import { cliRules } from '../../src/sync/ignore-rules.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
 import {
@@ -350,6 +351,54 @@ describe('sync service', () => {
 
     for (const folder of folders) expect(rendered).toContain(`${folder} (dependencies)`)
     expect(rendered).not.toContain('more')
+  })
+
+  it('reports left-out folders and the install step for a hosted push', async () => {
+    const directory = await root()
+    const source = join(directory, 'source')
+    await mkdir(source)
+    await mkdir(join(source, 'node_modules'))
+    await writeFile(join(source, 'node_modules', 'dep.js'), 'dep')
+    await mkdir(join(source, '.next'))
+    await writeFile(join(source, '.next', 'cache.js'), 'cache')
+    await writeFile(join(source, 'package-lock.json'), '{"lockfileVersion":3}')
+    await writeFile(join(source, 'app.js'), 'app')
+    const receipt: CasResult = {
+      version: 2,
+      planId: `casdo_${'a'.repeat(30)}`,
+      state: 'uploading',
+      expiresAt: Date.now() + 100_000,
+      replayed: false,
+    }
+    const context: SyncContext = {
+      providerName: 'ocbox',
+      projectId: ProjectIdSchema.parse('11111111-1111-4111-8111-111111111111'),
+      sessionId: SessionIdSchema.parse('22222222-2222-4222-8222-222222222222'),
+      localRoot: source,
+      remoteRoot: join(directory, 'remote'),
+      stateDirectory: join(directory, 'state'),
+      casTransport: {
+        scope: 'test',
+        sessionId: 'sesdo_test',
+        async call(request: Parameters<CasTransport['call']>[0]): Promise<CasResult> {
+          return request.operation === 'plan' ? receipt : { ...receipt, state: 'succeeded' }
+        },
+      },
+    }
+
+    const result = await runSyncApply(context, 'push', applyOptions())
+    const rendered = renderSyncApplied(result)
+
+    expect(result.summary).toEqual({
+      leftOut: [
+        { path: '.next', reason: 'dependency-cache' },
+        { path: 'node_modules', reason: 'dependency-cache' },
+      ],
+      installCommand: 'ocbox exec -- npm ci',
+    })
+    expect(rendered).toContain('Left out: .next (cache), node_modules (dependencies)')
+    expect(rendered).toContain('Dependencies are not uploaded; install them on the box.')
+    expect(rendered).toContain('Next: ocbox exec -- npm ci')
   })
 
   it('does not ask for an install when the pushed lockfile is unchanged', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import Exec, { hostedExecutionIdFromMappings } from '../../src/commands/exec.js'
+import Exec, { hostedExecutionIdForSandbox } from '../../src/commands/exec.js'
 import Pause from '../../src/commands/pause.js'
 import SyncDiff from '../../src/commands/sync/diff.js'
 import SyncPull from '../../src/commands/sync/pull.js'
@@ -23,15 +23,16 @@ describe('exec help', () => {
     expect(Exec.description).toContain('ocbox sync push')
   })
 
-  it('resolves the hosted execution ID recorded for a local execution', () => {
+  it('resolves the hosted execution ID recorded for the local Sandbox', () => {
     const mappings = {
       scope: {
         sandbox: { lastExecutionId: 'exec_hosted', lastLocalExecutionId: 'exec_local' },
         other: { lastExecutionId: 'exec_other' },
       },
     } as unknown as LifecycleProjectState['hostedMappings']
-    expect(hostedExecutionIdFromMappings(mappings, 'exec_local')).toBe('exec_hosted')
-    expect(hostedExecutionIdFromMappings(mappings, 'missing')).toBeUndefined()
+    expect(hostedExecutionIdForSandbox(mappings, 'sandbox')).toBe('exec_hosted')
+    expect(hostedExecutionIdForSandbox(mappings, 'missing')).toBeUndefined()
+    expect(hostedExecutionIdForSandbox(mappings, undefined)).toBeUndefined()
   })
 
   it('states the timeout unit with an example and hides the deprecated alias', () => {

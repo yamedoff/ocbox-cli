@@ -538,6 +538,58 @@ function applySummaryFor(
   }
 }
 
+/** Left-out built-in dependency/build folders from a manifest scan. */
+function leftOutFromManifest(manifest: SourceManifest): readonly SyncLeftOutView[] {
+  return manifest.entries.flatMap((entry) => {
+    const reason = entry.exclusionReason
+    if (reason !== 'build-cache' && reason !== 'dependency-cache') return []
+    return [{ path: entry.path, reason }]
+  })
+}
+
+/** The install step for a root lockfile in the files this push actually sent. */
+function installCommandForUploaded(paths: readonly string[] | undefined): string | null {
+  if (paths === undefined) return null
+  for (const path of paths) {
+    if (path.includes('/')) continue
+    const command = LOCKFILE_INSTALL_COMMANDS[path]
+    if (command !== undefined) return `ocbox exec -- ${command}`
+  }
+  return null
+}
+
+/**
+ * The hosted v2 push returns a plan view without the local scanner's excluded
+ * entries. Re-scan the local tree cheaply (no file hashing) so the summary the
+ * user sees matches the fake-provider push.
+ */
+async function hostedPushSummary(
+  context: SyncContext,
+  options: SyncApplyOptions,
+  view: SyncApplyView,
+): Promise<SyncApplySummaryView | undefined> {
+  try {
+    const stateRelative = relative(context.localRoot, context.stateDirectory).split(sep).join('/')
+    const statePaths =
+      !isAbsolute(stateRelative) && stateRelative !== '..' && !stateRelative.startsWith('../')
+        ? [stateRelative]
+        : []
+    const groups = await loadIgnoreRuleGroups(context.localRoot, options.cliRules)
+    const manifest = await scanSourceManifest(context.localRoot, {
+      ignoreRuleGroups: groups,
+      excludePaths: ['.ocb', '.ocb-cas-owned.json', ...statePaths],
+      maxFiles: 0,
+    })
+    return {
+      leftOut: leftOutFromManifest(manifest),
+      installCommand: installCommandForUploaded(view.uploadedFiles),
+    }
+  } catch {
+    // The push already applied; a summary scan failure must not turn it into an error.
+    return undefined
+  }
+}
+
 function leftOutLabel(entry: SyncLeftOutView): string {
   if (entry.reason === 'build-cache') return 'build output'
   const name = entry.path.split('/').at(-1)?.toLowerCase() ?? ''
@@ -783,9 +835,11 @@ export async function runSyncApply(
   if (context.providerName === 'ocbox') {
     if (mode === 'pull')
       return withSyncLock(context, options, () => runHostedPull(context, options))
-    return withSyncLock(context, options, () => {
+    return withSyncLock(context, options, async () => {
       if (context.casTransport === undefined) throw hostedUnsupported('push')
-      return runCasPush(context, options)
+      const view = await runCasPush(context, options)
+      const summary = await hostedPushSummary(context, options, view)
+      return summary === undefined ? view : { ...view, summary }
     })
   }
   const now = options.now ?? (() => new Date())
