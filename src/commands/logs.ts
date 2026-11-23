@@ -10,7 +10,7 @@ import { hostedFlags } from '../metadata/command.js'
  */
 export default class Logs extends OcboxCommand {
   static override description =
-    'Print the stored stdout and stderr of a finished execution, so an agent that lost the live stream still sees the run output'
+    "Print the stored stdout and stderr of a finished execution, so an agent that lost the live stream still sees the run's output"
   static override args = {
     'execution-id': Args.string({
       required: true,
