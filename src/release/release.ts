@@ -20,6 +20,19 @@ export interface ReleaseFetchOptions {
 
 const ASSET_TIMEOUT_MILLISECONDS = 5 * 60_000
 
+export const RELEASE_NOT_PUBLISHED_MESSAGE = 'No ocbox release is published yet.'
+
+export class ReleaseNotPublishedError extends OcboxError {
+  constructor() {
+    super({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: RELEASE_NOT_PUBLISHED_MESSAGE,
+      requestId: newRequestId(),
+    })
+    this.name = 'ReleaseNotPublishedError'
+  }
+}
+
 function releaseError(
   code: 'CONFIG_INVALID' | 'PROVIDER_UNAVAILABLE',
   message: string,
@@ -119,6 +132,9 @@ export async function latestReleaseVersion(
     headers: { accept: 'application/vnd.github+json' },
     signal: AbortSignal.timeout(options.timeoutMilliseconds ?? ASSET_TIMEOUT_MILLISECONDS),
   })
+  if (response.status === 404) {
+    throw new ReleaseNotPublishedError()
+  }
   if (!response.ok) {
     throw releaseError('PROVIDER_UNAVAILABLE', 'Could not find the latest release.')
   }

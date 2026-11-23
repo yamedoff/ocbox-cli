@@ -17,6 +17,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import Update from '../../src/commands/update.js'
 import { OcboxError } from '../../src/errors/index.js'
 import { installedLayout, installReleaseTarball } from '../../src/release/install.js'
 import { runUpdate } from '../../src/release/update.js'
@@ -433,5 +434,68 @@ describe('ocbox update', () => {
     expect(() => installedLayout(join(root, 'checkout', 'opencloudbox'))).toThrow(
       /can only replace an installed ocbox/,
     )
+  })
+
+  it('reports a missing GitHub release as a typed not-published failure', async () => {
+    const { packageRoot } = await makeInstalled('0.1.0')
+    const environment = unixEnvironment()
+    delete environment['OCBOX_RELEASE_BASE']
+    delete environment['OCBOX_VERSION']
+
+    const error = await runUpdate({
+      check: true,
+      currentVersion: '0.1.0',
+      packageRoot,
+      environment,
+      fetch: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ message: 'Not Found' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    }).catch((failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(OcboxError)
+    expect((error as OcboxError).code).toBe('PROVIDER_UNAVAILABLE')
+    expect((error as OcboxError).message).toBe('No ocbox release is published yet.')
+    expect((error as OcboxError).message).not.toBe('Could not find the latest release.')
+  })
+
+  it('tells the user to install from npm when no release is published', async () => {
+    const previousBase = process.env['OCBOX_RELEASE_BASE']
+    const previousVersion = process.env['OCBOX_VERSION']
+    const previousExitCode = process.exitCode
+    delete process.env['OCBOX_RELEASE_BASE']
+    delete process.env['OCBOX_VERSION']
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Not Found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    try {
+      await Update.run(['--check'], { root: process.cwd() })
+      const stderr = stderrSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
+      const lines = stderr.replace(/\n$/, '').split('\n')
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).not.toBe('')
+      expect(lines[0]).toBe(
+        'No ocbox release is published yet; install from npm instead: npm i -g opencloudbox',
+      )
+      expect(stderr).not.toContain('Could not find the latest release.')
+      expect(process.exitCode).toBe(1)
+    } finally {
+      fetchSpy.mockRestore()
+      stderrSpy.mockRestore()
+      stdoutSpy.mockRestore()
+      if (previousBase === undefined) delete process.env['OCBOX_RELEASE_BASE']
+      else process.env['OCBOX_RELEASE_BASE'] = previousBase
+      if (previousVersion === undefined) delete process.env['OCBOX_VERSION']
+      else process.env['OCBOX_VERSION'] = previousVersion
+      process.exitCode = previousExitCode
+    }
   })
 })

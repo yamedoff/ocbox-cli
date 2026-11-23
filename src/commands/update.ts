@@ -1,6 +1,21 @@
 import { Flags } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
+import { OcboxError } from '../errors/index.js'
+import { ReleaseNotPublishedError } from '../release/release.js'
 import { runUpdate, type UpdateResult } from '../release/update.js'
+
+const NO_RELEASE_GUIDANCE =
+  'No ocbox release is published yet; install from npm instead: npm i -g opencloudbox'
+
+/** An empty release channel is a dead end unless the command names the way out. */
+function updateFailure(error: unknown): unknown {
+  if (!(error instanceof ReleaseNotPublishedError)) return error
+  return new OcboxError({
+    code: error.code,
+    message: NO_RELEASE_GUIDANCE,
+    requestId: error.requestId,
+  })
+}
 
 function updateMessage(result: UpdateResult, check: boolean): string {
   if (check) {
@@ -30,7 +45,13 @@ export default class Update extends OcboxCommand {
       flags,
       check ? 'update.checked' : 'update.installed',
       (result: UpdateResult) => updateMessage(result, check),
-      () => runUpdate({ check }),
+      async () => {
+        try {
+          return await runUpdate({ check })
+        } catch (error) {
+          throw updateFailure(error)
+        }
+      },
     )
   }
 }
