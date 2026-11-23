@@ -42,7 +42,7 @@ Selection and transitions: `src/lifecycle/service.ts:87–340,510–700`. Hosted
 
 Verified against ocbox-cli @ 6e22448
 
-A hosted create persists the Session ID from the create operation before the wait; `exec` and `cancel` share the CLI execution ID; a cancelled run is reported as cancelled rather than a timeout.
+A hosted create persists the Session ID from the create operation before the wait; `exec` prints the hosted execution ID and `cancel` accepts either the hosted or CLI-local form; a cancelled run is reported as cancelled rather than a timeout.
 
 Verified against ocbox-cli @ 872e6f2 plus the create-ID, execution-ID and cancellation changes.
 
