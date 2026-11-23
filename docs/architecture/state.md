@@ -34,6 +34,6 @@ Atomic JSON/locks: `src/lifecycle/atomic-json-store.ts:56–182`, `src/state/exc
 
 Verified against ocbox-cli @ b604910 plus the subject-scoped lifecycle directory.
 
-A hosted mapping retains the CLI execution ID next to the hosted ID so `cancel` reports the same ID `exec` printed.
+A hosted mapping retains the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the CLI-local ID.
 
-Verified against ocbox-cli @ 872e6f2 plus the execution-ID mapping change.
+Verified against ocbox-cli @ 872e6f2 plus the hosted execution-ID mapping change.
