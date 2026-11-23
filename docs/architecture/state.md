@@ -36,4 +36,4 @@ Verified against ocbox-cli @ b604910 plus the subject-scoped lifecycle directory
 
 A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it resolved.
 
-Verified against ocbox-cli @ 593788f plus the hosted execution-ID mapping change.
+Verified against ocbox-cli @ 0a544da plus the hosted execution-ID mapping change.
