@@ -221,6 +221,22 @@ describe('release workflow: release files', () => {
 
     expect(result.status, commandOutput(result)).not.toBe(0)
   })
+
+  it.skipIf(skipOnWindows)(
+    'rejects a LATEST file that does not name the package version',
+    async () => {
+      const root = await makeReleaseFixture()
+      await writeFile(join(root, 'dist', 'release', 'LATEST'), '9.9.9\n')
+
+      const result = spawnSync('bash', ['-e', '-c', script()], {
+        cwd: root,
+        env: { ...process.env },
+        encoding: 'utf8',
+      })
+
+      expect(result.status, commandOutput(result)).not.toBe(0)
+    },
+  )
 })
 
 describe('release workflow: published assets', () => {
