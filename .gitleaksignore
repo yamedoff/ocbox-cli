@@ -5,3 +5,5 @@
 339584cf8a4eb87ba23ef7aabd883bb44e6a25df:.gitleaksignore:aws-access-token:1
 251fb1ecfbb7656dd4b9ee4d4b7f16901ce667c4:.gitleaksignore:aws-access-token:1
 9d1fc577f339c83d623f701c94069784d1fb8eaf:.gitleaksignore:aws-access-token:1
+664552dae93c61dca446d1c8cf9498340d437f07:test/commands/snapshot.test.ts:generic-api-key:209
+664552dae93c61dca446d1c8cf9498340d437f07:test/commands/snapshot.test.ts:generic-api-key:219
