@@ -156,8 +156,9 @@ export async function resolveSnapshotSession(
 /**
  * Maps a refused snapshot request with the same reason and next step a direct
  * command prints. The rewrite happens before the message is built, so a
- * `snapshot_limit_reached` refusal names `ocbox snapshot delete` even when the
- * API embedded its next step in the message.
+ * `snapshot_limit_reached` refusal names `ocbox snapshot delete` in both the
+ * message and the next step, even when the API embedded its next step in the
+ * message.
  */
 function throwSnapshotFailure(operation: string, response: ApiResult<unknown>): never {
   const envelope = envelopeOf(response.body)
@@ -167,12 +168,13 @@ function throwSnapshotFailure(operation: string, response: ApiResult<unknown>): 
     responseRequestId: envelope.requestId ?? response.requestId ?? null,
     retryAfterSeconds: envelope.retryAfterSeconds ?? null,
     serverCode: envelope.code,
-    serverMessage: envelope.message,
+    serverMessage: snapshotText(envelope.reasonCode, envelope.message),
     reason: envelope.reason,
     reasonCode: envelope.reasonCode,
-    nextStep: snapshotNextStep(envelope.reasonCode, envelope.nextStep),
+    nextStep: snapshotText(envelope.reasonCode, envelope.nextStep),
     limitName: envelope.limitName,
     limitValue: envelope.limitValue,
+    notFoundCode: 'SANDBOX_NOT_FOUND',
     status: response.status,
   })
 }
@@ -248,14 +250,14 @@ export async function listSnapshots(
   return resource
 }
 
-/** Names the CLI command that frees a slot or lists snapshots. */
-function snapshotNextStep(reasonCode: string | undefined, nextStep: string | undefined) {
-  if (nextStep === undefined) return undefined
+/** Names the CLI command that frees a slot or lists snapshots in API text. */
+function snapshotText(reasonCode: string | undefined, text: string | undefined) {
+  if (text === undefined) return undefined
   if (reasonCode === 'snapshot_limit_reached')
-    return nextStep.replaceAll('snapshot_delete', '`ocbox snapshot delete`')
+    return text.replaceAll('snapshot_delete', '`ocbox snapshot delete`')
   if (reasonCode === 'snapshot_not_found')
-    return nextStep.replaceAll('snapshot_list', '`ocbox snapshot list`')
-  return nextStep
+    return text.replaceAll('snapshot_list', '`ocbox snapshot list`')
+  return text
 }
 
 /**
@@ -285,12 +287,12 @@ export async function waitForSnapshotOperation(
     requestId: operation.requestId,
     responseRequestId: operation.requestId,
     serverCode: failure?.code,
-    serverMessage: failure?.message,
+    serverMessage: snapshotText(failure?.reasonCode, failure?.message),
     reasonCode: failure?.reasonCode,
-    nextStep: snapshotNextStep(failure?.reasonCode, failure?.nextStep),
+    nextStep: snapshotText(failure?.reasonCode, failure?.nextStep),
     limitName: failure?.limitName,
     limitValue: failure?.limitValue,
     retryAfterSeconds: failure?.retryAfterSeconds ?? null,
-    status: 409,
+    status: 422,
   })
 }

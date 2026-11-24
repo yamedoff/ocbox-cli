@@ -375,6 +375,7 @@ describe('snapshot save', () => {
 
     expect(process.exitCode).toBe(1)
     expect(output(stderrSpy)).toContain('This box keeps the most snapshots it can')
+    expect(output(stderrSpy)).toContain('delete one with `ocbox snapshot delete` to free a slot')
     expect(output(stderrSpy)).toContain('The snapshots limit is 5.')
     expect(output(stderrSpy)).toContain(
       'Next: Delete a snapshot with `ocbox snapshot delete` to free a slot, then retry.',
@@ -551,6 +552,42 @@ describe('snapshot restore', () => {
       'Next: Call `ocbox snapshot list` to see the snapshots this box keeps.',
     )
   })
+
+  it('maps a terminal snapshot_not_found to a non-retryable error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse(operation({ id: 'op_missing' }), 202)
+        return jsonResponse(
+          operation({
+            id: 'op_missing',
+            state: 'failed',
+            progress: 100,
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Snapshot snap_missing was not found',
+              nextStep: 'Call snapshot_list to see the snapshots this box keeps.',
+              reasonCode: 'snapshot_not_found',
+              retryable: false,
+            },
+          }),
+        )
+      }),
+    )
+
+    await SnapshotRestore.run([...runArguments(), 'snap_missing', '--json'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    const envelope = JSON.parse(output(stderrSpy))
+    expect(envelope.data.code).toBe('INVALID_SPEC')
+    expect(envelope.data.retryable).toBe(false)
+    expect(envelope.data.details.reasonCode).toBe('snapshot_not_found')
+    expect(envelope.data.details.nextStep).toBe(
+      'Call `ocbox snapshot list` to see the snapshots this box keeps.',
+    )
+  })
 })
 
 describe('snapshot delete', () => {
@@ -586,5 +623,39 @@ describe('snapshot delete', () => {
       },
       { method: 'GET', path: '/v1/operations/op_delete', key: null },
     ])
+  })
+
+  it('prints snapshot_not_found from a direct refusal and maps the 404 to a sandbox', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Snapshot snap_missing was not found',
+              nextStep: 'Call snapshot_list to see the snapshots this box keeps.',
+              reasonCode: 'snapshot_not_found',
+              retryable: false,
+            },
+            requestId: 'request-1',
+          },
+          404,
+        ),
+      ),
+    )
+
+    await SnapshotDelete.run([...runArguments(), 'snap_missing', '--json'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    const envelope = JSON.parse(output(stderrSpy))
+    expect(envelope.data.code).toBe('SANDBOX_NOT_FOUND')
+    expect(envelope.data.retryable).toBe(false)
+    expect(envelope.data.details.reasonCode).toBe('snapshot_not_found')
+    expect(envelope.data.details.nextStep).toBe(
+      'Call `ocbox snapshot list` to see the snapshots this box keeps.',
+    )
   })
 })
