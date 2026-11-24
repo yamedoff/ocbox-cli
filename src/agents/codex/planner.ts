@@ -2,7 +2,7 @@ import { UtcTimestampSchema } from '../../domain/timestamps.js'
 import { capabilityMatrix } from './capabilities.js'
 import { parseHooksJsonDocument, parseTomlDocument, serializeHooksJsonDocument } from './codec.js'
 import { type CodexJsonValue, deepEqual, isRecord, sha256 } from './document.js'
-import { CodexAdapterError } from './errors.js'
+import { CodexAdapterError, codexApplyConflict } from './errors.js'
 import type { CodexFileSystem } from './fs.js'
 import { CODEX_HOOK_MATCHER_TOOL } from './hook-contract.js'
 import { buildHookCommand, isRecursionGuardActive } from './hook-helper.js'
@@ -1233,13 +1233,8 @@ export async function applyCodexChangePlan(
   try {
     for (const change of plan.files) {
       const current = await fileSystem.readFile(change.file)
-      if (current !== change.before) {
-        throw new CodexAdapterError({
-          code: 'CODEX_APPLY_CONFLICT',
-          message: `The Codex adapter refused to write ${change.file} because it changed after planning`,
-          remediation:
-            'Re-run setup without --yes to rebuild the plan from the current files, then apply it.',
-        })
+      if (contentSha256(current) !== contentSha256(change.before)) {
+        throw codexApplyConflict(change.file)
       }
       if (change.existedBefore && change.backupPath !== null && change.before !== null) {
         await fileSystem.writeFileAtomic(change.backupPath, change.before)
@@ -1247,7 +1242,7 @@ export async function applyCodexChangePlan(
       if (change.after === null) {
         await fileSystem.deleteFile(change.file)
       } else {
-        await fileSystem.writeFileAtomic(change.file, change.after)
+        await fileSystem.writeFileAtomic(change.file, change.after, contentSha256(change.before))
       }
       applied.push(change)
     }

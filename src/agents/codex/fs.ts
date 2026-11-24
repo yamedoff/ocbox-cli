@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { replaceFileAtomically } from '../../state/exclusive-file-lock.js'
+import { sha256 } from './document.js'
+import { codexApplyConflict } from './errors.js'
 
 export interface CodexFileSystem {
   readFile(path: string): Promise<string | null>
-  writeFileAtomic(path: string, contents: string): Promise<void>
+  writeFileAtomic(path: string, contents: string, expectedSha256?: string | null): Promise<void>
   deleteFile(path: string): Promise<void>
 }
 
@@ -24,7 +26,11 @@ async function readFileOrNull(path: string): Promise<string | null> {
   }
 }
 
-async function writeFileAtomic(path: string, contents: string): Promise<void> {
+async function writeFileAtomic(
+  path: string,
+  contents: string,
+  expectedSha256?: string | null,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
   let handle: Awaited<ReturnType<typeof open>> | undefined
@@ -34,6 +40,13 @@ async function writeFileAtomic(path: string, contents: string): Promise<void> {
     await handle.sync()
     await handle.close()
     handle = undefined
+    if (expectedSha256 !== undefined) {
+      const current = await readFileOrNull(path)
+      if ((current === null ? null : sha256(current)) !== expectedSha256) {
+        await rm(temporary, { force: true })
+        throw codexApplyConflict(path)
+      }
+    }
     await replaceFileAtomically(temporary, path)
   } catch (error) {
     await handle?.close()

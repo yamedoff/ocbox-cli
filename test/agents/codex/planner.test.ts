@@ -421,3 +421,67 @@ describe('three-way repair classification', () => {
     expect(await readFile(hooksPath, 'utf8')).toBe(original)
   })
 })
+
+describe('codex apply preimage conflict', () => {
+  async function tempPaths() {
+    const root = await tempRoot()
+    const host = process.platform === 'win32' ? 'win32' : 'linux'
+    return resolveCodexPaths({
+      platform: host,
+      homeDirectory: root,
+      environment: {},
+      stateDirectory: join(root, 'state'),
+    })
+  }
+
+  it('refuses to overwrite a config file edited after planning', async () => {
+    const paths = await tempPaths()
+    const original = 'model = "gpt-5.6-luna"\n'
+    await mkdir(paths.codexHome, { recursive: true })
+    await writeFile(paths.userConfigFile, original)
+    const plan = planCodexSetup({
+      ...setupInput(),
+      paths,
+      preferredRepresentation: 'config-toml',
+      baseTomlText: original,
+    })
+    if (!plan.ok) throw new Error('plan failed')
+    const edited = 'model = "gpt-5.6-luna"\n# edited after planning\n'
+    await writeFile(paths.userConfigFile, edited)
+
+    await expect(
+      applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem),
+    ).rejects.toMatchObject({
+      code: 'CODEX_APPLY_CONFLICT',
+      message: expect.stringContaining(paths.userConfigFile),
+      remediation: expect.stringContaining('ocbox agent setup'),
+    })
+    expect(await readFile(paths.userConfigFile, 'utf8')).toBe(edited)
+  })
+
+  it('refuses to create a hooks file that appeared after planning', async () => {
+    const paths = await tempPaths()
+    const plan = planCodexSetup({ ...setupInput(), paths })
+    if (!plan.ok) throw new Error('plan failed')
+    const created = `${JSON.stringify({ unrelated: true }, null, 2)}\n`
+    await mkdir(paths.codexHome, { recursive: true })
+    await writeFile(paths.userHooksPath, created)
+
+    await expect(
+      applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem),
+    ).rejects.toMatchObject({
+      code: 'CODEX_APPLY_CONFLICT',
+      message: expect.stringContaining(paths.userHooksPath),
+      remediation: expect.stringContaining('ocbox agent setup'),
+    })
+    expect(await readFile(paths.userHooksPath, 'utf8')).toBe(created)
+  })
+
+  it('applies a hooks-json setup when nothing changed after planning', async () => {
+    const paths = await tempPaths()
+    const plan = planCodexSetup({ ...setupInput(), paths })
+    if (!plan.ok) throw new Error('plan failed')
+    await applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem)
+    expect(await readFile(paths.userHooksPath, 'utf8')).toContain('sess-test-1')
+  })
+})
