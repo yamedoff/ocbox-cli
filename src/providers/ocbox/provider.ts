@@ -319,48 +319,69 @@ function hostedRegion(value: unknown): string | null {
 }
 
 /**
- * Builds the observed specification from the hosted public view. A complete
- * domain spec is used unchanged. The V1 object view publishes only the public
- * scalar fields (cpu, memory, region, image when known), so those fields are
- * applied over the request to form the full contract; a payload that reports
- * none of them stays unobserved. Fields the host does not report are not
- * presented as observed by the host.
+ * Reads the first parsable value of one hosted field. The observed spec is
+ * authoritative; the Session's requested spec is the fallback the server uses
+ * to report the box it actually provisioned when the observed view is sparse.
+ */
+function hostedField<T>(
+  sources: readonly Readonly<Record<string, unknown>>[],
+  key: string,
+  parse: (value: unknown) => T | null,
+): T | null {
+  for (const source of sources) {
+    if (!Object.hasOwn(source, key)) continue
+    const parsed = parse(source[key])
+    if (parsed !== null) return parsed
+  }
+  return null
+}
+
+/**
+ * Builds the observed specification from the server's Session answer. A
+ * complete domain spec is used unchanged. Otherwise the public scalar fields
+ * (cpu, memory, region, image when known) from the observed spec, then from
+ * the Session's requested spec, are applied over the request to form the full
+ * contract; an answer that reports none of them stays unobserved. Fields the
+ * host does not report are not presented as observed by the host.
  */
 function hostedEffectiveSpec(
   requested: SandboxSpec,
-  effectiveSpec: Readonly<Record<string, unknown>>,
+  effectiveSpec: Readonly<Record<string, unknown>> | null,
+  requestedSpec: Readonly<Record<string, unknown>> | null,
 ): SandboxSpec | null {
-  const complete = SandboxSpecSchema.safeParse(effectiveSpec)
-  if (complete.success) return complete.data
+  if (effectiveSpec !== null) {
+    const complete = SandboxSpecSchema.safeParse(effectiveSpec)
+    if (complete.success) return complete.data
+  }
+  const sources =
+    effectiveSpec === null
+      ? requestedSpec === null
+        ? []
+        : [requestedSpec]
+      : requestedSpec === null
+        ? [effectiveSpec]
+        : [effectiveSpec, requestedSpec]
   const merged: SandboxSpec = { ...requested }
   let observed = false
-  if (Object.hasOwn(effectiveSpec, 'cpu')) {
-    const millicores = hostedCpuMillicores(effectiveSpec['cpu'])
-    if (millicores !== null) {
-      merged.cpu = { millicores }
-      observed = true
-    }
+  const cpu = hostedField(sources, 'cpu', hostedCpuMillicores)
+  if (cpu !== null) {
+    merged.cpu = { millicores: cpu }
+    observed = true
   }
-  if (Object.hasOwn(effectiveSpec, 'memory')) {
-    const bytes = hostedMemoryBytes(effectiveSpec['memory'])
-    if (bytes !== null) {
-      merged.memory = { bytes }
-      observed = true
-    }
+  const memory = hostedField(sources, 'memory', hostedMemoryBytes)
+  if (memory !== null) {
+    merged.memory = { bytes: memory }
+    observed = true
   }
-  if (Object.hasOwn(effectiveSpec, 'image')) {
-    const image = hostedImageReference(effectiveSpec['image'])
-    if (image !== null) {
-      merged.image = image
-      observed = true
-    }
+  const image = hostedField(sources, 'image', hostedImageReference)
+  if (image !== null) {
+    merged.image = image
+    observed = true
   }
-  if (Object.hasOwn(effectiveSpec, 'region')) {
-    const region = hostedRegion(effectiveSpec['region'])
-    if (region !== null) {
-      merged.region = region
-      observed = true
-    }
+  const region = hostedField(sources, 'region', hostedRegion)
+  if (region !== null) {
+    merged.region = region
+    observed = true
   }
   if (!observed) return null
   const parsed = SandboxSpecSchema.safeParse(merged)
@@ -371,40 +392,58 @@ function hostedEffectiveSpec(
  * Maps the hosted Session's observed specification onto the domain's
  * requested/effective pair.
  *
- * The hosted `effectiveSpec` is the provider's observed reality and is the only
- * source promoted to `effective`; the locally persisted request is never
- * promoted as observed, though the public scalar fields the host does report
- * are merged into the full contract. An omitted image or region is a server
- * default, not a local placeholder, so the observed value also replaces the
- * local placeholder in the requested view. A payload that reports no public
- * field stays `effective: null` (unknown/unobserved). Explicit shell execution
- * with an unobserved OS is left to the remote executor; a known non-Linux OS is
- * rejected before dispatch. `effectiveObservedAt` records the host's observation
- * clock (the same clock as the Sandbox lifetime) so the domain timestamp
- * invariant holds without trusting a cross-service clock; provider identity,
- * bindings, and raw/normalized state are untouched.
+ * The Session answer is the only source of hosted truth. The observed
+ * `effectiveSpec` is preferred; when it is sparse, the Session's `requestedSpec`
+ * (the server's record of the box it provisioned) fills the public scalar
+ * fields, so a real box no longer falls back to the CLI's offline defaults. The
+ * locally persisted request is never promoted as observed. An answer that
+ * reports no public field stays `effective: null` (unknown/unobserved). An
+ * omitted image or region is a server default, not a local placeholder, so the
+ * server value also replaces the local placeholder in the requested view.
+ * Explicit shell execution with an unobserved OS is left to the remote
+ * executor; a known non-Linux OS is rejected before dispatch.
+ * `effectiveObservedAt` records the host's observation clock (the same clock as
+ * the Sandbox lifetime) so the domain timestamp invariant holds without
+ * trusting a cross-service clock; provider identity, bindings, and
+ * raw/normalized state are untouched.
  */
 function hostedSpecification(
   requested: SandboxSpec,
   effectiveSpec: Readonly<Record<string, unknown>> | null,
   observedAt: string,
   requestedSpec: HostedRequestedSpec | undefined,
+  sessionRequestedSpec: Readonly<Record<string, unknown>> | null,
 ): RequestedEffectiveSpec {
-  if (effectiveSpec === null) {
+  if (effectiveSpec === null && sessionRequestedSpec === null) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
-  const effective = hostedEffectiveSpec(requested, effectiveSpec)
+  const effective = hostedEffectiveSpec(requested, effectiveSpec, sessionRequestedSpec)
   if (effective === null) {
     return { effective: null, effectiveObservedAt: null, requested }
   }
-  const requestedWithDefaults =
-    requestedSpec === undefined
-      ? requested
-      : {
-          ...requested,
-          ...(requestedSpec.image === undefined ? { image: effective.image } : {}),
-          ...(requestedSpec.region === undefined ? { region: effective.region } : {}),
-        }
+  const serverImage = hostedField(
+    sessionRequestedSpec === null ? [] : [sessionRequestedSpec],
+    'image',
+    hostedImageReference,
+  )
+  const serverRegion = hostedField(
+    sessionRequestedSpec === null ? [] : [sessionRequestedSpec],
+    'region',
+    hostedRegion,
+  )
+  const requestedWithDefaults = {
+    ...requested,
+    ...(serverImage !== null
+      ? { image: serverImage }
+      : requestedSpec?.image === undefined
+        ? { image: effective.image }
+        : {}),
+    ...(serverRegion !== null
+      ? { region: serverRegion }
+      : requestedSpec?.region === undefined
+        ? { region: effective.region }
+        : {}),
+  }
   return {
     effective,
     effectiveObservedAt: UtcTimestampSchema.parse(observedAt),
@@ -1282,6 +1321,7 @@ export class OcboxSandboxProvider implements SandboxProvider {
         hostedSession?.effectiveSpec ?? null,
         observedAt,
         this.#requestedSpec,
+        hostedSession?.requestedSpec ?? null,
       ),
       updatedAt: observedAt,
     })

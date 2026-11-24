@@ -13,6 +13,7 @@ import {
   requestedSpecFromFlags,
   SIZE_REFUSAL_MESSAGES,
 } from '../../src/providers/ocbox/requested-spec.js'
+import { REDACTED_VALUE, redactForOutput } from '../../src/security/redaction.js'
 import {
   errorResponse,
   HOSTED_PROJECT,
@@ -338,8 +339,109 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(result.sandbox.specification.requested.region).toBe('eu')
   })
 
+  it('shows the hosted session requested image and region and keeps public secret metadata readable', async () => {
+    const sessionRequestedSpec = { image: 'node-24', region: 'eu' }
+    const { api } = await seededApi((input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}`) && method === 'GET') {
+        return Promise.resolve(jsonResponse(projectFixture()))
+      }
+      if (url.endsWith(`/projects/${HOSTED_PROJECT}/sessions`) && method === 'POST') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({}), 202))
+      }
+      if (url.includes('/operations/') && method === 'GET') {
+        return Promise.resolve(jsonResponse(hostedOperationFixture({})))
+      }
+      if (url.endsWith(`/sessions/${HOSTED_SESSION}`) && method === 'GET') {
+        return Promise.resolve(
+          jsonResponse(
+            hostedSessionFixture({ effectiveSpec: {}, requestedSpec: sessionRequestedSpec }),
+          ),
+        )
+      }
+      return Promise.resolve(jsonResponse({}))
+    })
+    const provider = new OcboxSandboxProvider({
+      api,
+      hostedProjectId: HOSTED_PROJECT,
+      now: () => '2026-09-12T10:02:00.000Z',
+      // The local config still carries the offline defaults; the Session answer wins.
+      requestedSpec: { image: 'fake-node-24', region: 'local' },
+    })
+    const specification = {
+      ...testSpec(),
+      environment: {
+        name: 'development',
+        secretReferenceIds: ['ocbox:project/reference'],
+        variableNames: [],
+      },
+    }
+    const context = operationContext()
+    const result = await provider.create(
+      context as never,
+      {
+        adoption: {
+          metadata: { operationId: context.operationId, sessionId: LOCAL_IDS.session },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: LOCAL_IDS.project,
+        sessionId: LOCAL_IDS.session,
+        specification: specification as never,
+      } as never,
+    )
+    expect(result.sandbox.specification.requested.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(result.sandbox.specification.requested.region).toBe('eu')
+    expect(result.sandbox.specification.effective).not.toBeNull()
+    expect(result.sandbox.specification.effective?.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(result.sandbox.specification.effective?.region).toBe('eu')
+    expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
+
+    const fetched = await provider.get(
+      { issuedAt: context.issuedAt, requestId: context.requestId } as never,
+      { sandboxId: result.sandbox.id } as never,
+    )
+    expect(fetched?.specification.requested.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(fetched?.specification.requested.region).toBe('eu')
+    expect(fetched?.specification.effective?.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(fetched?.specification.effective?.region).toBe('eu')
+
+    const redacted = redactForOutput({
+      capabilities: { secretExposureModes: ['unsupported'] },
+      specification: fetched?.specification,
+    })
+    expect(redacted).toMatchObject({
+      capabilities: { secretExposureModes: ['unsupported'] },
+      specification: {
+        requested: {
+          environment: { secretReferenceIds: ['ocbox:project/reference'] },
+          image: { kind: 'image', reference: 'node-24' },
+          region: 'eu',
+        },
+      },
+    })
+    expect(
+      redactForOutput({
+        secretReferenceIds: ['ocbox:project/reference', 'sk-abcdefghijklmnop'],
+      }),
+    ).toEqual({
+      secretReferenceIds: ['ocbox:project/reference', REDACTED_VALUE],
+    })
+  })
+
   it('leaves an absent or unparseable hosted effectiveSpec unobserved and never promotes requested', async () => {
-    const providerSpec = testSpec()
     const { api } = await seededApi((input, init) => {
       const url = String(input)
       const method = (init?.method ?? 'GET').toUpperCase()
@@ -356,7 +458,7 @@ describe('hosted ocbox provider lifecycle', () => {
         return Promise.resolve(
           jsonResponse(
             hostedSessionFixture({
-              requestedSpec: providerSpec,
+              requestedSpec: {},
               effectiveSpec: { operatingSystem: 'linux' },
             }),
           ),

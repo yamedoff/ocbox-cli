@@ -22,6 +22,15 @@ export interface CodexAdapterErrorInput {
   readonly details?: Readonly<Record<string, CodexJsonValue>>
 }
 
+export function codexApplyConflict(file: string): CodexAdapterError {
+  return new CodexAdapterError({
+    code: 'CODEX_APPLY_CONFLICT',
+    message: `The Codex adapter refused to write ${file} because it changed after planning`,
+    remediation:
+      'Run `ocbox agent setup` again to rebuild the plan from the current files, then apply it.',
+  })
+}
+
 export class CodexAdapterError extends Error {
   readonly code: CodexAdapterErrorCode
   readonly remediation: string
