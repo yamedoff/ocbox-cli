@@ -7,7 +7,7 @@
 export const RELEASE_BASE_URL = 'https://github.com/yamedoff/ocbox-cli/releases/latest/download'
 export const LATEST_RELEASE_API_URL =
   'https://api.github.com/repos/yamedoff/ocbox-cli/releases/latest'
-export const CHECKSUM_FILE_NAME = 'SHA256SUMS'
+export const CHECKSUM_FILE_NAME = 'SHA256SUMS.txt'
 export const RELEASE_TARBALL_PREFIX = 'ocbox-'
 
 /** `ocbox-<version>.tgz`, the name produced by scripts/pack-release.mjs. */
