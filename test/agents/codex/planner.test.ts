@@ -12,6 +12,7 @@ import {
   type SetupPlanInput,
 } from '../../../src/agents/codex/planner.js'
 import { parseTomlDocument } from '../../../src/agents/codex/codec.js'
+import { sha256 } from '../../../src/agents/codex/document.js'
 import { nodeCodexFileSystem } from '../../../src/agents/codex/fs.js'
 import { parseCodexAdapterManifest } from '../../../src/agents/codex/manifest.js'
 import { resolveCodexPaths } from '../../../src/agents/codex/paths.js'
@@ -483,5 +484,20 @@ describe('codex apply preimage conflict', () => {
     if (!plan.ok) throw new Error('plan failed')
     await applyCodexChangePlan({ files: plan.changes }, nodeCodexFileSystem)
     expect(await readFile(paths.userHooksPath, 'utf8')).toContain('sess-test-1')
+  })
+
+  it('refuses a write whose planned sha256 no longer matches the file', async () => {
+    const paths = await tempPaths()
+    await mkdir(paths.codexHome, { recursive: true })
+    const current = '{"hooks":{}}\n'
+    await writeFile(paths.userHooksPath, current)
+    await expect(
+      nodeCodexFileSystem.writeFileAtomic(
+        paths.userHooksPath,
+        '{"hooks":{"Stop":[]}}\n',
+        sha256('a different planned preimage'),
+      ),
+    ).rejects.toMatchObject({ code: 'CODEX_APPLY_CONFLICT' })
+    expect(await readFile(paths.userHooksPath, 'utf8')).toBe(current)
   })
 })
