@@ -1,7 +1,7 @@
 import { Command } from '@oclif/core'
 import { resolve } from 'node:path'
 import { z } from 'zod'
-import { mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
+import { envelopeOf, mapApiFailureToOcboxError, toRequestId } from '../../api/client/errors.js'
 import type { OcboxApiClient } from '../../api/client/index.js'
 import type { ApiResult } from '../../api/generated/client.js'
 import { runtimeFlags } from '../../cli/base-command.js'
@@ -153,11 +153,36 @@ export async function resolveSnapshotSession(
   return mapped?.hostedSessionId ?? view.session.id
 }
 
+/**
+ * Maps a refused snapshot request with the same reason and next step a direct
+ * command prints. The rewrite happens before the message is built, so a
+ * `snapshot_limit_reached` refusal names `ocbox snapshot delete` even when the
+ * API embedded its next step in the message.
+ */
+function throwSnapshotFailure(operation: string, response: ApiResult<unknown>): never {
+  const envelope = envelopeOf(response.body)
+  throw mapApiFailureToOcboxError({
+    operation,
+    requestId: response.requestId ?? envelope.requestId ?? null,
+    responseRequestId: envelope.requestId ?? response.requestId ?? null,
+    retryAfterSeconds: envelope.retryAfterSeconds ?? null,
+    serverCode: envelope.code,
+    serverMessage: envelope.message,
+    reason: envelope.reason,
+    reasonCode: envelope.reasonCode,
+    nextStep: snapshotNextStep(envelope.reasonCode, envelope.nextStep),
+    limitName: envelope.limitName,
+    limitValue: envelope.limitValue,
+    status: response.status,
+  })
+}
+
 function operationOf(
   api: OcboxApiClient,
   operation: string,
   response: ApiResult<unknown>,
 ): SnapshotOperation {
+  if (response.status !== 202) throwSnapshotFailure(operation, response)
   const { resource } = parseHostedResponse(
     api,
     operation,
@@ -211,6 +236,7 @@ export async function listSnapshots(
   signal?: AbortSignal,
 ): Promise<SessionSnapshotList> {
   const response = await api.listSnapshots(sessionId, signal)
+  if (response.status !== 200) throwSnapshotFailure('snapshot.list', response)
   const { resource } = parseHostedResponse(
     api,
     'snapshot.list',

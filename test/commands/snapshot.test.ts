@@ -339,6 +339,55 @@ describe('snapshot save', () => {
       '/v1/operations/op_limit',
     ])
   })
+
+  it('prints snapshot_limit_reached from a direct refusal with the limit and the CLI command', async () => {
+    const calls: Call[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        calls.push({
+          method: init?.method ?? 'GET',
+          path: new URL(String(input)).pathname,
+          key: new Headers(init?.headers).get('idempotency-key'),
+        })
+        return jsonResponse(
+          {
+            error: {
+              code: 'SESSION_STATE_CONFLICT',
+              message:
+                'This box keeps the most snapshots it can; delete one with snapshot_delete to free a slot.',
+              nextStep: 'Delete a snapshot with snapshot_delete to free a slot, then retry.',
+              reasonCode: 'snapshot_limit_reached',
+              retryable: false,
+              limitName: 'snapshots',
+              limitValue: 5,
+            },
+            requestId: 'request-1',
+          },
+          409,
+        )
+      }),
+    )
+
+    await SnapshotSave.run([...runArguments(), '--idempotency-key', 'test-limit-key-123'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('This box keeps the most snapshots it can')
+    expect(output(stderrSpy)).toContain('The snapshots limit is 5.')
+    expect(output(stderrSpy)).toContain(
+      'Next: Delete a snapshot with `ocbox snapshot delete` to free a slot, then retry.',
+    )
+    expect(output(stderrSpy)).toContain('Reason snapshot_limit_reached.')
+    expect(calls).toEqual([
+      {
+        method: 'POST',
+        path: `/v1/sessions/${HOSTED_SESSION_ID}/snapshots`,
+        key: 'test-limit-key-123',
+      },
+    ])
+  })
 })
 
 describe('snapshot list', () => {
