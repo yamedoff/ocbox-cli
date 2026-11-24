@@ -403,9 +403,24 @@ describe('hosted ocbox provider lifecycle', () => {
     expect(result.sandbox.specification.effective?.region).toBe('eu')
     expect(result.sandbox.specification.effectiveObservedAt).toBe('2026-09-12T10:02:00.000Z')
 
+    const fetched = await provider.get(
+      { issuedAt: context.issuedAt, requestId: context.requestId } as never,
+      { sandboxId: result.sandbox.id } as never,
+    )
+    expect(fetched?.specification.requested.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(fetched?.specification.requested.region).toBe('eu')
+    expect(fetched?.specification.effective?.image).toEqual({
+      kind: 'image',
+      reference: 'node-24',
+    })
+    expect(fetched?.specification.effective?.region).toBe('eu')
+
     const redacted = redactForOutput({
       capabilities: { secretExposureModes: ['unsupported'] },
-      specification: result.sandbox.specification,
+      specification: fetched?.specification,
     })
     expect(redacted).toMatchObject({
       capabilities: { secretExposureModes: ['unsupported'] },
