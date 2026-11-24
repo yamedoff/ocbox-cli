@@ -194,6 +194,148 @@ export class OcboxApiClient {
     }
   }
 
+  /**
+   * Captures a snapshot of one Session. The pinned generated client predates
+   * this route, so it is requested through the same authenticated transport and
+   * the same failure mapping as `listSizes`.
+   */
+  async createSnapshot(
+    sessionId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(`${base}/v1/sessions/${encodeURIComponent(sessionId)}/snapshots`)
+    const response = await this.#transport.fetch(url, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'user-agent': OCBOX_CLI_USER_AGENT,
+        'idempotency-key': idempotencyKey,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Lists the snapshots of one Session. The pinned generated client predates
+   * this route, so it is requested through the same authenticated transport and
+   * the same failure mapping as `listSizes`.
+   */
+  async listSnapshots(sessionId: string, signal?: AbortSignal): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(`${base}/v1/sessions/${encodeURIComponent(sessionId)}/snapshots`)
+    const response = await this.#transport.fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', 'user-agent': OCBOX_CLI_USER_AGENT },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Restores one Session snapshot. The pinned generated client predates this
+   * route, so it is requested through the same authenticated transport and the
+   * same failure mapping as `listSizes`.
+   */
+  async restoreSnapshot(
+    sessionId: string,
+    snapshotId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(
+      `${base}/v1/sessions/${encodeURIComponent(sessionId)}/snapshots/${encodeURIComponent(snapshotId)}/restore`,
+    )
+    const response = await this.#transport.fetch(url, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'user-agent': OCBOX_CLI_USER_AGENT,
+        'idempotency-key': idempotencyKey,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
+  /**
+   * Deletes one Session snapshot. The pinned generated client predates this
+   * route, so it is requested through the same authenticated transport and the
+   * same failure mapping as `listSizes`.
+   */
+  async deleteSnapshot(
+    sessionId: string,
+    snapshotId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<unknown>> {
+    const base = this.#protocol.issuer.replace(/\/v1\/?$/, '').replace(/\/$/, '')
+    const url = new URL(
+      `${base}/v1/sessions/${encodeURIComponent(sessionId)}/snapshots/${encodeURIComponent(snapshotId)}`,
+    )
+    const response = await this.#transport.fetch(url, {
+      method: 'DELETE',
+      headers: {
+        accept: 'application/json',
+        'user-agent': OCBOX_CLI_USER_AGENT,
+        'idempotency-key': idempotencyKey,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text.length === 0 ? null : JSON.parse(text)
+    } catch {
+      // A body that is not JSON is judged by its status alone; never echoed.
+    }
+    return {
+      body,
+      replay: false,
+      requestId: response.headers.get('x-request-id'),
+      status: response.status,
+    }
+  }
+
   get issuer(): string {
     return this.#protocol.issuer
   }
