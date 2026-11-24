@@ -110,8 +110,7 @@ function amount(bytes: number): string {
 
 /** One line per snapshot: id, creation time, and size when the service knows it. */
 export function snapshotLine(snapshot: SessionSnapshot): string {
-  const size = snapshot.sizeBytes === undefined ? '' : `  ${amount(snapshot.sizeBytes)}`
-  return `${snapshot.id}  ${snapshot.createdAt}${size}`
+  return `${snapshot.id}  ${snapshot.createdAt}`
 }
 
 /** Human list, in the order the hosted route returns it (newest first). */
