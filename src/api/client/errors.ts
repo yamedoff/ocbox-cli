@@ -112,6 +112,7 @@ export interface RefusalEnvelope {
   readonly nextStep?: string | undefined
   readonly limitName?: string | undefined
   readonly limitValue?: number | undefined
+  readonly retryAfterSeconds?: number | undefined
 }
 
 interface ValidatedRefusalFields {
@@ -120,10 +121,11 @@ interface ValidatedRefusalFields {
   readonly reasonCode: string | null
   readonly limitName: string | null
   readonly limitValue: number | null
+  readonly retryAfterSeconds: number | null
 }
 
 /** Validates and redacts every refusal field a server may supply. */
-function validatedRefusalFields(input: RefusalEnvelope): ValidatedRefusalFields {
+function validatedRefusalFields(input: RefusalEnvelope | ApiFailureInput): ValidatedRefusalFields {
   return {
     nextStep:
       typeof input.nextStep === 'string' &&
@@ -134,6 +136,7 @@ function validatedRefusalFields(input: RefusalEnvelope): ValidatedRefusalFields 
     reasonCode: safeReasonDetail(input.reasonCode, 'reasonCode'),
     limitName: safeReasonDetail(input.limitName, 'limitName'),
     limitValue: safeLimitValue(input.limitValue),
+    retryAfterSeconds: validRetryAfter(input.retryAfterSeconds),
   }
 }
 
@@ -165,6 +168,10 @@ export function withRefusalEnvelope(error: OcboxError, envelope: RefusalEnvelope
   if (refusal.limitValue !== null) {
     // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
     details['limitValue'] = refusal.limitValue
+  }
+  if (refusal.retryAfterSeconds !== null) {
+    // biome-ignore lint/complexity/useLiteralKeys: Record index signature access
+    details['retryAfterSeconds'] = refusal.retryAfterSeconds
   }
   const message = withLimitGuidance(
     error.message,
