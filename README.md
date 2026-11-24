@@ -7,7 +7,9 @@ source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle comman
 
 ## Install
 
-Requires Node.js ≥22 and the pinned pnpm from [Toolchain](#toolchain).
+Requires Node.js 24.20.0 and the pinned pnpm from [Toolchain](#toolchain).
+`package.json` pins that Node version in `devEngines`, so `pnpm install
+--frozen-lockfile` refuses any other one.
 
 The npm package and the first GitHub release are not published yet, so the only
 working install path is from source. Build the release files and install them

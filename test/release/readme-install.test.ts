@@ -19,6 +19,13 @@ interface PackageJson {
     access?: string
     provenance?: boolean
   }
+  devEngines?: {
+    runtime?: {
+      name?: string
+      version?: string
+      onFail?: string
+    }
+  }
 }
 
 async function readRepoFile(...segments: string[]): Promise<string> {
@@ -89,6 +96,24 @@ describe('README install path', () => {
     )
     expect(pkg.scripts['pack:release']).toContain('scripts/pack-release.mjs')
     expect(pkg.scripts['pack:release']).toContain('pnpm run build')
+  })
+
+  it('states the Node version the source install requires', async () => {
+    const readme = await readRepoFile('README.md')
+    const install = section(readme, 'Install')
+    const toolchain = section(readme, 'Toolchain')
+    const pkg = JSON.parse(await readRepoFile('package.json')) as PackageJson
+
+    const nodeVersion = pkg.devEngines?.runtime?.version
+    if (nodeVersion === undefined) {
+      throw new Error('package.json has no devEngines.runtime.version')
+    }
+    expect(pkg.devEngines?.runtime?.onFail).toBe('error')
+
+    expect(install).toContain(`Node.js ${nodeVersion}`)
+    expect(install).not.toMatch(/Requires Node\.js\s*[≥>]/)
+    expect(install).toContain('devEngines')
+    expect(toolchain).toContain(`Node.js \`${nodeVersion}\``)
   })
 
   it('states the publication state without an npm-registry install command', async () => {
