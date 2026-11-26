@@ -173,8 +173,9 @@ hello from the box
 ```
 
 `--timeout-seconds 60` bounds the run at 60 seconds. Tokens after `--` are passed
-to the program unchanged; the CLI never evaluates them in a shell. The execution
-ID lets you reattach after a disconnect with `ocbox execution get <id>`.
+to the program unchanged; the CLI never evaluates them in a shell. After a
+disconnect, the execution ID lets you check the run with
+`ocbox execution get <id>`.
 
 Hosted commands run in the box's workspace folder, where `sync push` put the
 files. Ask the box where that folder is:
@@ -334,8 +335,10 @@ uses its own codes around that program:
 Exit 125 is the CLI's own infrastructure-failure code, not the program's. A
 remote program may itself exit 125; `--json` and `--jsonl` carry the `outcome`
 discriminator (`remote_result` versus `infrastructure_error`) so automation can
-tell them apart. A malformed Session ID is a usage error and exits 1. Other
-commands report a refusal with `Reason <code>.` and exit 1.
+tell them apart. The same applies to 124 and 130: a remote program may return
+those codes, and `--json` reports `remote_result` rather than `timeout` or
+`cancelled`. A malformed Session ID is a usage error and exits 1. Other commands
+report a refusal with `Reason <code>.` and exit 1.
 
 ## If a Session is in error
 
