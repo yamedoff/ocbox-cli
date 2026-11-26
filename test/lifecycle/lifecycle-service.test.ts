@@ -207,14 +207,21 @@ class FailedStartHostedProvider extends FakeSandboxProvider {
 }
 
 class RefusedCreateProvider extends FakeSandboxProvider {
+  readonly #providerCode: string
+
+  constructor(stateDirectory: string, providerCode = 'lifetime_over_limit') {
+    super(stateDirectory)
+    this.#providerCode = providerCode
+  }
+
   override async create(
     context: OperationContext,
     _request: CreateSandboxRequest,
   ): Promise<SandboxMutationResult> {
     throw new OcboxError({
       code: 'INVALID_SPEC',
-      message: 'The requested lifetime is longer than this size allows',
-      providerCode: 'lifetime_over_limit',
+      message: 'The requested specification was refused by the hosted service',
+      providerCode: this.#providerCode,
       requestId: context.requestId,
     })
   }
@@ -580,6 +587,21 @@ describe('LifecycleService', () => {
     expect(state.activeSessionId).toBeNull()
     expect(Object.keys(state.sessions)).toHaveLength(0)
     expect(Object.keys(state.operations)).toHaveLength(0)
+  })
+
+  it('removes the Session when the hosted API refuses a create field', async () => {
+    const directory = await temporaryDirectory()
+    const store = new LifecycleStore(directory, PROJECT_ID)
+    const provider = new RefusedCreateProvider(directory, 'api_request_field_invalid')
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'INVALID_SPEC',
+      providerCode: 'api_request_field_invalid',
+    })
+
+    const state = await store.load()
+    expect(state.activeSessionId).toBeNull()
+    expect(Object.keys(state.sessions)).toHaveLength(0)
   })
 
   it('names the commands that get out of an errored Session', async () => {
