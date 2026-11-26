@@ -711,7 +711,10 @@ function conflictError(plan: SyncPlan, mode: SyncMode): OcboxError {
   const nextStep =
     mode === 'push' && paths.length > 0 ? pushExcludeNextStep(paths) : 'ocbox sync diff'
   return syncConflictError({
-    message: `Sync refused because the local and remote trees diverged in ${String(paths.length)} path(s): ${listConflictPaths(paths)}. Resolve the conflicting paths and retry; ${nextStep}`,
+    message:
+      paths.length === 0
+        ? `Sync refused because the stored baseline is not verified. Resolve the baseline and retry; ${nextStep}`
+        : `Sync refused because the local and remote trees diverged in ${String(paths.length)} path(s): ${listConflictPaths(paths)}. Resolve the conflicting paths and retry; ${nextStep}`,
     paths,
     conflicts: conflictReports(plan),
     nextStep,

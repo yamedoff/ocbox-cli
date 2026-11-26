@@ -663,6 +663,14 @@ function pullConflictError(
   const boxDeletion = plan.conflicts.some(
     (conflict) => conflict.path !== null && !remote.has(conflict.path),
   )
+  if (paths.length === 0)
+    return syncConflictError({
+      message:
+        'The stored sync baseline is not verified; resolve the baseline before pulling from the box',
+      paths: [],
+      conflicts: conflictReports(plan),
+      nextStep: 'ocbox sync diff',
+    })
   const guidance = boxDeletion
     ? 'Keep your copies with ocbox sync pull --keep-local, or accept the box deletions with ocbox sync pull --delete --yes (and use --overwrite-local for box file changes)'
     : 'Keep your copies with ocbox sync pull --keep-local, or take the box copies with ocbox sync pull --overwrite-local'
@@ -693,7 +701,10 @@ function pullOverwriteIncompleteError(
     ),
   ].sort(comparePathString)
   return syncConflictError({
-    message: `The box deleted ${String(paths.length)} path(s) you changed: ${listConflictPaths(paths)}. Keep your copies with ocbox sync pull --keep-local, or accept the box deletions with ocbox sync pull --delete --yes.`,
+    message:
+      paths.length === 0
+        ? 'The stored sync baseline is not verified; resolve the baseline before pulling from the box'
+        : `The box deleted ${String(paths.length)} path(s) you changed: ${listConflictPaths(paths)}. Keep your copies with ocbox sync pull --keep-local, or accept the box deletions with ocbox sync pull --delete --yes.`,
     paths,
     conflicts: unresolved.map((conflict) => ({
       path: conflict.path,
@@ -800,10 +811,12 @@ export async function runHostedPull(
       if (options.keepLocal === true) {
         skipped = new Set(conflictPaths(plan))
       } else if (options.overwriteLocal === true) {
-        const unresolved = plan.conflicts.filter(
-          (conflict) => conflict.path === null || !remoteMap.has(conflict.path),
+        const unverified = plan.conflicts.some((conflict) => conflict.path === null)
+        if (unverified) throw pullConflictError(plan, remoteMap)
+        const boxDeleted = plan.conflicts.some(
+          (conflict) => conflict.path !== null && !remoteMap.has(conflict.path),
         )
-        if (unresolved.length > 0 && !(options.delete && options.yes))
+        if (boxDeleted && !(options.delete && options.yes))
           throw pullOverwriteIncompleteError(plan, remoteMap)
         effectiveConflicts = []
       } else {

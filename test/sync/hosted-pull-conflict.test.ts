@@ -306,6 +306,7 @@ describe('hosted pull keeps local work', () => {
 
     expect(view.conflicts).toEqual([])
     expect(view.pulledFiles).toEqual(['a.txt'])
+    expect(view.baselineUpdated).toBe(true)
     expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('box')
   })
 
@@ -335,6 +336,7 @@ describe('hosted pull keeps local work', () => {
 
     expect(view.conflicts).toEqual([])
     expect(view.pulledFiles).toEqual(['a.txt'])
+    expect(view.baselineUpdated).toBe(true)
     expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('box')
   })
 })

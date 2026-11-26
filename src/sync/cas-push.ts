@@ -141,6 +141,7 @@ export function syncConflictError(input: {
   readonly conflicts: readonly SyncConflictReport[]
   readonly nextStep: string
   readonly reasonCode?: string
+  readonly requestId?: OcboxError['requestId']
 }): OcboxError {
   const paths = [...new Set(input.paths)].slice(0, 100)
   const details = safeDetails({
@@ -157,7 +158,7 @@ export function syncConflictError(input: {
     new OcboxError({
       code: 'SYNC_CONFLICT',
       message,
-      requestId: newRequestId(),
+      requestId: input.requestId ?? newRequestId(),
       ...(details === undefined ? {} : { details }),
     })
   try {
@@ -189,14 +190,18 @@ export function pushServerConflict(
   const sides = both.length > 0 ? ['local', 'remote'] : ['local']
   const nextStep = pushExcludeNextStep(paths)
   const reasonCode = error.details?.['reasonCode']
+  const message =
+    paths.length === 0
+      ? `${error.message}. Run ocbox sync diff to inspect the box workspace`
+      : both.length > 0
+        ? `${error.message}: ${listConflictPaths(paths)} changed on both sides. The box changed since your last push; skip your local changes with: ${nextStep}`
+        : `${error.message}. Your locally changed paths are: ${listConflictPaths(paths)}. Run ocbox sync diff to see the box side, or skip them with: ${nextStep}`
   return syncConflictError({
-    message:
-      paths.length === 0
-        ? `${error.message}. Run ocbox sync diff to inspect the box workspace`
-        : `${error.message}: ${listConflictPaths(paths)}. The box changed since your last push; skip your changed paths with: ${nextStep}`,
+    message,
     paths,
     conflicts: paths.map((path) => ({ path, kind, sides })),
     nextStep,
+    requestId: error.requestId,
     ...(typeof reasonCode === 'string' ? { reasonCode } : {}),
   })
 }
