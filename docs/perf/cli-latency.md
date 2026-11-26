@@ -67,10 +67,10 @@ POSIX shell, one command per invocation:
 ```sh
 mkdir -p traces/status traces/exec traces/push
 for i in $(seq 1 10); do
-  OCBOX_TRACE=1 ocbox status --json >/dev/null 2>"traces/status/$i.log"
-  OCBOX_TRACE=1 ocbox exec --json -- true >/dev/null 2>"traces/exec/$i.log"
+  OCBOX_TRACE=1 ocbox status >/dev/null 2>"traces/status/$i.log"
+  OCBOX_TRACE=1 ocbox exec -- true >/dev/null 2>"traces/exec/$i.log"
   node -e "require('node:fs').writeFileSync('change.bin', Buffer.alloc(1024, process.argv[1]))" "$i"
-  OCBOX_TRACE=1 ocbox sync push --json >/dev/null 2>"traces/push/$i.log"
+  OCBOX_TRACE=1 ocbox sync push >/dev/null 2>"traces/push/$i.log"
 done
 ```
 
@@ -80,19 +80,20 @@ PowerShell on Windows:
 $env:OCBOX_TRACE = '1'
 New-Item -ItemType Directory -Force traces\status, traces\exec, traces\push | Out-Null
 1..10 | ForEach-Object {
-  ocbox status --json 2>"traces\status\$_.log" | Out-Null
-  ocbox exec --json -- true 2>"traces\exec\$_.log" | Out-Null
+  ocbox status 2>"traces\status\$_.log" | Out-Null
+  ocbox exec -- true 2>"traces\exec\$_.log" | Out-Null
   [IO.File]::WriteAllBytes(
     'change.bin',
     [Text.Encoding]::ASCII.GetBytes(('{0:D4}' -f $_).PadRight(1024, 'x'))
   )
-  ocbox sync push --json 2>"traces\push\$_.log" | Out-Null
+  ocbox sync push 2>"traces\push\$_.log" | Out-Null
 }
 ```
 
 `change.bin` must be inside the synced project workspace; adjust the path if the
 workspace root is elsewhere. It is exactly 1024 ASCII bytes and differs on every
-run.
+run. `exec` runs in the default warm-session mode, so its `http` rows may be
+absent; repeat that command with `OCBOX_WARM=0` if you need the request split.
 
 ### From stderr lines to the table
 
@@ -109,8 +110,13 @@ const runs = new Map()
 
 for (const name of await readdir(directory)) {
   if (!name.endsWith('.log')) continue
+  const raw = await readFile(join(directory, name))
+  const text =
+    raw[0] === 0xff && raw[1] === 0xfe
+      ? raw.subarray(2).toString('utf16le')
+      : raw.toString('utf8').replace(/^\uFEFF/, '')
   const sums = new Map()
-  for (const line of (await readFile(join(directory, name), 'utf8')).split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     if (!line.startsWith('ocbox-trace ')) continue
     const fields = Object.fromEntries(
       line
@@ -144,7 +150,9 @@ for (const [key, values] of [...runs].sort(([left], [right]) => left.localeCompa
 }
 ```
 
-Then run it once per command:
+The reader accepts UTF-8 with or without a BOM and UTF-16LE with a BOM, so
+Windows PowerShell and PowerShell 7 redirection both work. Then run it once per
+command:
 
 ```sh
 node summarize-trace.mjs traces/status status
@@ -160,9 +168,9 @@ the 2 s exit criterion. Repeated rows with the same key in one run are added, so
 each run contributes one value per key: `exec` and `sync push` read the workspace
 config more than once, and repeated `http` keys are summed the same way. Group
 `http` rows by method, path and status and `token-refresh` rows by `network`.
-Percentiles are nearest-rank over the 10 per-run values: sort them and take
-element `ceil(p/100 * 10)` (the 5th for p50, the 10th for p95). Do not average
-across runs before taking percentiles.
+Percentiles are nearest-rank over the per-run values (10 when every run emitted
+the key): sort them and take element `ceil(p/100 * n)` (the 5th of 10 for p50,
+the 10th for p95). Do not average across runs before taking percentiles.
 
 ## Reference run (not staging)
 
@@ -208,32 +216,32 @@ Fill it from the owner's Windows PC after this part merges, then paste the
 staging box by hand. `entry` and `command elapsed_ms` are elapsed values; every
 other row is a phase duration.
 
-| command            | phase                                    | p50 ms | p95 ms |
-| ------------------ | ---------------------------------------- | -----: | -----: |
-| `status`           | `entry`                                  |      — |      — |
-| `status`           | `module-load`                            |      — |      — |
-| `status`           | `config`                                 |      — |      — |
-| `status`           | `credentials`                            |      — |      — |
-| `status`           | `token-refresh network=no`               |      — |      — |
-| `status`           | `http GET /v1/projects/:id/sessions 200` |      — |      — |
-| `status`           | `command`                                |      — |      — |
-| `status`           | `command elapsed_ms`                     |      — |      — |
-| `exec -- true`     | `entry`                                  |      — |      — |
-| `exec -- true`     | `module-load`                            |      — |      — |
-| `exec -- true`     | `config`                                 |      — |      — |
-| `exec -- true`     | `credentials`                            |      — |      — |
-| `exec -- true`     | `token-refresh network=no`               |      — |      — |
-| `exec -- true`     | `http …` (each request)                  |      — |      — |
-| `exec -- true`     | `command`                                |      — |      — |
-| `exec -- true`     | `command elapsed_ms`                     |      — |      — |
-| `sync push` (1 KB) | `entry`                                  |      — |      — |
-| `sync push` (1 KB) | `module-load`                            |      — |      — |
-| `sync push` (1 KB) | `config`                                 |      — |      — |
-| `sync push` (1 KB) | `credentials`                            |      — |      — |
-| `sync push` (1 KB) | `token-refresh network=no`               |      — |      — |
-| `sync push` (1 KB) | `http …` (each request)                  |      — |      — |
-| `sync push` (1 KB) | `command`                                |      — |      — |
-| `sync push` (1 KB) | `command elapsed_ms`                     |      — |      — |
+| command            | phase                      | p50 ms | p95 ms |
+| ------------------ | -------------------------- | -----: | -----: |
+| `status`           | `entry`                    |      — |      — |
+| `status`           | `module-load`              |      — |      — |
+| `status`           | `config`                   |      — |      — |
+| `status`           | `credentials`              |      — |      — |
+| `status`           | `token-refresh network=…` |      — |      — |
+| `status`           | `http …` (each request)    |      — |      — |
+| `status`           | `command`                  |      — |      — |
+| `status`           | `command elapsed_ms`       |      — |      — |
+| `exec -- true`     | `entry`                    |      — |      — |
+| `exec -- true`     | `module-load`              |      — |      — |
+| `exec -- true`     | `config`                   |      — |      — |
+| `exec -- true`     | `credentials`              |      — |      — |
+| `exec -- true`     | `token-refresh network=…` |      — |      — |
+| `exec -- true`     | `http …` (each request)    |      — |      — |
+| `exec -- true`     | `command`                  |      — |      — |
+| `exec -- true`     | `command elapsed_ms`       |      — |      — |
+| `sync push` (1 KB) | `entry`                    |      — |      — |
+| `sync push` (1 KB) | `module-load`              |      — |      — |
+| `sync push` (1 KB) | `config`                   |      — |      — |
+| `sync push` (1 KB) | `credentials`              |      — |      — |
+| `sync push` (1 KB) | `token-refresh network=…` |      — |      — |
+| `sync push` (1 KB) | `http …` (each request)    |      — |      — |
+| `sync push` (1 KB) | `command`                  |      — |      — |
+| `sync push` (1 KB) | `command elapsed_ms`       |      — |      — |
 
 ## What the reference run says about the biggest phase
 
