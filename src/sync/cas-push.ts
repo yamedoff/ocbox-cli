@@ -196,9 +196,11 @@ export function syncConflictError(input: {
 }
 
 /**
- * The server refused a push because the box tree moved. The CLI knows which
- * local paths it was sending; when the v3 check named box edits, their
- * intersection is the both-changed set.
+ * The server refused a push because the box tree moved. The v3 check names the
+ * box edits, and the CLI knows the local changes it was sending: a path in both
+ * sets changed on both sides, a box-only path is the edit the delta does not
+ * name. Either blocks the push, so the way out is to skip those paths; the
+ * remaining local changes are pushed normally.
  */
 export function pushServerConflict(
   error: OcboxError,
@@ -206,23 +208,40 @@ export function pushServerConflict(
   editedPaths: ReadonlySet<string>,
 ): OcboxError {
   if (error.code !== 'SYNC_CONFLICT') return error
-  const unique = [...new Set(changedPaths)].sort(comparePathString)
-  const both = unique.filter((path) => editedPaths.has(path))
-  const paths = both.length > 0 ? both : unique
-  const kind = both.length > 0 ? 'both-changed' : 'workspace-conflict'
-  const sides = both.length > 0 ? ['local', 'remote'] : ['local']
+  const local = [...new Set(changedPaths)].sort(comparePathString)
+  const localSet = new Set(local)
+  const both = local.filter((path) => editedPaths.has(path))
+  const remoteOnly = [...editedPaths].filter((path) => !localSet.has(path)).sort(comparePathString)
+  const localOnly = local.filter((path) => !editedPaths.has(path))
+  const blocking = [...both, ...remoteOnly].sort(comparePathString)
+  // A refusal with no box-side paths is a state race the client cannot name;
+  // fall back to the local changes so the message still says something useful.
+  const paths = blocking.length > 0 ? blocking : local
+  const conflicts =
+    blocking.length > 0
+      ? [
+          ...both.map((path) => ({ path, kind: 'both-changed', sides: ['local', 'remote'] })),
+          ...remoteOnly.map((path) => ({ path, kind: 'target-changed', sides: ['remote'] })),
+        ]
+      : paths.map((path) => ({ path, kind: 'workspace-conflict', sides: ['local'] }))
   const nextStep = pushExcludeNextStep(paths)
+  const localNote =
+    blocking.length > 0 && localOnly.length > 0
+      ? ` Your other local changes (${listConflictPaths(localOnly)}) are kept and pushed with the same command.`
+      : ''
   const reasonCode = error.details?.['reasonCode']
   const message =
     paths.length === 0
       ? `${error.message}. Run ocbox sync diff to inspect the box workspace`
-      : both.length > 0
-        ? `${error.message}: ${listConflictPaths(paths)} changed on both sides. The box changed since your last push; skip your local changes with: ${nextStep}`
-        : `${error.message}. Your locally changed paths are: ${listConflictPaths(paths)}. Run ocbox sync diff to see the box side, or skip them with: ${nextStep}`
+      : blocking.length === 0
+        ? `${error.message}. Your locally changed paths are: ${listConflictPaths(paths)}. Run ocbox sync diff to see the box side, or skip them with: ${nextStep}`
+        : both.length > 0 && remoteOnly.length === 0
+          ? `${error.message}: ${listConflictPaths(both)} changed on both sides since your last push. Skip your local changes with: ${nextStep}.${localNote}`
+          : `${error.message}: the box changed ${listConflictPaths(remoteOnly)} since your last push${both.length === 0 ? '' : `, and ${listConflictPaths(both)} changed on both sides`}. Skip the box-changed paths with: ${nextStep}.${localNote}`
   return syncConflictError({
     message,
     paths,
-    conflicts: paths.map((path) => ({ path, kind, sides })),
+    conflicts,
     nextStep,
     requestId: error.requestId,
     ...(typeof reasonCode === 'string' ? { reasonCode } : {}),
