@@ -186,12 +186,12 @@ ocbox exec -- pwd
 
 ```text
 execution exe_4c1a7e2b9f0d3a6c5e8b7d2f1a9c0b3e accepted
-/home/daytona/workspace
+/home/<user>/workspace
 ```
 
-On staging the `pwd` output is the literal `/home/daytona/workspace`; do not
-replace `daytona` with a user placeholder. There is no `/workspace` directory,
-so write only inside the folder `pwd` prints.
+The output is the folder `pwd` prints in a new box; it may differ on another
+box. There is no `/workspace` directory, so write only inside the folder `pwd`
+prints.
 
 For a shell pipeline or redirect, run `sh -c` explicitly and quote the whole
 command:
@@ -376,8 +376,8 @@ ocbox sync push --exclude 'fixtures/**' --exclude large.bin
 Hosted push uses the selected sandbox's persisted session mapping and the
 content-addressed v2 sync API, with the v3 fast apply when the server supports
 it. The server delivers the files into the box's workspace folder, and hosted
-commands run from that folder; `ocbox exec -- pwd` prints it. On staging it is
-`/home/daytona/workspace`, and `/workspace` does not exist there. Push reports
+commands run from that folder; `ocbox exec -- pwd` prints it. That is the folder
+`pwd` prints in a new box, and `/workspace` does not exist there. Push reports
 uploaded paths and file bytes, and an unchanged push sends no blobs. The retired
 archive and manifest/chunk upload route is no longer used.
 
