@@ -8,7 +8,7 @@ AuthSessionService implements browser authorization-code login with S256 PKCE. C
 
 Login generates a verifier and state, binds 127.0.0.1 on an OS-selected port at /callback, opens or prints the browser URL, accepts one matching callback and exchanges the code. The listener rejects unexpected host/path/method, duplicated protocol parameters and replayed/wrong state. It closes on every completion path.
 
-createSessionGate uses auth.state.lock across processes. Login holds it for the state commit, not while waiting for the browser. Refresh re-reads the credential inside the gate: a waiter adopts a newer generation instead of reusing the superseded refresh token. A failed metadata commit restores the prior credential/metadata pair.
+createSessionGate uses auth.state.lock across processes. Login holds it for the state commit, not while waiting for the browser. Refresh re-reads the credential inside the gate: a waiter adopts a newer generation instead of reusing the superseded refresh token. A failed metadata commit restores the prior credential/metadata pair. A briefly contended lock gets a second bounded acquisition attempt; when it still cannot be acquired, the caller gets a retryable `OPERATION_CONFLICT` whose next step says to wait and rerun the command.
 
 ## Data it keeps
 
@@ -49,3 +49,7 @@ Verified against ocbox-cli @ b604910 plus the identity and subject-scoping chang
 `auth status` refreshes an expired access token before deciding `loggedIn`, keeps the access-token expiry as `accessTokenExpiresAt`, and names the reason code when the refresh is rejected.
 
 Verified against ocbox-cli @ 872e6f2 plus the status-refresh change.
+
+The auth-state lock gets a brief second acquisition attempt; a lock that stays held returns retryable `OPERATION_CONFLICT` with a next step to wait and rerun.
+
+Verified against ocbox-cli @ 75c8775 plus the K5-4 lock retry.

@@ -22,7 +22,7 @@ For lifecycle/auth JSON: unlocked → lock acquired → validated read/update �
 
 ## Limits and config
 
-State-directory flags/environment choose where machine state lives. Credential storage has its own platform directory. Lock waits are bounded and cancellable. Credential schemas bound token strings and validate account/provider identity before selecting the store.
+State-directory flags/environment choose where machine state lives. Credential storage has its own platform directory. Lock waits are bounded and cancellable; the auth-state lock gets a brief second acquisition attempt before it reports a retryable conflict. Credential schemas bound token strings and validate account/provider identity before selecting the store.
 
 ## When it fails
 
@@ -34,6 +34,10 @@ Atomic JSON/locks: `src/lifecycle/atomic-json-store.ts:56–182`, `src/state/exc
 
 Verified against ocbox-cli @ b604910 plus the subject-scoped lifecycle directory.
 
-A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it resolved.
+A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it was given. `--session` flags also accept the Sandbox ID printed by `start --json` and resolve it to the owning Session.
 
 Verified against ocbox-cli @ 0a544da plus the hosted execution-ID mapping change.
+
+Auth-state lock contention retries briefly and then returns a retryable conflict with a next step; `--session` flags accept the Sandbox ID printed by `start --json`.
+
+Verified against ocbox-cli @ 75c8775 plus the K5-4 lock and selector changes.
