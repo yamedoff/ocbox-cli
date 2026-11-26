@@ -116,12 +116,14 @@ Created project prj_7f3c2a1b9d ("hello-box") and wrote opencloudbox.toml
 Using the hosted OpenCloudBox provider (staging at https://api.staging.opencloudbox.dev).
 ```
 
-`init` looks for a hosted project whose name is the current folder's name. If
-one exists it does not create a second project; it prints
-`Using existing project prj_... ("hello-box"), matched by name; run ocbox project
-create to make a new one` and saves that ID in `opencloudbox.toml`. To start a
-separate project, create one with `ocbox project create` and select it with
-`--project`, or initialize from a folder with a different name.
+When `opencloudbox.toml` is absent, `init` looks for a hosted project whose name
+is the current folder's name. If one exists it does not create a second
+project; it prints `Using existing project prj_... ("hello-box"), matched by
+name; run ocbox project create to make a new one` and saves that ID in
+`opencloudbox.toml`. If the file already exists, `init` prints `Validated
+opencloudbox.toml` instead. To start a separate project, create one with
+`ocbox project create` and select it with `--project`, or initialize from a
+folder with a different name.
 
 ### 4. Start the box
 
@@ -147,7 +149,7 @@ ocbox sync push
 ```
 
 ```text
-Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); uploaded 1 blob(s), 19 bytes.
+Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); 1 file(s) changed, 19 bytes; uploaded 1 blob(s), 19 bytes.
 hello.txt
 ```
 
@@ -186,8 +188,8 @@ execution exe_4c1a7e2b9f0d3a6c5e8b7d2f1a9c0b3e accepted
 /home/daytona/workspace
 ```
 
-On staging the workspace is `/home/daytona/workspace`. There is no `/workspace`
-directory on the box, so write only inside the folder `pwd` prints.
+On staging the workspace is `/home/daytona/workspace` and there is no
+`/workspace` directory, so write only inside the folder `pwd` prints.
 
 For a shell pipeline or redirect, run `sh -c` explicitly and quote the whole
 command:
@@ -262,11 +264,12 @@ ocbox snapshot delete <snapshot-id>
 ```
 
 `snapshot save` waits for the hosted Operation and prints
-`Snapshot saved (operation <operation-id>)`; `--no-wait` prints the accepted
-Operation and returns. `snapshot list` prints `No snapshots` or one line per
-snapshot (`<snapshot-id>  <createdAt>  <size>`). Every snapshot command defaults
-to the selected Session; pass a tracked Session ID or a hosted `ses_...` ID as
-`<box>`. A Sandbox ID is refused (run `ocbox ls` to copy a Session ID). A box
+`Snapshot saved (operation <operation-id>)`; `--no-wait` prints `Snapshot
+creation accepted (operation <operation-id>)` and returns. `snapshot list`
+prints `No snapshots` or one line per snapshot (`<snapshot-id>  <createdAt>
+[ <size>]`; the size is omitted when the service does not know it). Every
+snapshot command defaults to the selected Session; pass a tracked Session ID or
+a hosted `ses_...` ID as `<box>`. A Sandbox ID is refused (run `ocbox ls` to copy a Session ID). A box
 that cannot take snapshots says `snapshot_unsupported`; at the limit it says
 `snapshot_limit_reached` and tells you to delete one with
 `ocbox snapshot delete` first.
@@ -331,14 +334,19 @@ uses its own codes around that program:
 Exit 125 is the CLI's own infrastructure-failure code, not the program's. A
 remote program may itself exit 125; `--json` and `--jsonl` carry the `outcome`
 discriminator (`remote_result` versus `infrastructure_error`) so automation can
-tell them apart. Other commands report a refusal with `Reason <code>.` and exit
-1.
+tell them apart. A malformed Session ID is a usage error and exits 1. Other
+commands report a refusal with `Reason <code>.` and exit 1.
 
 ## If a Session is in error
 
 `ocbox start` does not resume a Session whose state is `error`. It refuses with
-`Session <id> is in state error; run ocbox start --new to create a new Session,
-or ocbox destroy --yes to remove it.` Choose one:
+a message like:
+
+```text
+Session <id> is in state error; run `ocbox start --new` to create a new Session, or `ocbox destroy --yes` to remove it.
+```
+
+Choose one:
 
 ```sh
 ocbox start --new
@@ -365,13 +373,12 @@ Hosted push uses the selected sandbox's persisted session mapping and the
 content-addressed v2 sync API, with the v3 fast apply when the server supports
 it. The server delivers the files into the box's workspace folder, and hosted
 commands run from that folder; `ocbox exec -- pwd` prints it. On staging it is
-`/home/daytona/workspace`; there is no `/workspace` directory on the box. Push
-reports uploaded paths and file bytes, and an unchanged push sends no blobs. The
-retired archive and manifest/chunk upload route is no longer used.
+`/home/daytona/workspace`, and `/workspace` does not exist there. Push reports
+uploaded paths and file bytes, and an unchanged push sends no blobs. The retired
+archive and manifest/chunk upload route is no longer used.
 
-The box keeps a hidden `.ocb-cas-owned.json` at the workspace root. It records
-which paths the box's content-addressed sync owns, so the next push can tell an
-agent edit from a local change. Leave it alone: do not edit, delete, or commit
+The workspace contains a hidden `.ocb-cas-owned.json` that belongs to the box's
+content-addressed source sync. Leave it alone: do not edit, delete, or commit
 it. The CLI excludes it from every push, and a pushed manifest may not name that
 path.
 

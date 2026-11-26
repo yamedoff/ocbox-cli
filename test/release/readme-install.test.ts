@@ -171,7 +171,9 @@ describe('README install path', () => {
     expect(journey).toContain('ocbox exec -- pwd')
     expect(journey).toContain('/home/daytona/workspace')
     expect(sync).toContain('/home/daytona/workspace')
-    expect(sync).toMatch(/no\s+`\/workspace`\s+directory/i)
+    expect(`${journey}\n${sync}`).toMatch(
+      /no\s+`\/workspace`\s+directory|`\/workspace`\s+does not exist/i,
+    )
     expect(readme).not.toMatch(/\/workspace\//)
 
     expect(sync).toContain('.ocb-cas-owned.json')
@@ -191,7 +193,7 @@ describe('README install path', () => {
     expect(exits).toContain('125')
     expect(exits).toMatch(/remote program[\s\S]*exit 125/i)
     expect(exits).toContain('infrastructure_error')
-    expect(exits).toMatch(/Other commands[\s\S]*exit\s+1/)
+    expect(exits).toMatch(/Other\s+commands[\s\S]*exit\s+1/)
   })
 
   it('lists what the box image provides', async () => {
@@ -228,7 +230,7 @@ describe('README install path', () => {
     expect(journey).toMatch(/logs[\s\S]*only after the execution finishes/i)
     expect(journey).toContain('ocbox execution get <id>')
     expect(journey).toContain('Using existing project')
-    expect(journey).toContain('matched by name')
+    expect(journey).toMatch(/matched by\s+name/)
 
     expect(error).toMatch(/does not resume a Session whose state is `error`/i)
     expect(error).toContain('ocbox start --new')
