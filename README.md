@@ -273,7 +273,7 @@ ocbox stop
 
 Stopping keeps the box's filesystem. Start it again with `ocbox start`.
 
-### 9. Destroy the box
+### 11. Destroy the box
 
 ```sh
 ocbox destroy --yes
