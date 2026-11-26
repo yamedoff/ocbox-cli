@@ -19,7 +19,7 @@ export default class SnapshotDelete extends OcboxCommand {
     }),
     box: Args.string({
       required: false,
-      description: 'Session ID; defaults to the selected Session',
+      description: 'Session ID or hosted ses_ ID; defaults to the selected Session',
     }),
   }
   static override flags = {

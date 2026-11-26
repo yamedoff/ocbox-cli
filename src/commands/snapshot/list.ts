@@ -8,7 +8,7 @@ export default class SnapshotList extends OcboxCommand {
   static override args = {
     box: Args.string({
       required: false,
-      description: 'Session ID; defaults to the selected Session',
+      description: 'Session ID or hosted ses_ ID; defaults to the selected Session',
     }),
   }
   static override flags = snapshotFlags
