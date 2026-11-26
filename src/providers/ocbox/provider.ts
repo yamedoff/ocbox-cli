@@ -586,6 +586,22 @@ export class OcboxSandboxProvider implements SandboxProvider {
     return new Map(Object.entries(state.hostedMappings[scope] ?? {}))
   }
 
+  /**
+   * The hosted Session ID the current login maps a local Session to, read from
+   * the same scoped records `exec`, `sync push` and `sync pull` use. A record
+   * from another login scope is deliberately ignored: that hosted Session is
+   * not the one this login owns.
+   */
+  async hostedSessionIdForLocalSession(localSessionId: string): Promise<string | undefined> {
+    const records = await this.#records()
+    let newest: SandboxRecord | undefined
+    for (const record of records.values()) {
+      if (record.deleted || record.localSessionId !== localSessionId) continue
+      if (newest === undefined || record.updatedAt > newest.updatedAt) newest = record
+    }
+    return newest?.hostedSessionId
+  }
+
   async #saveRecord(record: SandboxRecord): Promise<void> {
     if (this.#mappingScope === undefined) {
       this.#sandboxes.set(record.localId, record)

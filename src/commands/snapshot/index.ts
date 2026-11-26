@@ -12,11 +12,13 @@ import {
   resolveStateDirectory,
   type RuntimeFlags,
 } from '../../cli/runtime.js'
+import { SessionIdSchema } from '../../contracts.js'
 import { OcboxError } from '../../errors/index.js'
 import { parseHostedResponse } from '../../hosted/response.js'
 import { LifecycleStore, projectIdForPath } from '../../lifecycle/index.js'
 import { HostedOperationSchema } from '../../metadata/client.js'
 import { hostedFlags } from '../../metadata/command.js'
+import { createOcboxProvider } from '../../providers/ocbox/factory.js'
 import { waitForHostedOperation } from '../../providers/ocbox/operations.js'
 
 const USAGE = [
@@ -35,8 +37,9 @@ const USAGE = [
   '  delete   Delete one snapshot and wait',
   '',
   'NOTES',
-  '  <box> is a tracked Session ID; it defaults to the selected Session,',
-  '  the same way ocbox stop and ocbox exec pick it.',
+  '  <box> is a tracked Session ID or a hosted ses_ ID; it defaults to the',
+  '  selected Session, the same way ocbox stop and ocbox exec pick it.',
+  '  A Sandbox ID is refused; run ocbox ls to copy a Session ID.',
   '  Refusals print the API reason and next step; snapshot_unsupported means',
   '  this box cannot take snapshots, and snapshot_limit_reached means delete',
   '  one with ocbox snapshot delete to free a slot.',
@@ -119,17 +122,22 @@ export function snapshotListLine(snapshots: readonly SessionSnapshot[]): string 
   return snapshots.length === 0 ? 'No snapshots' : snapshots.map(snapshotLine).join('\n')
 }
 
+/** A hosted Session ID is already the ID the snapshot routes take. */
+const HOSTED_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
+
 /**
- * Resolves `[<box>]` the same way stop and exec resolve the selected Session,
- * then maps the tracked Session to the hosted `ses_` ID the snapshot routes
- * take. A tracked Session without a hosted mapping (for example one owned by
- * the fake provider) falls back to its local ID, which the hosted API refuses.
+ * Resolves `[<box>]` the same way stop and exec resolve the selected Session.
+ * A hosted `ses_` ID is accepted as-is, because that is what the MCP snapshot
+ * tools take. A tracked Session is mapped to its hosted ID through the
+ * provider's own login-scoped lookup, the same record `exec` and `sync` read;
+ * only a fake-provider Session without a hosted mapping keeps its local ID.
  */
 export async function resolveSnapshotSession(
   flags: RuntimeFlags,
   box: string | undefined,
   signal?: AbortSignal,
 ): Promise<string> {
+  if (box !== undefined && HOSTED_SESSION_ID_PATTERN.test(box)) return box
   const config = await loadProjectConfig(flags)
   const stateDirectory = resolveStateDirectory(flags)
   const lifecycleStateDirectory = await resolveAccountStateDirectory(
@@ -138,19 +146,47 @@ export async function resolveSnapshotSession(
     config.provider.name === 'ocbox',
     signal,
   )
-  const view = await (await createLifecycleService(flags, signal, lifecycleStateDirectory)).status(
-    box,
-  )
   const store = new LifecycleStore(
     lifecycleStateDirectory,
     projectIdForPath(resolve(process.cwd())),
   )
   const state = await store.load()
-  const mapped = Object.values(state.hostedMappings)
-    .flatMap((records) => Object.values(records))
-    .filter((record) => record.localSessionId === view.session.id && !record.deleted)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
-  return mapped?.hostedSessionId ?? view.session.id
+  if (box !== undefined && !Object.hasOwn(state.sessions, box)) {
+    if (Object.hasOwn(state.sandboxes, box)) {
+      throw new OcboxError({
+        code: 'INVALID_SPEC',
+        message: 'That is a Sandbox ID, not a Session ID; run `ocbox ls` to copy a Session ID.',
+        requestId: toRequestId(null),
+      })
+    }
+    // A UUID/ULID the local store does not track may be a hosted Session this
+    // CLI never created (for example one from MCP). Send it to the API so the
+    // user sees the API's own not-found reason instead of a local guess.
+    const hosted = SessionIdSchema.safeParse(box)
+    if (hosted.success) return hosted.data
+  }
+  const view = await (await createLifecycleService(flags, signal, lifecycleStateDirectory)).status(
+    box,
+  )
+  if (config.provider.name !== 'ocbox') return view.session.id
+  const hostedProjectId = flags.project ?? process.env['OCBOX_PROJECT_ID'] ?? config.projectId
+  if (hostedProjectId === undefined) return view.session.id
+  const provider = createOcboxProvider({
+    stateDirectory,
+    ...(flags['api-url'] === undefined ? {} : { apiUrl: flags['api-url'] }),
+    projectId: hostedProjectId,
+  })
+  provider.bindLifecycleStore(store)
+  return (await provider.hostedSessionIdForLocalSession(view.session.id)) ?? view.session.id
+}
+
+/**
+ * The API's session-not-found reason, whichever spelling a route used. The
+ * snapshot routes and the MCP tools name the same cause; the CLI prints the
+ * session spelling so save, list, restore and delete agree.
+ */
+function snapshotReasonCode(reasonCode: string | undefined): string | undefined {
+  return reasonCode === 'api_resource_not_found' ? 'api_session_not_found' : reasonCode
 }
 
 /**
@@ -162,16 +198,17 @@ export async function resolveSnapshotSession(
  */
 function throwSnapshotFailure(operation: string, response: ApiResult<unknown>): never {
   const envelope = envelopeOf(response.body)
+  const reasonCode = snapshotReasonCode(envelope.reasonCode)
   throw mapApiFailureToOcboxError({
     operation,
     requestId: response.requestId ?? envelope.requestId ?? null,
     responseRequestId: envelope.requestId ?? response.requestId ?? null,
     retryAfterSeconds: envelope.retryAfterSeconds ?? null,
     serverCode: envelope.code,
-    serverMessage: snapshotText(envelope.reasonCode, envelope.message),
+    serverMessage: snapshotText(reasonCode, envelope.message),
     reason: envelope.reason,
-    reasonCode: envelope.reasonCode,
-    nextStep: snapshotText(envelope.reasonCode, envelope.nextStep),
+    reasonCode,
+    nextStep: snapshotText(reasonCode, envelope.nextStep),
     limitName: envelope.limitName,
     limitValue: envelope.limitValue,
     notFoundCode: 'SANDBOX_NOT_FOUND',
@@ -282,14 +319,15 @@ export async function waitForSnapshotOperation(
     })
   }
   const failure = operation.error
+  const reasonCode = snapshotReasonCode(failure?.reasonCode)
   throw mapApiFailureToOcboxError({
     operation: 'snapshot',
     requestId: operation.requestId,
     responseRequestId: operation.requestId,
     serverCode: failure?.code,
-    serverMessage: snapshotText(failure?.reasonCode, failure?.message),
-    reasonCode: failure?.reasonCode,
-    nextStep: snapshotText(failure?.reasonCode, failure?.nextStep),
+    serverMessage: snapshotText(reasonCode, failure?.message),
+    reasonCode,
+    nextStep: snapshotText(reasonCode, failure?.nextStep),
     limitName: failure?.limitName,
     limitValue: failure?.limitValue,
     retryAfterSeconds: failure?.retryAfterSeconds ?? null,
