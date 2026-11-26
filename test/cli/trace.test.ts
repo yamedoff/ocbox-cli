@@ -253,6 +253,45 @@ describe('phase lines', () => {
   })
 })
 
+describe('CLI entry integration', () => {
+  async function runEntry(traceValue: string): Promise<string> {
+    vi.resetModules()
+    vi.stubEnv('OCBOX_TRACE', traceValue)
+    const chunks: string[] = []
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk))
+      return true
+    })
+    const originalFetch = globalThis.fetch
+    vi.doMock('@oclif/core', () => ({ execute: async () => {} }))
+    vi.doMock('../../src/version/startup.js', () => ({
+      runStartupVersionGate: async () => {},
+    }))
+    vi.doMock('../../src/version/gate.js', () => ({
+      apiUrlFromArgv: () => 'https://api.example',
+    }))
+    try {
+      await import('../../src/index.js')
+    } finally {
+      globalThis.fetch = originalFetch
+      stderr.mockRestore()
+      vi.doUnmock('@oclif/core')
+      vi.doUnmock('../../src/version/startup.js')
+      vi.doUnmock('../../src/version/gate.js')
+    }
+    return chunks.join('')
+  }
+
+  it('prints the startup phases when enabled and stays silent when unset', async () => {
+    const enabled = await runEntry('1')
+    expect(enabled).toMatch(/^ocbox-trace phase=entry elapsed_ms=\d+\n/)
+    expect(enabled).toMatch(/ocbox-trace phase=module-load elapsed_ms=\d+ duration_ms=\d+\n/)
+    expect(enabled).toMatch(/ocbox-trace phase=command elapsed_ms=\d+ duration_ms=\d+\n$/)
+
+    expect(await runEntry('')).toBe('')
+  })
+})
+
 describe('runtime integration', () => {
   async function withConfigFile<Result>(
     action: (path: string) => Promise<Result>,
