@@ -151,10 +151,27 @@ export function resolveStateDirectory(
   return resolve(resolved.value)
 }
 
-export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
+/**
+ * Times one workspace config read and parse for the `config` phase. When
+ * tracing is off it only awaits the read; it never changes the result or the
+ * error.
+ */
+async function traceConfigRead<Result>(read: () => Promise<Result>): Promise<Result> {
   const started = trace.enabled ? performance.now() : undefined
   try {
-    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
+    return await read()
+  } finally {
+    if (started !== undefined) {
+      trace.phase('config', { durationMs: performance.now() - started })
+    }
+  }
+}
+
+export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
+  try {
+    return await traceConfigRead(async () =>
+      parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+    )
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
       throw new OcboxError({
@@ -163,10 +180,6 @@ export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectCon
         requestId: newRequestId(),
       })
     throw error
-  } finally {
-    if (started !== undefined) {
-      trace.phase('config', { durationMs: performance.now() - started })
-    }
   }
 }
 
@@ -265,6 +278,9 @@ export async function createLifecycleService(
           stateDirectory,
         })
       : undefined
+  const requestedSpec = await traceConfigRead(async () =>
+    requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+  )
   return new LifecycleService({
     config,
     projectId,
@@ -273,7 +289,7 @@ export async function createLifecycleService(
       apiUrl: flags['api-url'],
       projectId: hostedProjectId,
       requestedSpec: {
-        ...requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+        ...requestedSpec,
         ...requestedSpecFromFlags(flags),
       },
       ...(sessionCache === undefined ? {} : { sessionCache }),
@@ -299,7 +315,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
   let source: string
   let exists = true
   try {
-    source = await readFile(path, 'utf8')
+    source = await traceConfigRead(() => readFile(path, 'utf8'))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     exists = false
@@ -402,7 +418,8 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
   }
   parseProjectConfig(source)
   if (exists) {
-    if (source !== (await readFile(path, 'utf8'))) await writeFile(path, source, { mode: 0o600 })
+    if (source !== (await traceConfigRead(() => readFile(path, 'utf8'))))
+      await writeFile(path, source, { mode: 0o600 })
     return { status: 'validated', provider }
   }
   const handle = await open(path, 'wx', 0o600)
@@ -428,7 +445,11 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
 /** Reads the workspace project ID when a config exists; absence is not an error. */
 export async function loadProjectIdIfPresent(flags: RuntimeFlags): Promise<string | undefined> {
   try {
-    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')).projectId
+    return (
+      await traceConfigRead(async () =>
+        parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+      )
+    ).projectId
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error

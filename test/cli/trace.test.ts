@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { traceTokenRefresh } from '../../src/api/client/client.js'
 import type { HostedTokenManager } from '../../src/auth/token-manager.js'
@@ -339,5 +339,23 @@ describe('runtime integration', () => {
     })
 
     expect(chunks.join('')).toMatch(/^ocbox-trace phase=config elapsed_ms=\d+ duration_ms=\d+\n$/)
+  })
+
+  it('traces every workspace config read in one lifecycle service build', async () => {
+    vi.resetModules()
+    vi.stubEnv('OCBOX_TRACE', '1')
+    const chunks: string[] = []
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk))
+      return true
+    })
+
+    await withConfigFile(async (path) => {
+      const runtime = await import('../../src/cli/runtime.js')
+      await runtime.createLifecycleService({ config: path, 'state-dir': dirname(path) })
+    })
+
+    const configLines = chunks.filter((line) => line.startsWith('ocbox-trace phase=config '))
+    expect(configLines.length).toBeGreaterThanOrEqual(2)
   })
 })
