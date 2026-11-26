@@ -34,10 +34,10 @@ Atomic JSON/locks: `src/lifecycle/atomic-json-store.ts:56–182`, `src/state/exc
 
 Verified against ocbox-cli @ b604910 plus the subject-scoped lifecycle directory.
 
-A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it was given. `--session` flags also accept the Sandbox ID printed by `start --json` and resolve it to the owning Session.
+A hosted mapping records the hosted execution ID that `exec` prints next to the CLI-local event ID; `cancel` accepts either form and reports the ID it was given. Lifecycle `--session` flags also accept the Sandbox ID printed by `start --json` and resolve it to the owning Session; `exec --session` still requires the Session ID.
 
 Verified against ocbox-cli @ 0a544da plus the hosted execution-ID mapping change.
 
-Auth-state lock contention retries briefly and then returns a retryable conflict with a next step; `--session` flags accept the Sandbox ID printed by `start --json`.
+Auth-state lock contention retries briefly and then returns a retryable conflict with a next step; lifecycle `--session` flags accept the Sandbox ID printed by `start --json` (`exec --session` still requires the Session ID).
 
-Verified against ocbox-cli @ 75c8775 plus the K5-4 lock and selector changes.
+Verified against ocbox-cli @ 3f83349 plus the K5-4 lock and selector changes.

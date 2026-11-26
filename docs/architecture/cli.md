@@ -72,4 +72,4 @@ Verified against ocbox-cli @ 9523af1 plus the Windows named-pipe handshake.
 
 `logs --json`/`--jsonl` carry stored stdout and stderr as base64 streams in the `exec --json` shape; the redactor decodes them and removes only secret-shaped values, leaving the rest of the run's output readable.
 
-Verified against ocbox-cli @ 75c8775 plus the K5-4 logs change.
+Verified against ocbox-cli @ 3f83349 plus the K5-4 logs change.

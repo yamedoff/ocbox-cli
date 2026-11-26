@@ -10,7 +10,7 @@ Start reuses a suitable selected Session or records an intent before createSessi
 
 Before any create request, `start` compares `--lifetime` with the selected size's `maxLifetimeSeconds` from `ocbox sizes`. For a known size that is too long, it refuses with the flag name, the size maximum and the value given, so no Session is reserved and no waiting message is printed. A definite hosted refusal during create (size, lifetime, admission or field validation) removes the reserved Session instead of leaving a selected error Session; an ambiguous outcome still keeps the recoverable intent. Starting from an errored Session names `ocbox start --new` and `ocbox destroy --yes`.
 
-Every `--session` flag accepts either the Session ID or the Sandbox ID printed by `start --json`; a Sandbox ID resolves to its owning Session. `cancel` prints the execution ID it was given and the terminal state, not the provider's internal alias.
+Lifecycle `--session` flags (`status`, `pause`, `stop`, `destroy`, `sync`) accept either the Session ID or the Sandbox ID printed by `start --json`; a Sandbox ID resolves to its owning Session. `exec --session` still requires the Session ID. `cancel` prints the execution ID it was given and the terminal state, not the provider's internal alias.
 
 Explicit shell mode rejects a known non-Linux effective OS. The hosted public view may publish only scalar fields (`cpu`, `memory`, `image`, `region`); the adapter merges those reported fields over the request to form the full effective spec, and a payload that reports none of them stays unobserved. The requested spec is never promoted wholesale to observed metadata. When the local config omits an image or region, the observed value also replaces the local placeholder in the requested view.
 
@@ -52,6 +52,6 @@ Verified against ocbox-cli @ 872e6f2 plus the create-ID, execution-ID and cancel
 
 Warm session cache: `src/warm/client.ts`, `src/warm/daemon.ts`.
 
-Size and lifetime are checked against `ocbox sizes` before create, a definite hosted create refusal leaves no selected error Session, an errored Session names `ocbox start --new` and `ocbox destroy --yes`, `cancel` reports the ID it was given, and `--session` accepts the Sandbox ID from `start --json`.
+Size and lifetime are checked against `ocbox sizes` before create, a definite hosted create refusal leaves no selected error Session, an errored Session names `ocbox start --new` and `ocbox destroy --yes`, `cancel` reports the ID it was given, and lifecycle `--session` flags accept the Sandbox ID from `start --json` (`exec --session` still requires the Session ID).
 
-Verified against ocbox-cli @ 75c8775 plus the K5-4 refusal, recovery and selector changes.
+Verified against ocbox-cli @ 3f83349 plus the K5-4 refusal, recovery and selector changes.

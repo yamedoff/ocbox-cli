@@ -187,4 +187,4 @@ The state lock retries a briefly held lock once. If it stays held, the command
 returns retryable `OPERATION_CONFLICT` with a next step to wait a moment and
 rerun, instead of an unclassified failure.
 
-Verified against ocbox-cli @ 75c8775 plus the K5-4 lock retry.
+Verified against ocbox-cli @ 3f83349 plus the K5-4 lock retry.

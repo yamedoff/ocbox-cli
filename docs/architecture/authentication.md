@@ -52,4 +52,4 @@ Verified against ocbox-cli @ 872e6f2 plus the status-refresh change.
 
 The auth-state lock gets a brief second acquisition attempt; a lock that stays held returns retryable `OPERATION_CONFLICT` with a next step to wait and rerun.
 
-Verified against ocbox-cli @ 75c8775 plus the K5-4 lock retry.
+Verified against ocbox-cli @ 3f83349 plus the K5-4 lock retry.
