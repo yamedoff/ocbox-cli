@@ -244,7 +244,8 @@ export function installHttpTrace(
     const parsed = parseRequestUrl(url)
     // A credential-less request is a capability exchange (for example a CAS
     // upload/download URL), even when it shares the API origin. Never print it.
-    const credentialless = init?.credentials === 'omit'
+    const credentialless =
+      init?.credentials === 'omit' || (input instanceof Request && input.credentials === 'omit')
     const path =
       credentialless || parsed === undefined || !isApiUrl(parsed)
         ? EXTERNAL_PATH

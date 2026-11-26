@@ -217,6 +217,27 @@ describe('phase lines', () => {
     }
   })
 
+  it('hides a credential-less Request capability URL behind :external', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 32 })
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
+    const dispose = installHttpTrace(tracer, {
+      isApiUrl: (url) => url.origin === 'https://api.example',
+    })
+
+    try {
+      await globalThis.fetch(
+        new Request('https://api.example/cap/abcdefghijklmnopqrst', { credentials: 'omit' }),
+      )
+      expect(sink.text()).toContain('path=:external')
+      expect(sink.text()).not.toContain('abcdefghijklmnopqrst')
+    } finally {
+      dispose()
+      globalThis.fetch = original
+    }
+  })
+
   it('labels a token refresh that reused the store as network=no', async () => {
     const sink = memorySink()
     const tracer = createTracer({ enabled: true, stderr: sink, now: () => 70 })
