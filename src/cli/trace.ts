@@ -37,8 +37,10 @@ export interface Tracer {
   readonly httpRequestCount: number
   /** Prints one phase line; a no-op when tracing is disabled. */
   phase(name: string, fields?: TraceFields): void
-  /** Prints one HTTP line; a no-op when tracing is disabled. */
+  /** Prints one HTTP line from a URL; a no-op when tracing is disabled. */
   http(method: string, url: string | URL, status: number, durationMilliseconds: number): void
+  /** Prints one HTTP line from an already-redacted path. */
+  httpPath(method: string, path: string, status: number, durationMilliseconds: number): void
   /** Records one network attempt before the request is sent. */
   countHttpRequest(): void
 }
@@ -69,18 +71,38 @@ function isIdentifierSegment(segment: string): boolean {
   )
 }
 
+/** A request outside the configured hosted API; its URL is never printed. */
+export const EXTERNAL_PATH = ':external'
+
+/**
+ * Parses an absolute request URL. Relative strings are not resolved against a
+ * base: the CLI only sends absolute URLs, and a host-looking string must never
+ * be mistaken for a path.
+ */
+export function parseRequestUrl(url: string | URL): URL | undefined {
+  if (url instanceof URL) return url
+  try {
+    return new URL(url)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Returns the request path with identifiers replaced by `:id` and every query
  * or fragment removed, so a trace can be read without exposing an account,
- * project, Session, execution or token identifier.
+ * project, Session, execution or token identifier. A URL that cannot be parsed
+ * is reduced to `/`; its host is never echoed.
  */
 export function pathWithoutIds(url: string | URL): string {
+  const parsed = parseRequestUrl(url)
   let pathname: string
-  try {
-    pathname = (url instanceof URL ? url : new URL(url)).pathname
-  } catch {
-    // A relative URL still has a useful path; drop any query/fragment first.
-    pathname = String(url).split(/[?#]/, 1)[0] ?? '/'
+  if (parsed !== undefined) {
+    pathname = parsed.pathname
+  } else {
+    const raw = String(url)
+    // Only a rooted path is safe to echo; `//host/path` and `host/path` are not.
+    pathname = raw.startsWith('/') && !raw.startsWith('//') ? (raw.split(/[?#]/, 1)[0] ?? '/') : '/'
   }
   if (pathname === '') return '/'
   return pathname
@@ -139,10 +161,15 @@ class TraceWriter implements Tracer {
 
   http(method: string, url: string | URL, status: number, durationMilliseconds: number): void {
     if (!this.enabled) return
+    this.httpPath(method, pathWithoutIds(url), status, durationMilliseconds)
+  }
+
+  httpPath(method: string, path: string, status: number, durationMilliseconds: number): void {
+    if (!this.enabled) return
     this.phase('http', {
       durationMs: durationMilliseconds,
       method: method.toUpperCase(),
-      path: pathWithoutIds(url),
+      path,
       status,
     })
   }
@@ -157,31 +184,55 @@ export const trace: Tracer = createTracer({ enabled: traceRequested() })
 
 let fetchTraceInstalled = false
 
+export interface HttpTraceOptions {
+  /**
+   * True when the URL belongs to the configured hosted API. Requests outside
+   * it (for example short-lived CAS upload/download capabilities) are printed
+   * as `:external`, never with their path, host or query string. Defaults to
+   * false so a caller that forgets the predicate cannot leak a capability URL.
+   */
+  readonly isApiUrl?: ((url: URL) => boolean) | undefined
+}
+
 /**
  * Wraps `globalThis.fetch` so every request the CLI sends — the startup
  * version gate, token refresh and product calls alike — produces one line and
- * increments the tracer's network counter. Does nothing when tracing is off.
- * Returns a dispose function so tests can restore the process-global fetch.
+ * increments the tracer's network counter. Only requests on the configured
+ * API origin keep their (id-free) path; every other URL is `:external`. Does
+ * nothing when tracing is off. Returns a dispose function so tests can restore
+ * the process-global fetch.
  */
-export function installHttpTrace(tracer: Tracer = trace): () => void {
+export function installHttpTrace(
+  tracer: Tracer = trace,
+  options: HttpTraceOptions = {},
+): () => void {
   if (!tracer.enabled || fetchTraceInstalled || typeof globalThis.fetch !== 'function') {
     return () => {}
   }
   fetchTraceInstalled = true
   const original = globalThis.fetch
+  const isApiUrl = options.isApiUrl ?? (() => false)
   globalThis.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
     const [input, init] = args
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const url = input instanceof Request ? input.url : String(input)
+    const parsed = parseRequestUrl(url)
+    // A credential-less request is a capability exchange (for example a CAS
+    // upload/download URL), even when it shares the API origin. Never print it.
+    const credentialless = init?.credentials === 'omit'
+    const path =
+      credentialless || parsed === undefined || !isApiUrl(parsed)
+        ? EXTERNAL_PATH
+        : pathWithoutIds(parsed)
     tracer.countHttpRequest()
     const started = performance.now()
     try {
       const response = await original(...args)
-      tracer.http(method, url, response.status, performance.now() - started)
+      tracer.httpPath(method, path, response.status, performance.now() - started)
       return response
     } catch (error) {
       // No response arrived; status 0 says so without inventing a server code.
-      tracer.http(method, url, 0, performance.now() - started)
+      tracer.httpPath(method, path, 0, performance.now() - started)
       throw error
     }
   }

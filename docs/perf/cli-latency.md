@@ -23,10 +23,10 @@ ocbox-trace phase=command elapsed_ms=1200 duration_ms=800
 ```
 
 `elapsed_ms` is milliseconds since process start. `duration_ms` is how long
-that phase took. The `command` phase wraps the command dispatch and body, so
-its `elapsed_ms` is the command's wall time and the phases inside it are also
-listed separately. The last `command` line is therefore the number to compare
-with the 2 s exit criterion.
+that phase took. The `command` phase wraps the command dispatch and body, so its
+`duration_ms` is that work while its `elapsed_ms` is the total wall time from
+process start (startup plus command). The last `command` line's `elapsed_ms` is
+therefore the number to compare with the 2 s exit criterion.
 
 ## Phases
 
@@ -37,14 +37,17 @@ with the 2 s exit criterion.
 | `config`        | `src/cli/runtime.ts`                | each workspace `opencloudbox.toml` read and parse                                                                                                    |
 | `credentials`   | `src/cli/runtime.ts`                | resolving the account state directory from auth metadata or identity                                                                                 |
 | `token-refresh` | `src/api/client/client.ts`          | each token-manager refresh decision; `network=yes` means it reached the wire, `network=no` means the stored credential was reused or refused locally |
-| `http`          | `src/cli/trace.ts` (global `fetch`) | each request: method, id-free path, status, duration; status `0` means no response arrived                                                           |
+| `http`          | `src/cli/trace.ts` (global `fetch`) | each request: method, id-free path on the API origin or `:external`, status, duration; status `0` means no response arrived                          |
 | `command`       | `src/index.ts`                      | oclif dispatch plus the selected command's body                                                                                                      |
 
 HTTP paths lose their query string, host and identifier-shaped segments. For
 example `/v1/projects/6f1c…/sessions?cursor=next` prints as
-`path=/v1/projects/:id/sessions`. Tokens, Session/project/execution IDs and
-request bodies never reach stderr. An `http` duration ends when the response
-headers arrive; reading the body stays inside the `command` phase.
+`path=/v1/projects/:id/sessions`. Requests outside the configured hosted API
+origin — for example the short-lived CAS upload and download capabilities — are
+printed as `path=:external`, so their host, path, query and token never reach
+stderr. Tokens, Session/project/execution IDs and request bodies never reach
+stderr. An `http` duration ends when the response headers arrive; reading the
+body stays inside the `command` phase.
 
 `ocbox exec` may be served by the optional warm-session daemon. The daemon is a
 detached process whose stderr is ignored, so its requests do not appear in the
@@ -57,9 +60,11 @@ run must be visible.
 Run each command 10 times with `OCBOX_TRACE=1`, keep the stderr lines from each
 run, and take p50/p95 of `duration_ms` per phase (`elapsed_ms` for the point
 marker `entry`). Group `http` rows by method, path and status, and
-`token-refresh` rows by `network`. Use a real project and a running box on
-staging; the 1 KB change is a file of exactly 1024 bytes created before the
-first push.
+`token-refresh` rows by `network`. `exec` and `sync push` read the workspace
+config more than once, so each read prints its own `config` line; sum the
+`config` durations within a run before taking percentiles. Use a real project
+and a running box on staging; the 1 KB change is a file of exactly 1024 bytes
+created before the first push.
 
 POSIX shell, one command per invocation:
 

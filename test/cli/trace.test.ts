@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { traceTokenRefresh } from '../../src/api/client/client.js'
+import type { HostedTokenManager } from '../../src/auth/token-manager.js'
 import {
   createTracer,
   installHttpTrace,
   pathWithoutIds,
-  traceRequested,
   type TraceSink,
+  traceRequested,
 } from '../../src/cli/trace.js'
-import type { HostedTokenManager } from '../../src/auth/token-manager.js'
 
 function memorySink(): TraceSink & { text(): string } {
   const chunks: string[] = []
@@ -136,12 +136,21 @@ describe('phase lines', () => {
     expect(sink.text()).toContain('path=/v1/sessions/:id/snapshots')
   })
 
+  it('never prints a host for an unparseable URL', () => {
+    expect(pathWithoutIds('https://api.internal.example:notaport/v1/meta')).toBe('/')
+    expect(pathWithoutIds('//api.internal.example/v1/meta')).toBe('/')
+    expect(pathWithoutIds('api.internal.example/v1/meta')).toBe('/')
+    expect(pathWithoutIds('/v1/meta?cursor=secret')).toBe('/v1/meta')
+  })
+
   it('traces and counts each global fetch attempt', async () => {
     const sink = memorySink()
     const tracer = createTracer({ enabled: true, stderr: sink, now: () => 25 })
     const original = globalThis.fetch
     globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
-    const dispose = installHttpTrace(tracer)
+    const dispose = installHttpTrace(tracer, {
+      isApiUrl: (url) => url.origin === 'https://api.example',
+    })
 
     try {
       await globalThis.fetch('https://api.example/v1/meta')
@@ -149,6 +158,51 @@ describe('phase lines', () => {
       expect(sink.text()).toMatch(
         /^ocbox-trace phase=http elapsed_ms=25 duration_ms=\d+ method=GET path=\/v1\/meta status=200\n$/,
       )
+    } finally {
+      dispose()
+      globalThis.fetch = original
+    }
+  })
+
+  it('hides an external capability URL behind :external', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 30 })
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
+    const dispose = installHttpTrace(tracer, {
+      isApiUrl: (url) => url.origin === 'https://api.example',
+    })
+
+    try {
+      await globalThis.fetch(
+        'https://storage.example/upload/sk-live-abcdefghijklmnop?signature=secret',
+      )
+      expect(tracer.httpRequestCount).toBe(1)
+      expect(sink.text()).toContain('path=:external')
+      expect(sink.text()).not.toContain('sk-live')
+      expect(sink.text()).not.toContain('storage.example')
+      expect(sink.text()).not.toContain('signature')
+    } finally {
+      dispose()
+      globalThis.fetch = original
+    }
+  })
+
+  it('hides a same-origin credential-less capability URL behind :external', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 31 })
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
+    const dispose = installHttpTrace(tracer, {
+      isApiUrl: (url) => url.origin === 'https://api.example',
+    })
+
+    try {
+      await globalThis.fetch('https://api.example/cap/abcdefghijklmnopqrst', {
+        credentials: 'omit',
+      })
+      expect(sink.text()).toContain('path=:external')
+      expect(sink.text()).not.toContain('abcdefghijklmnopqrst')
     } finally {
       dispose()
       globalThis.fetch = original
