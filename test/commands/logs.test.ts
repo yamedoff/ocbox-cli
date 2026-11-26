@@ -53,6 +53,10 @@ function commandResult(overrides: Record<string, unknown> = {}): Record<string, 
   }
 }
 
+function decodeStream(stream: { data: string }): string {
+  return Buffer.from(stream.data, 'base64').toString('utf8')
+}
+
 function fakeApi(options: { execution?: unknown; result?: unknown; resultError?: unknown } = {}) {
   const getExecution = vi.fn(async () => ({
     body: options.execution ?? execution(),
@@ -254,7 +258,9 @@ describe('logs command', () => {
         if (path === '/v1/executions/exe_1') {
           return jsonResponse(execution({ state: 'completed', exitCode: 0 }))
         }
-        return jsonResponse(commandResult({ stdout: 'raw stdout', stderr: 'raw stderr' }))
+        return jsonResponse(
+          commandResult({ stdout: 'raw stdout', stderr: 'warning token=supersecret' }),
+        )
       }),
     )
 
@@ -266,7 +272,39 @@ describe('logs command', () => {
     expect(printed.name).toBe('execution.logs')
     expect(printed.data.execution).toMatchObject({ id: 'exe_1', state: 'completed' })
     expect(printed.data.result).toMatchObject({ kind: 'command', exitCode: 0 })
-    expect(printed.data.result.stdout).toBe('[REDACTED]')
-    expect(printed.data.result.stderr).toBe('[REDACTED]')
+    expect(printed.data.result.stdout).toEqual({
+      encoding: 'base64',
+      data: Buffer.from('raw stdout', 'utf8').toString('base64'),
+      retainedBytes: Buffer.byteLength('raw stdout', 'utf8'),
+      totalBytes: Buffer.byteLength('raw stdout', 'utf8'),
+      truncated: false,
+    })
+    expect(decodeStream(printed.data.result.stdout)).toBe('raw stdout')
+    expect(decodeStream(printed.data.result.stderr)).toBe('warning [REDACTED]')
+  })
+
+  it('redacts only secret-shaped values inside the stored streams', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/v1/executions/exe_1') {
+          return jsonResponse(execution({ state: 'completed', exitCode: 0 }))
+        }
+        return jsonResponse(
+          commandResult({
+            stdout: 'hello Bearer abcdefghijklmnop\n',
+            stderr: 'plain warning\n',
+          }),
+        )
+      }),
+    )
+
+    await Logs.run([...runArguments(), 'exe_1', '--json'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const printed = JSON.parse(output(stdoutSpy))
+    expect(decodeStream(printed.data.result.stdout)).toBe('hello [REDACTED]\n')
+    expect(decodeStream(printed.data.result.stderr)).toBe('plain warning\n')
   })
 })
