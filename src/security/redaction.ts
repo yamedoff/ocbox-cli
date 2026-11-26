@@ -68,6 +68,8 @@ function isEncodedStream(value: unknown): value is Record<string, unknown> {
 /**
  * Keeps the encoded stream shape but redacts secret-shaped values in its decoded
  * text. Only the `data` payload is touched; the other fields keep normal rules.
+ * The byte counters move with the redacted payload so they still describe the
+ * bytes a consumer decodes from `data`.
  */
 function redactEncodedStream(
   value: Readonly<Record<string, unknown>>,
@@ -76,11 +78,19 @@ function redactEncodedStream(
   const nextSeen = new Set(seen)
   nextSeen.add(value)
   const output: Record<string, JsonValue> = {}
+  const decoded = Buffer.from(String(value['data']), 'base64').toString('utf8')
+  const redacted = decoded.replace(new RegExp(SECRET_VALUE.source, 'gi'), REDACTED_VALUE)
+  const retainedBytes = Buffer.byteLength(redacted, 'utf8')
+  const truncated = value['truncated'] === true
   for (const [key, item] of Object.entries(value)) {
-    if (key === 'data' && typeof item === 'string') {
-      const decoded = Buffer.from(item, 'base64').toString('utf8')
-      const redacted = decoded.replace(new RegExp(SECRET_VALUE.source, 'gi'), REDACTED_VALUE)
+    if (key === 'data') {
       output[key] = Buffer.from(redacted, 'utf8').toString('base64')
+    } else if (key === 'retainedBytes' && typeof item === 'number') {
+      output[key] = retainedBytes
+    } else if (key === 'totalBytes' && typeof item === 'number') {
+      // A truncated stream keeps the total the command produced; an
+      // untruncated stream has no other total than its redacted bytes.
+      output[key] = truncated ? Math.max(item, retainedBytes) : retainedBytes
     } else {
       output[key] = redactForOutput(item, nextSeen)
     }

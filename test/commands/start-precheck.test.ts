@@ -127,4 +127,36 @@ describe('start size and lifetime pre-check', () => {
     expect(error).toContain('7200')
     expect(error).not.toContain('Waiting for hosted sandbox')
   })
+
+  it('uses the selected size maximum rather than another size', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname
+        calls.push(path)
+        if (path === '/v1/sizes') {
+          return jsonResponse({
+            data: [
+              { id: 'cpu-1c2g', maxLifetimeSeconds: 7200 },
+              { id: 'cpu-4c8g', maxLifetimeSeconds: 43200 },
+            ],
+          })
+        }
+        return jsonResponse({ error: { code: 'UNEXPECTED_REQUEST' } }, 500)
+      }),
+    )
+
+    await Start.run([...runArguments(), '--size', 'cpu-4c8g', '--lifetime', '50000'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(calls).toEqual(['/v1/sizes'])
+    const error = output(stderrSpy)
+    expect(error).toContain('--lifetime')
+    expect(error).toContain('50000')
+    expect(error).toContain('43200')
+    expect(error).not.toContain('7200')
+  })
 })

@@ -160,12 +160,22 @@ const HOSTED_CREATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
   'gpu_budget_exhausted',
   'gpu_unavailable',
   'project_deleting',
+  // Catalogue codes the adapter preserves when the hosted API refuses billing,
+  // quota or admission before creating anything.
+  'payment_required',
+  'insufficient_credits',
+  'usage_limit',
+  'provider_quota',
+  'plan_expired',
+  'admission_unavailable',
+  'account_store_full',
 ])
 
 /** True when a create failure is a definite hosted refusal, not an unknown outcome. */
 export function isHostedCreateRefusal(error: unknown): boolean {
   if (!(error instanceof OcboxError)) return false
   if (error.code === 'INVALID_SPEC' && error.providerCode === undefined) return true
+  if (HOSTED_CREATE_REFUSAL_CODES.has(error.code.toLowerCase())) return true
   const providerCode = error.providerCode?.toLowerCase()
   return providerCode !== undefined && HOSTED_CREATE_REFUSAL_CODES.has(providerCode)
 }

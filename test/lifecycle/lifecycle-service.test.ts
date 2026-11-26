@@ -227,6 +227,20 @@ class RefusedCreateProvider extends FakeSandboxProvider {
   }
 }
 
+class CatalogueRefusedCreateProvider extends FakeSandboxProvider {
+  override async create(
+    context: OperationContext,
+    _request: CreateSandboxRequest,
+  ): Promise<SandboxMutationResult> {
+    throw new OcboxError({
+      code: 'INSUFFICIENT_CREDITS',
+      message: 'The hosted account has insufficient credits',
+      providerCode: 'INSUFFICIENT_CREDITS',
+      requestId: context.requestId,
+    })
+  }
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories
@@ -597,6 +611,20 @@ describe('LifecycleService', () => {
     await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
       code: 'INVALID_SPEC',
       providerCode: 'api_request_field_invalid',
+    })
+
+    const state = await store.load()
+    expect(state.activeSessionId).toBeNull()
+    expect(Object.keys(state.sessions)).toHaveLength(0)
+  })
+
+  it('removes the Session when the hosted API refuses a create with a billing code', async () => {
+    const directory = await temporaryDirectory()
+    const store = new LifecycleStore(directory, PROJECT_ID)
+    const provider = new CatalogueRefusedCreateProvider(directory)
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'INSUFFICIENT_CREDITS',
     })
 
     const state = await store.load()

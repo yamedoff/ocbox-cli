@@ -6,13 +6,15 @@ import { createMetadataClient } from '../metadata/client.js'
 import { hostedFlags } from '../metadata/command.js'
 
 /** Same base64 stream shape `ocbox exec --json` emits for bounded output. */
-function capturedStream(text: string, truncated: boolean): CapturedStream {
-  const totalBytes = Buffer.byteLength(text, 'utf8')
+function capturedStream(text: string, truncated: boolean, totalBytes: number): CapturedStream {
+  const retainedBytes = Buffer.byteLength(text, 'utf8')
   return {
     encoding: 'base64',
     data: Buffer.from(text, 'utf8').toString('base64'),
-    retainedBytes: totalBytes,
-    totalBytes,
+    retainedBytes,
+    // The stored result reports one combined total; keep it at least the
+    // retained bytes so `truncated` never contradicts the stream counters.
+    totalBytes: truncated ? Math.max(totalBytes, retainedBytes) : retainedBytes,
     truncated,
   }
 }
@@ -20,13 +22,13 @@ function capturedStream(text: string, truncated: boolean): CapturedStream {
 /** Structured output carries command bytes as streams; other results pass through. */
 function structuredLogs(view: ExecutionLogs): unknown {
   if (view.result.kind !== 'command') return view
-  const { stdout, stderr, truncated } = view.result
+  const { stdout, stderr, truncated, outputBytes } = view.result
   return {
     execution: view.execution,
     result: {
       ...view.result,
-      stdout: capturedStream(stdout, truncated),
-      stderr: capturedStream(stderr, truncated),
+      stdout: capturedStream(stdout, truncated, outputBytes),
+      stderr: capturedStream(stderr, truncated, outputBytes),
     },
   }
 }

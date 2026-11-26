@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AUTH_STATE_LOCK_FILENAME, createSessionGate } from '../../src/auth/session-gate.js'
 import { OcboxError } from '../../src/errors/index.js'
+import { AtomicStoreConflictError } from '../../src/lifecycle/atomic-json-store.js'
 import { ExclusiveFileLock } from '../../src/state/exclusive-file-lock.js'
 import { deferred } from './doubles.js'
 
@@ -73,6 +74,22 @@ describe('createSessionGate', () => {
       release()
       await held
     }
+  })
+
+  it('does not retry a conflict raised by the action after the lock was acquired', async () => {
+    const stateDirectory = await temporaryStateDirectory()
+    const gate = createSessionGate(stateDirectory)
+    let runs = 0
+
+    const error: unknown = await gate(async () => {
+      runs += 1
+      throw new AtomicStoreConflictError()
+    }).catch((reason: unknown) => reason)
+
+    expect(runs).toBe(1)
+    expect(error).toBeInstanceOf(OcboxError)
+    expect(error).toMatchObject({ code: 'OPERATION_CONFLICT', retryable: true })
+    expect(typeof (error as OcboxError).details?.['nextStep']).toBe('string')
   })
 
   it('cancels the wait immediately when the signal aborts', async () => {

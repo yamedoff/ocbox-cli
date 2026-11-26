@@ -281,6 +281,10 @@ describe('logs command', () => {
     })
     expect(decodeStream(printed.data.result.stdout)).toBe('raw stdout')
     expect(decodeStream(printed.data.result.stderr)).toBe('warning [REDACTED]')
+    const stderr = printed.data.result.stderr
+    expect(stderr.retainedBytes).toBe(Buffer.byteLength('warning [REDACTED]', 'utf8'))
+    expect(stderr.totalBytes).toBe(stderr.retainedBytes)
+    expect(stderr.truncated).toBe(false)
   })
 
   it('redacts only secret-shaped values inside the stored streams', async () => {
@@ -306,5 +310,40 @@ describe('logs command', () => {
     const printed = JSON.parse(output(stdoutSpy))
     expect(decodeStream(printed.data.result.stdout)).toBe('hello [REDACTED]\n')
     expect(decodeStream(printed.data.result.stderr)).toBe('plain warning\n')
+  })
+
+  it('keeps the stream counters consistent with redaction and truncation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/v1/executions/exe_1') {
+          return jsonResponse(execution({ state: 'completed', exitCode: 0 }))
+        }
+        return jsonResponse(
+          commandResult({
+            stdout: 'token=supersecret',
+            stderr: '',
+            truncated: true,
+            outputBytes: 200_000,
+            outputLimitBytes: 65_536,
+          }),
+        )
+      }),
+    )
+
+    await Logs.run([...runArguments(), 'exe_1', '--json'], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    const printed = JSON.parse(output(stdoutSpy))
+    const stdout = printed.data.result.stdout
+    expect(decodeStream(stdout)).toBe('[REDACTED]')
+    expect(stdout.retainedBytes).toBe(Buffer.byteLength('[REDACTED]', 'utf8'))
+    expect(stdout.totalBytes).toBe(200_000)
+    expect(stdout.truncated).toBe(true)
+    const stderr = printed.data.result.stderr
+    expect(stderr.retainedBytes).toBe(0)
+    expect(stderr.totalBytes).toBe(200_000)
+    expect(stderr.truncated).toBe(true)
   })
 })
