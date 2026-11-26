@@ -59,6 +59,27 @@ const OPAQUE_SEGMENT = /^(?=.*[0-9])[A-Za-z0-9_-]{12,}$/
 const MIXED_CASE_SEGMENT = /^(?=.*[a-z])(?=.*[A-Z])[A-Za-z0-9_-]{8,}$/
 const LONG_SEGMENT = /^[A-Za-z0-9_-]{14,}$/
 
+/**
+ * Collection segments whose next path segment is a path parameter, taken from
+ * the vendored `/v1` routes. This catches short opaque IDs that no shape
+ * heuristic would recognise (for example `PreviewId` or `ManifestId`).
+ */
+const ID_PREDECESSORS = new Set([
+  'checkout',
+  'chunks',
+  'environments',
+  'executions',
+  'installations',
+  'manifests',
+  'operations',
+  'previews',
+  'projects',
+  'reservations',
+  'secret-references',
+  'sessions',
+  'snapshots',
+])
+
 function isIdentifierSegment(segment: string): boolean {
   return (
     UUID_SEGMENT.test(segment) ||
@@ -105,9 +126,13 @@ export function pathWithoutIds(url: string | URL): string {
     pathname = raw.startsWith('/') && !raw.startsWith('//') ? (raw.split(/[?#]/, 1)[0] ?? '/') : '/'
   }
   if (pathname === '') return '/'
-  return pathname
-    .split('/')
-    .map((segment) => (isIdentifierSegment(segment) ? ':id' : segment))
+  const segments = pathname.split('/')
+  return segments
+    .map((segment, index) => {
+      const previous = index > 0 ? segments[index - 1] : undefined
+      const followsCollection = previous !== undefined && ID_PREDECESSORS.has(previous)
+      return followsCollection || isIdentifierSegment(segment) ? ':id' : segment
+    })
     .join('/')
 }
 

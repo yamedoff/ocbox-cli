@@ -115,6 +115,14 @@ describe('phase lines', () => {
     )
     expect(pathWithoutIds('/v1/projects/prj_7f3c2a1b9d')).toBe('/v1/projects/:id')
     expect(pathWithoutIds('/v1/sessions/AbCdEfGhIjKlMn')).toBe('/v1/sessions/:id')
+    expect(pathWithoutIds('/v1/previews/abc123')).toBe('/v1/previews/:id')
+    expect(pathWithoutIds('/v1/projects/my-project/sessions')).toBe('/v1/projects/:id/sessions')
+    expect(pathWithoutIds('/v1/source/manifests/abc/chunks/0')).toBe(
+      '/v1/source/manifests/:id/chunks/:id',
+    )
+    expect(pathWithoutIds('/v1/sessions/s1/snapshots/abc/restore')).toBe(
+      '/v1/sessions/:id/snapshots/:id/restore',
+    )
   })
 
   it('never prints a token or an identifier from a request', () => {
