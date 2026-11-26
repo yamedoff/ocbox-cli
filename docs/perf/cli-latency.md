@@ -1,8 +1,8 @@
 # CLI latency: where an `ocbox` command spends its time
 
-OCB-K6-1 measured the CLI before changing it. `OCBOX_TRACE=1` makes the CLI
-write one stderr line per phase with the elapsed milliseconds since process
-start. It is off by default; when off it adds no timers, formatting, writes or
+OCB-K6-1 adds the trace that shows where an `ocbox` command spends its time.
+`OCBOX_TRACE=1` makes the CLI write one stderr line per phase with the elapsed
+milliseconds since process start. It is off by default; when off it adds no timers, formatting, writes or
 global `fetch` patch, and it never prints a token, an identifier, a query
 string, a header or file contents.
 
@@ -189,8 +189,8 @@ used to cut the fix parts.
 These are one 10-run sample; a rerun moves the values by a few milliseconds.
 The percentile method is the part to reproduce, not these exact numbers.
 
-The same commands with the version gate enabled, still against the local fake
-provider, add one real staging request per run:
+The same commands with the version gate enabled add one request to the staging
+API per run; the product calls still go to the local fake provider:
 
 | command            | phase                   | p50 duration ms | p95 duration ms | p50 elapsed ms | p95 elapsed ms |
 | ------------------ | ----------------------- | --------------: | --------------: | -------------: | -------------: |
