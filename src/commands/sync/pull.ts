@@ -29,6 +29,14 @@ export default class SyncPull extends OcboxCommand {
       char: 'y',
       description: 'Acknowledge destructive deletions noninteractively',
     }),
+    'keep-local': Flags.boolean({
+      description:
+        'Hosted pull: keep local files changed since the last sync and report them as conflicts',
+    }),
+    'overwrite-local': Flags.boolean({
+      description:
+        'Hosted pull: explicitly replace local files changed since the last sync with the box copies',
+    }),
   }
 
   async run(): Promise<void> {
@@ -41,6 +49,8 @@ export default class SyncPull extends OcboxCommand {
         yes: flags.yes === true,
         interactive: isInteractiveForFlags(flags),
         confirm: confirmSyncDeletion,
+        keepLocal: flags['keep-local'] === true,
+        overwriteLocal: flags['overwrite-local'] === true,
       })
     })
   }

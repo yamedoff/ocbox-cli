@@ -22,7 +22,10 @@ export default class SyncPush extends OcboxCommand {
       description:
         'Fake provider only; hosted commands run in the workspace folder of the box (run pwd in the box to see it)',
     }),
-    exclude: Flags.string({ multiple: true, description: 'Repeatable exclude pattern' }),
+    exclude: Flags.string({
+      multiple: true,
+      description: 'Repeatable exclude pattern; also skips a conflicting path so the push proceeds',
+    }),
     include: Flags.string({ multiple: true, description: 'Repeatable re-include pattern' }),
     delete: Flags.boolean({ description: 'Approve deleting target entries' }),
     yes: Flags.boolean({
