@@ -808,6 +808,8 @@ export async function runHostedPull(
     const localMap = new Map(local.map((entry) => [entry.path, entry]))
     let effectiveConflicts: readonly SyncConflict[] = plan.conflicts
     if (plan.conflicts.length > 0) {
+      if (plan.conflicts.some((conflict) => conflict.path === null))
+        throw pullConflictError(plan, remoteMap)
       if (options.keepLocal === true) {
         skipped = new Set(conflictPaths(plan))
       } else if (options.overwriteLocal === true) {
