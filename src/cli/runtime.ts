@@ -32,6 +32,7 @@ import {
   requestedSpecFromFlags,
 } from '../providers/ocbox/requested-spec.js'
 import { createWarmSessionCache, warmSessionsEnabled } from '../warm/client.js'
+import { trace } from './trace.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
 
@@ -150,9 +151,27 @@ export function resolveStateDirectory(
   return resolve(resolved.value)
 }
 
+/**
+ * Times one workspace config read and parse for the `config` phase. When
+ * tracing is off it only awaits the read; it never changes the result or the
+ * error.
+ */
+async function traceConfigRead<Result>(read: () => Promise<Result>): Promise<Result> {
+  const started = trace.enabled ? performance.now() : undefined
+  try {
+    return await read()
+  } finally {
+    if (started !== undefined) {
+      trace.phase('config', { durationMs: performance.now() - started })
+    }
+  }
+}
+
 export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
   try {
-    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
+    return await traceConfigRead(async () =>
+      parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+    )
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
       throw new OcboxError({
@@ -199,16 +218,23 @@ export async function resolveAccountStateDirectory(
   signal?: AbortSignal,
 ): Promise<string> {
   if (!hosted) return stateDirectory
-  const metadataStore = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+  const started = trace.enabled ? performance.now() : undefined
   try {
-    const metadata = await metadataStore.load(signal)
-    if (metadata?.subject !== undefined) return accountDirectory(stateDirectory, metadata.subject)
-    const identity = await readHostedIdentity(flags, process.env, signal)
-    if (metadata !== null)
-      await metadataStore.save({ ...metadata, subject: identity.subject }, signal).catch(() => {})
-    return accountDirectory(stateDirectory, identity.subject)
-  } catch {
-    return stateDirectory
+    const metadataStore = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+    try {
+      const metadata = await metadataStore.load(signal)
+      if (metadata?.subject !== undefined) return accountDirectory(stateDirectory, metadata.subject)
+      const identity = await readHostedIdentity(flags, process.env, signal)
+      if (metadata !== null)
+        await metadataStore.save({ ...metadata, subject: identity.subject }, signal).catch(() => {})
+      return accountDirectory(stateDirectory, identity.subject)
+    } catch {
+      return stateDirectory
+    }
+  } finally {
+    if (started !== undefined) {
+      trace.phase('credentials', { durationMs: performance.now() - started })
+    }
   }
 }
 
@@ -252,6 +278,9 @@ export async function createLifecycleService(
           stateDirectory,
         })
       : undefined
+  const requestedSpec = await traceConfigRead(async () =>
+    requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+  )
   return new LifecycleService({
     config,
     projectId,
@@ -260,7 +289,7 @@ export async function createLifecycleService(
       apiUrl: flags['api-url'],
       projectId: hostedProjectId,
       requestedSpec: {
-        ...requestedSpecFromConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+        ...requestedSpec,
         ...requestedSpecFromFlags(flags),
       },
       ...(sessionCache === undefined ? {} : { sessionCache }),
@@ -286,7 +315,7 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
   let source: string
   let exists = true
   try {
-    source = await readFile(path, 'utf8')
+    source = await traceConfigRead(() => readFile(path, 'utf8'))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     exists = false
@@ -389,7 +418,8 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
   }
   parseProjectConfig(source)
   if (exists) {
-    if (source !== (await readFile(path, 'utf8'))) await writeFile(path, source, { mode: 0o600 })
+    if (source !== (await traceConfigRead(() => readFile(path, 'utf8'))))
+      await writeFile(path, source, { mode: 0o600 })
     return { status: 'validated', provider }
   }
   const handle = await open(path, 'wx', 0o600)
@@ -415,7 +445,11 @@ export async function initializeProject(flags: RuntimeFlags): Promise<ProjectIni
 /** Reads the workspace project ID when a config exists; absence is not an error. */
 export async function loadProjectIdIfPresent(flags: RuntimeFlags): Promise<string | undefined> {
   try {
-    return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')).projectId
+    return (
+      await traceConfigRead(async () =>
+        parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8')),
+      )
+    ).projectId
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
