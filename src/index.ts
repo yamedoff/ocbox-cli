@@ -11,9 +11,11 @@ trace.phase('entry')
 // origin is filled after the startup modules load and before the version gate.
 // Requests outside it are printed as `:external` and never expose a URL.
 let tracedApiOrigin: string | undefined
-installHttpTrace(trace, {
-  isApiUrl: (url) => tracedApiOrigin !== undefined && url.origin === tracedApiOrigin,
-})
+if (trace.enabled) {
+  installHttpTrace(trace, {
+    isApiUrl: (url) => tracedApiOrigin !== undefined && url.origin === tracedApiOrigin,
+  })
+}
 
 // The startup modules are loaded here rather than through static imports so
 // their cost is one measured phase instead of being spent before entry.
@@ -22,10 +24,12 @@ const oclif: typeof import('@oclif/core') & { default?: typeof import('@oclif/co
   await import('@oclif/core')
 const { runStartupVersionGate } = await import('./version/startup.js')
 const { apiUrlFromArgv } = await import('./version/gate.js')
-try {
-  tracedApiOrigin = new URL(apiUrlFromArgv(process.argv.slice(2))).origin
-} catch {
-  tracedApiOrigin = undefined
+if (trace.enabled) {
+  try {
+    tracedApiOrigin = new URL(apiUrlFromArgv(process.argv.slice(2))).origin
+  } catch {
+    tracedApiOrigin = undefined
+  }
 }
 // The bundler inlines @oclif/core's CommonJS build as a default export; a
 // native ESM import exposes the same names directly. Accept both shapes.
