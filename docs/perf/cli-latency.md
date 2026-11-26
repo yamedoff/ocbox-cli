@@ -165,8 +165,9 @@ It prints one TSV row per phase key: `command`, `phase`, `p50 ms`, `p95 ms`.
 uses `duration_ms`. The extra `command elapsed_ms` row is the wall time from
 process start to the end of the command body, so it is the row to compare with
 the 2 s exit criterion. Repeated rows with the same key in one run are added, so
-each run contributes one value per key: `exec` and `sync push` read the workspace
-config more than once, and repeated `http` keys are summed the same way. Group
+each run contributes one value per key: `status`, `exec` and `sync push` read the
+workspace config more than once, and repeated `http` keys are summed the same
+way. Group
 `http` rows by method, path and status and `token-refresh` rows by `network`.
 Percentiles are nearest-rank over the per-run values (10 when every run emitted
 the key): sort them and take element `ceil(p/100 * n)` (the 5th of 10 for p50,
@@ -216,32 +217,32 @@ Fill it from the owner's Windows PC after this part merges, then paste the
 staging box by hand. `entry` and `command elapsed_ms` are elapsed values; every
 other row is a phase duration.
 
-| command            | phase                      | p50 ms | p95 ms |
-| ------------------ | -------------------------- | -----: | -----: |
-| `status`           | `entry`                    |      — |      — |
-| `status`           | `module-load`              |      — |      — |
-| `status`           | `config`                   |      — |      — |
-| `status`           | `credentials`              |      — |      — |
+| command            | phase                     | p50 ms | p95 ms |
+| ------------------ | ------------------------- | -----: | -----: |
+| `status`           | `entry`                   |      — |      — |
+| `status`           | `module-load`             |      — |      — |
+| `status`           | `config`                  |      — |      — |
+| `status`           | `credentials`             |      — |      — |
 | `status`           | `token-refresh network=…` |      — |      — |
-| `status`           | `http …` (each request)    |      — |      — |
-| `status`           | `command`                  |      — |      — |
-| `status`           | `command elapsed_ms`       |      — |      — |
-| `exec -- true`     | `entry`                    |      — |      — |
-| `exec -- true`     | `module-load`              |      — |      — |
-| `exec -- true`     | `config`                   |      — |      — |
-| `exec -- true`     | `credentials`              |      — |      — |
+| `status`           | `http …` (each request)   |      — |      — |
+| `status`           | `command`                 |      — |      — |
+| `status`           | `command elapsed_ms`      |      — |      — |
+| `exec -- true`     | `entry`                   |      — |      — |
+| `exec -- true`     | `module-load`             |      — |      — |
+| `exec -- true`     | `config`                  |      — |      — |
+| `exec -- true`     | `credentials`             |      — |      — |
 | `exec -- true`     | `token-refresh network=…` |      — |      — |
-| `exec -- true`     | `http …` (each request)    |      — |      — |
-| `exec -- true`     | `command`                  |      — |      — |
-| `exec -- true`     | `command elapsed_ms`       |      — |      — |
-| `sync push` (1 KB) | `entry`                    |      — |      — |
-| `sync push` (1 KB) | `module-load`              |      — |      — |
-| `sync push` (1 KB) | `config`                   |      — |      — |
-| `sync push` (1 KB) | `credentials`              |      — |      — |
+| `exec -- true`     | `http …` (each request)   |      — |      — |
+| `exec -- true`     | `command`                 |      — |      — |
+| `exec -- true`     | `command elapsed_ms`      |      — |      — |
+| `sync push` (1 KB) | `entry`                   |      — |      — |
+| `sync push` (1 KB) | `module-load`             |      — |      — |
+| `sync push` (1 KB) | `config`                  |      — |      — |
+| `sync push` (1 KB) | `credentials`             |      — |      — |
 | `sync push` (1 KB) | `token-refresh network=…` |      — |      — |
-| `sync push` (1 KB) | `http …` (each request)    |      — |      — |
-| `sync push` (1 KB) | `command`                  |      — |      — |
-| `sync push` (1 KB) | `command elapsed_ms`       |      — |      — |
+| `sync push` (1 KB) | `http …` (each request)   |      — |      — |
+| `sync push` (1 KB) | `command`                 |      — |      — |
+| `sync push` (1 KB) | `command elapsed_ms`      |      — |      — |
 
 ## What the reference run says about the biggest phase
 
