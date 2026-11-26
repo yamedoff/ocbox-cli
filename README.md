@@ -199,11 +199,21 @@ ocbox exec -- cat picked.txt
 
 The second command prints `two`. On Windows, complex `sh -c` quoting is often
 lost before it reaches the box (`Syntax error: end of file unexpected`). Write
-the commands to a script file, push it, and run the script instead:
+the commands to a script file, push it, and run the script instead. Put this in
+a local `run-on-box.sh`:
 
 ```sh
+printf "one\ntwo\n" | grep two > picked.txt
+```
+
+Then push and run it:
+
+```sh
+ocbox sync push
 ocbox exec -- sh run-on-box.sh
 ```
+
+`sh` reads the file, so the script needs no executable bit.
 
 ### 7. Read stored logs
 

@@ -186,6 +186,7 @@ describe('README install path', () => {
 
     expect(journey).toContain("ocbox exec -- sh -c '")
     expect(journey).toMatch(/on Windows[\s\S]*script file/i)
+    expect(journey).toContain('ocbox exec -- sh run-on-box.sh')
 
     expect(exits).toContain('125')
     expect(exits).toMatch(/remote program[\s\S]*exit 125/i)
