@@ -205,34 +205,35 @@ project, a running box and a fresh 1 KB change. It is intentionally empty here:
 this part adds the trace and the measuring steps, not a staging measurement.
 Fill it from the owner's Windows PC after this part merges, then paste the
 `summarize-trace.mjs` rows into the table. Do not seed auth state or create a
-staging box by hand.
+staging box by hand. `entry` and `command elapsed_ms` are elapsed values; every
+other row is a phase duration.
 
-| command            | phase                                    | p50 duration ms | p95 duration ms |
-| ------------------ | ---------------------------------------- | --------------: | --------------: |
-| `status`           | `entry`                                  |               — |               — |
-| `status`           | `module-load`                            |               — |               — |
-| `status`           | `config`                                 |               — |               — |
-| `status`           | `credentials`                            |               — |               — |
-| `status`           | `token-refresh network=no`               |               — |               — |
-| `status`           | `http GET /v1/projects/:id/sessions 200` |               — |               — |
-| `status`           | `command`                                |               — |               — |
-| `status`           | `command elapsed_ms`                     |               — |               — |
-| `exec -- true`     | `entry`                                  |               — |               — |
-| `exec -- true`     | `module-load`                            |               — |               — |
-| `exec -- true`     | `config`                                 |               — |               — |
-| `exec -- true`     | `credentials`                            |               — |               — |
-| `exec -- true`     | `token-refresh network=no`               |               — |               — |
-| `exec -- true`     | `http …` (each request)                  |               — |               — |
-| `exec -- true`     | `command`                                |               — |               — |
-| `exec -- true`     | `command elapsed_ms`                     |               — |               — |
-| `sync push` (1 KB) | `entry`                                  |               — |               — |
-| `sync push` (1 KB) | `module-load`                            |               — |               — |
-| `sync push` (1 KB) | `config`                                 |               — |               — |
-| `sync push` (1 KB) | `credentials`                            |               — |               — |
-| `sync push` (1 KB) | `token-refresh network=no`               |               — |               — |
-| `sync push` (1 KB) | `http …` (each request)                  |               — |               — |
-| `sync push` (1 KB) | `command`                                |               — |               — |
-| `sync push` (1 KB) | `command elapsed_ms`                     |               — |               — |
+| command            | phase                                    | p50 ms | p95 ms |
+| ------------------ | ---------------------------------------- | -----: | -----: |
+| `status`           | `entry`                                  |      — |      — |
+| `status`           | `module-load`                            |      — |      — |
+| `status`           | `config`                                 |      — |      — |
+| `status`           | `credentials`                            |      — |      — |
+| `status`           | `token-refresh network=no`               |      — |      — |
+| `status`           | `http GET /v1/projects/:id/sessions 200` |      — |      — |
+| `status`           | `command`                                |      — |      — |
+| `status`           | `command elapsed_ms`                     |      — |      — |
+| `exec -- true`     | `entry`                                  |      — |      — |
+| `exec -- true`     | `module-load`                            |      — |      — |
+| `exec -- true`     | `config`                                 |      — |      — |
+| `exec -- true`     | `credentials`                            |      — |      — |
+| `exec -- true`     | `token-refresh network=no`               |      — |      — |
+| `exec -- true`     | `http …` (each request)                  |      — |      — |
+| `exec -- true`     | `command`                                |      — |      — |
+| `exec -- true`     | `command elapsed_ms`                     |      — |      — |
+| `sync push` (1 KB) | `entry`                                  |      — |      — |
+| `sync push` (1 KB) | `module-load`                            |      — |      — |
+| `sync push` (1 KB) | `config`                                 |      — |      — |
+| `sync push` (1 KB) | `credentials`                            |      — |      — |
+| `sync push` (1 KB) | `token-refresh network=no`               |      — |      — |
+| `sync push` (1 KB) | `http …` (each request)                  |      — |      — |
+| `sync push` (1 KB) | `command`                                |      — |      — |
+| `sync push` (1 KB) | `command elapsed_ms`                     |      — |      — |
 
 ## What the reference run says about the biggest phase
 
