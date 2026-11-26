@@ -71,8 +71,9 @@ const tracedTokenManagers = new WeakSet<HostedTokenManager>()
  * `network=yes` means the refresh attempt reached the wire (the traced global
  * fetch counted a request); `network=no` means the stored credential was
  * reused or the store refused locally. No token material is ever printed.
+ * Exported for the trace test; production callers reach it through the client
+ * constructor.
  */
-/** Exported for the trace test; production callers reach it through the client constructor. */
 export function traceTokenRefresh(tokens: HostedTokenManager, tracer: Tracer = trace): void {
   if (!tracer.enabled || tracedTokenManagers.has(tokens)) return
   tracedTokenManagers.add(tokens)

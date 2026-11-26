@@ -54,7 +54,8 @@ const PREFIXED_ID_SEGMENT = /^[a-z]{2,10}_[A-Za-z0-9_-]{3,}$/
 const LONG_HEX_SEGMENT = /^[0-9a-f]{16,}$/i
 const NUMERIC_SEGMENT = /^\d+$/
 const OPAQUE_SEGMENT = /^(?=.*[0-9])[A-Za-z0-9_-]{12,}$/
-const LONG_SEGMENT = /^[A-Za-z0-9_-]{24,}$/
+const MIXED_CASE_SEGMENT = /^(?=.*[a-z])(?=.*[A-Z])[A-Za-z0-9_-]{8,}$/
+const LONG_SEGMENT = /^[A-Za-z0-9_-]{14,}$/
 
 function isIdentifierSegment(segment: string): boolean {
   return (
@@ -63,6 +64,7 @@ function isIdentifierSegment(segment: string): boolean {
     LONG_HEX_SEGMENT.test(segment) ||
     NUMERIC_SEGMENT.test(segment) ||
     OPAQUE_SEGMENT.test(segment) ||
+    MIXED_CASE_SEGMENT.test(segment) ||
     LONG_SEGMENT.test(segment)
   )
 }
@@ -117,17 +119,22 @@ class TraceWriter implements Tracer {
     this.#httpRequests += 1
   }
 
-  phase(name: string, fields: TraceFields = {}): void {
+  phase(name: string, fields?: TraceFields): void {
     if (!this.enabled) return
+    const values = fields ?? {}
     const parts = [`phase=${safeValue(name)}`, `elapsed_ms=${integer(this.#now())}`]
-    if (fields.durationMs !== undefined) {
-      parts.push(`duration_ms=${integer(fields.durationMs)}`)
+    if (values.durationMs !== undefined) {
+      parts.push(`duration_ms=${integer(values.durationMs)}`)
     }
-    for (const [key, value] of Object.entries(fields)) {
+    for (const [key, value] of Object.entries(values)) {
       if (key === 'durationMs' || value === undefined) continue
       parts.push(`${safeValue(key)}=${safeValue(value)}`)
     }
-    this.#stderr.write(`${TRACE_PREFIX} ${parts.join(' ')}\n`)
+    try {
+      this.#stderr.write(`${TRACE_PREFIX} ${parts.join(' ')}\n`)
+    } catch {
+      /* Tracing is diagnostic: it must never change a command's exit status. */
+    }
   }
 
   http(method: string, url: string | URL, status: number, durationMilliseconds: number): void {

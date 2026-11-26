@@ -113,6 +113,8 @@ describe('phase lines', () => {
     expect(pathWithoutIds('/v1/sessions/ses_abc123/snapshots/42/restore')).toBe(
       '/v1/sessions/:id/snapshots/:id/restore',
     )
+    expect(pathWithoutIds('/v1/projects/prj_7f3c2a1b9d')).toBe('/v1/projects/:id')
+    expect(pathWithoutIds('/v1/sessions/AbCdEfGhIjKlMn')).toBe('/v1/sessions/:id')
   })
 
   it('never prints a token or an identifier from a request', () => {
