@@ -13,7 +13,6 @@ import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { createCasTransport } from '../../src/providers/ocbox/cas.js'
 import { createVerifiedBaseline } from '../../src/sync/baseline.js'
 import { SyncBaselineStore } from '../../src/sync/baseline-store.js'
-import { casStatePaths } from '../../src/sync/cas-push.js'
 import { type CasPage, casHash } from '../../src/sync/cas-contract.js'
 import { readCasState } from '../../src/sync/cas-snapshot.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
@@ -163,6 +162,22 @@ const options: SyncApplyOptions = {
   interactive: false,
   confirm: async () => false,
   pause: async () => {},
+}
+
+/** Mirrors the per-Session/per-root CAS state path without importing new source. */
+function casStatePath(context: SyncContext): string {
+  const key = createHash('sha256')
+    .update(JSON.stringify(['test', context.localRoot]))
+    .digest('hex')
+  return join(
+    context.stateDirectory,
+    'sync',
+    context.projectId,
+    context.sessionId,
+    'cas',
+    key,
+    'state.json',
+  )
 }
 
 interface Tree {
@@ -324,7 +339,7 @@ describe('hosted pull three-way baseline', () => {
     })
     expect(pulled.deletedFiles).toEqual(['keep.txt'])
 
-    const state = await readCasState(casStatePaths(context, 'test').statePath)
+    const state = await readCasState(casStatePath(context))
     expect(state?.pages.flatMap((page) => page.files).map((entry) => entry.path)).toEqual(['a.txt'])
     const diff = await runSyncDiff(context, { cliRules: [], pause: async () => {} })
     expect(diff.additions).toEqual([])
