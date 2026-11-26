@@ -24,7 +24,13 @@ import {
 import { SyncBaselineStore, SyncBaselineStoreError } from './baseline-store.js'
 import type { CasFastTransport, CasReadTransport, CasTransport } from './cas-contract.js'
 import { runHostedDiff, runHostedPull } from './cas-pull.js'
-import { runCasPush } from './cas-push.js'
+import {
+  listConflictPaths,
+  pushExcludeNextStep,
+  runCasPush,
+  syncConflictError,
+  type SyncConflictReport,
+} from './cas-push.js'
 import type { CasProgress } from './cas-transfer.js'
 import type { IgnoreRule } from './exclusions.js'
 import { loadIgnoreRuleGroups } from './ignore-rules.js'
@@ -72,6 +78,8 @@ export interface SyncConflictView {
   readonly kind: string
   readonly path: string | null
   readonly relatedPaths: readonly string[]
+  /** The sides whose content changed for this conflict, e.g. `local` and `remote`. */
+  readonly sides: readonly string[]
 }
 
 export interface SyncOperationView {
@@ -132,6 +140,7 @@ export interface SyncApplyView extends SyncPlanView {
   readonly applied: boolean
   readonly baselineUpdated: boolean
   readonly uploadedFiles?: readonly string[]
+  readonly uploadedFileBytes?: number
   readonly uploadedBytes?: number
   readonly uploadedBlobs?: number
   readonly pulledFiles?: readonly string[]
@@ -167,6 +176,10 @@ export interface SyncApplyOptions extends SyncLockOptions {
   readonly confirm: () => Promise<boolean>
   readonly now?: () => Date
   readonly pause?: (milliseconds: number) => Promise<void>
+  /** Hosted pull: keep locally changed files and report them as conflicts. */
+  readonly keepLocal?: boolean
+  /** Hosted pull: explicitly replace locally changed files with the box copies. */
+  readonly overwriteLocal?: boolean
 }
 
 export interface SyncDiffOptions {
@@ -427,11 +440,27 @@ function renameView(rename: SyncRename): SyncRenameView {
   }
 }
 
-function conflictView(conflict: SyncConflict): SyncConflictView {
+function conflictSides(plan: SyncPlan, conflict: SyncConflict): readonly string[] {
+  const paths = new Set(
+    conflict.relatedPaths.length > 0
+      ? conflict.relatedPaths
+      : conflict.path === null
+        ? []
+        : [conflict.path],
+  )
+  const sides = new Set<string>()
+  for (const change of [...plan.additions, ...plan.modifications, ...plan.deletions]) {
+    if (paths.has(change.path)) sides.add(change.side)
+  }
+  return [...sides].sort()
+}
+
+function conflictView(plan: SyncPlan, conflict: SyncConflict): SyncConflictView {
   return {
     kind: conflict.kind,
     path: conflict.path,
     relatedPaths: [...conflict.relatedPaths],
+    sides: conflictSides(plan, conflict),
   }
 }
 
@@ -465,7 +494,7 @@ function toPlanView(plan: SyncPlan, context: SyncContext, inputs: PlanInputs): S
     modifications: plan.modifications.map(changeView),
     deletions: plan.deletions.map(changeView),
     renames: plan.renames.map(renameView),
-    conflicts: plan.conflicts.map(conflictView),
+    conflicts: plan.conflicts.map((conflict) => conflictView(plan, conflict)),
     operations: plan.operations.map(operationView),
     requiresDeletionApproval: plan.requiresDeletionApproval,
     blocked: [
@@ -655,19 +684,38 @@ function assertManifestsTransferable(manifests: readonly SourceManifest[]): void
   )
 }
 
-function conflictError(conflicts: readonly SyncConflict[]): OcboxError {
-  return syncError(
-    'SYNC_CONFLICT',
-    'Sync refused because the local and remote trees diverged; resolve the conflicts and retry',
-    {
-      conflictCount: conflicts.length,
-      conflicts: conflicts.slice(0, 50).map((conflict) => ({
-        kind: conflict.kind,
-        path: conflict.path,
-        relatedPaths: [...conflict.relatedPaths],
-      })),
-    },
-  )
+function conflictReports(plan: SyncPlan): SyncConflictReport[] {
+  return plan.conflicts.map((conflict) => ({
+    path: conflict.path,
+    kind: conflict.kind,
+    sides: conflictSides(plan, conflict),
+  }))
+}
+
+function planConflictPaths(plan: SyncPlan): string[] {
+  return [
+    ...new Set(
+      plan.conflicts.flatMap((conflict) =>
+        conflict.relatedPaths.length > 0
+          ? conflict.relatedPaths
+          : conflict.path === null
+            ? []
+            : [conflict.path],
+      ),
+    ),
+  ].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+}
+
+function conflictError(plan: SyncPlan, mode: SyncMode): OcboxError {
+  const paths = planConflictPaths(plan)
+  const nextStep =
+    mode === 'push' && paths.length > 0 ? pushExcludeNextStep(paths) : 'ocbox sync diff'
+  return syncConflictError({
+    message: `Sync refused because the local and remote trees diverged in ${String(paths.length)} path(s): ${listConflictPaths(paths)}. Resolve the conflicting paths and retry; ${nextStep}`,
+    paths,
+    conflicts: conflictReports(plan),
+    nextStep,
+  })
 }
 
 function deletionRequiredError(): OcboxError {
@@ -848,7 +896,7 @@ export async function runSyncApply(
     const inputs = await buildPlan(context, mode, options.cliRules)
     const { sourceManifest, targetManifest } = manifestsFor(mode, inputs)
     assertManifestsTransferable([sourceManifest, targetManifest])
-    if (inputs.plan.conflicts.length > 0) throw conflictError(inputs.plan.conflicts)
+    if (inputs.plan.conflicts.length > 0) throw conflictError(inputs.plan, mode)
     const view = toPlanView(inputs.plan, context, inputs)
     const summary = applySummaryFor(view, mode, inputs)
     if (inputs.plan.operations.length === 0) {
@@ -977,7 +1025,8 @@ export function renderSyncPlan(view: SyncPlanView): string {
     lines.push(`> rename ${rename.side}:${rename.fromPath} -> ${rename.toPath}`)
   }
   for (const conflict of view.conflicts) {
-    lines.push(`! conflict ${conflict.kind} ${conflict.path ?? '(tree)'}`)
+    const sides = conflict.sides.length === 0 ? '' : ` (changed: ${conflict.sides.join(', ')})`
+    lines.push(`! conflict ${conflict.kind} ${conflict.path ?? '(tree)'}${sides}`)
   }
   for (const blocked of view.blocked) lines.push(`! blocked ${blocked.reason} ${blocked.path}`)
   for (const collision of view.collisions) {
@@ -1009,8 +1058,21 @@ export function renderSyncApplied(view: SyncApplyView): string {
       const deleted = view.deletedFiles ?? []
       const skipped =
         view.requiresDeletionApproval && deleted.length === 0 && view.deletions.length > 0
+      const conflicts = view.conflicts
+        .map((conflict) => conflict.path)
+        .filter((path): path is string => path !== null)
+      const conflictLine =
+        conflicts.length === 0
+          ? null
+          : `Kept local: ${conflicts.slice(0, 10).join(', ')}${conflicts.length > 10 ? `, and ${String(conflicts.length - 10)} more` : ''} (conflict; rerun with --overwrite-local to take the box copies).`
       if (changed.length === 0 && deleted.length === 0 && !skipped) {
-        return ['Source unchanged.', ...summary].join('\n')
+        return [
+          conflictLine === null
+            ? 'Source unchanged.'
+            : `Source pull kept ${String(conflicts.length)} local file(s) in conflict.`,
+          ...(conflictLine === null ? [] : [conflictLine]),
+          ...summary,
+        ].join('\n')
       }
       const changedPaths = [...view.additions, ...view.modifications].map((entry) => entry.path)
       const shown = [...changedPaths, ...deleted].slice(0, 10)
@@ -1022,6 +1084,7 @@ export function renderSyncApplied(view: SyncApplyView): string {
         `Source pulled: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s); wrote ${String(view.pulledFiles?.length ?? 0)} file(s), ${String(view.pulledBytes ?? 0)} bytes, removed ${String(deleted.length)} path(s).${skippedNote}`,
         ...shown,
         ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
+        ...(conflictLine === null ? [] : [conflictLine]),
         ...summary,
       ].join('\n')
     }
@@ -1029,8 +1092,13 @@ export function renderSyncApplied(view: SyncApplyView): string {
     if (changed.length === 0) return ['Source unchanged.', ...summary].join('\n')
     const shown = changed.slice(0, 10)
     const remaining = changed.length - shown.length
+    const filesChanged =
+      view.uploadedFiles?.length ?? view.additions.length + view.modifications.length
+    const fileBytes = view.uploadedFileBytes ?? view.uploadedBytes ?? 0
+    const reusedNote =
+      filesChanged > 0 && (view.uploadedBlobs ?? 0) === 0 ? ' (content already on the box)' : ''
     return [
-      `Source synced: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s), ${String(view.deletions.length)} deletion(s); uploaded ${String(view.uploadedBlobs ?? 0)} blob(s), ${String(view.uploadedBytes ?? 0)} bytes.`,
+      `Source synced: ${String(view.additions.length)} addition(s), ${String(view.modifications.length)} modification(s), ${String(view.deletions.length)} deletion(s); ${String(filesChanged)} file(s) changed, ${String(fileBytes)} bytes; uploaded ${String(view.uploadedBlobs ?? 0)} blob(s), ${String(view.uploadedBytes ?? 0)} bytes.${reusedNote}`,
       ...shown.map((entry) => entry.path),
       ...(remaining === 0 ? [] : [`… and ${String(remaining)} more`]),
       ...summary,

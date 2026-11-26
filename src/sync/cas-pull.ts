@@ -1,10 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { chmod, lstat, mkdir, open, rename, rm, rmdir } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { UtcTimestampSchema } from '../domain/timestamps.js'
 import { OcboxError } from '../errors/index.js'
 import { casRefusal } from '../providers/ocbox/cas.js'
 import { sleepWithSignal } from '../providers/ocbox/retry.js'
-import { snapshotEntries, type SyncSnapshotEntry } from './baseline.js'
+import {
+  snapshotEntries,
+  snapshotSha256,
+  type SyncBaselineEvidence,
+  type SyncSnapshotEntry,
+  VerifiedSyncBaselineSchema,
+} from './baseline.js'
+import { SyncBaselineStore, SyncBaselineStoreError } from './baseline-store.js'
 import {
   CAS_LIMITS,
   CasManifestSchema,
@@ -16,15 +24,33 @@ import {
   type CasReadTransport,
   validateCasPages,
 } from './cas-contract.js'
-import { casError } from './cas-snapshot.js'
+import {
+  casStatePaths,
+  listConflictPaths,
+  saveHostedBaseline,
+  syncConflictError,
+  type SyncConflictReport,
+} from './cas-push.js'
+import { casError, readCasState } from './cas-snapshot.js'
 import { loadIgnoreRuleGroups } from './ignore-rules.js'
 import { scanSourceManifest } from './manifest.js'
+import {
+  planSync,
+  type SyncChange,
+  type SyncConflict,
+  type SyncPlan,
+  type SyncRename,
+} from './planner.js'
 import type {
   SyncApplyOptions,
   SyncApplyView,
+  SyncChangeView,
+  SyncConflictView,
   SyncContext,
   SyncDiffOptions,
+  SyncOperationView,
   SyncPlanView,
+  SyncRenameView,
 } from './service.js'
 
 type FileEntry = Extract<CasFile, { type: 'file' }>
@@ -57,6 +83,194 @@ function comparePath(left: { path: string }, right: { path: string }): number {
 
 function comparePathString(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))
+}
+
+function sameEntry(
+  left: SyncSnapshotEntry | undefined,
+  right: SyncSnapshotEntry | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right
+  return (
+    left.path === right.path &&
+    left.type === right.type &&
+    left.size === right.size &&
+    left.sha256 === right.sha256 &&
+    left.mode === right.mode &&
+    left.linkTarget === right.linkTarget
+  )
+}
+
+/**
+ * The hosted three-way baseline: the verified store written by push/pull, or
+ * the last pushed CAS state for a workspace that predates it. Without either,
+ * the first pull keeps the old two-way behaviour.
+ */
+async function loadHostedBaseline(context: SyncContext): Promise<SyncBaselineEvidence | null> {
+  try {
+    const stored = await new SyncBaselineStore(
+      context.stateDirectory,
+      context.projectId,
+      context.sessionId,
+    ).load()
+    if (stored !== null) return stored
+  } catch (error) {
+    if (error instanceof SyncBaselineStoreError && error.code === 'UNSAFE_BASELINE')
+      throw casError(
+        'SYNC_CONFLICT',
+        'The verified baseline would persist secret-like material; refusing to sync',
+      )
+    throw casError(
+      'SYNC_INTEGRITY',
+      'The stored sync baseline is unreadable; resolve it before syncing again',
+    )
+  }
+  const transport = context.casTransport
+  if (transport === undefined) return null
+  const snapshot = await readCasState(casStatePaths(context, transport.scope).statePath)
+  if (snapshot === undefined) return null
+  const entries = remoteEntries(snapshot.pages)
+  return VerifiedSyncBaselineSchema.parse({
+    schemaVersion: 1,
+    verified: true,
+    verifiedAt: UtcTimestampSchema.parse(new Date(snapshot.createdAt).toISOString()),
+    snapshotSha256: snapshotSha256(entries),
+    entries,
+  })
+}
+
+/**
+ * A pull must only write paths the box changed since the baseline. Projecting
+ * a locally changed (or locally deleted) path back to its baseline entry keeps
+ * the real planner from treating an untouched box path as a conflict; paths the
+ * box did change keep the real local entry, so a local edit there conflicts.
+ */
+function projectLocalForPull(
+  local: readonly SyncSnapshotEntry[],
+  remote: readonly SyncSnapshotEntry[],
+  baseline: Extract<SyncBaselineEvidence, { verified: true }>,
+): SyncSnapshotEntry[] {
+  const localMap = new Map(local.map((entry) => [entry.path, entry]))
+  const remoteMap = new Map(remote.map((entry) => [entry.path, entry]))
+  const baselineMap = new Map(baseline.entries.map((entry) => [entry.path, entry]))
+  const projected: SyncSnapshotEntry[] = []
+  for (const path of new Set([...baselineMap.keys(), ...remoteMap.keys()])) {
+    const before = baselineMap.get(path)
+    const after = remoteMap.get(path)
+    if (sameEntry(before, after)) {
+      if (before !== undefined) projected.push(before)
+    } else {
+      const current = localMap.get(path)
+      if (current !== undefined) projected.push(current)
+    }
+  }
+  return projected.sort(comparePath)
+}
+
+function conflictSides(plan: SyncPlan, conflict: SyncConflict): readonly string[] {
+  const paths = new Set(
+    conflict.relatedPaths.length > 0
+      ? conflict.relatedPaths
+      : conflict.path === null
+        ? []
+        : [conflict.path],
+  )
+  const sides = new Set<string>()
+  for (const change of [...plan.additions, ...plan.modifications, ...plan.deletions]) {
+    if (paths.has(change.path)) sides.add(change.side)
+  }
+  return [...sides].sort()
+}
+
+function conflictView(plan: SyncPlan, conflict: SyncConflict): SyncConflictView {
+  return {
+    kind: conflict.kind,
+    path: conflict.path,
+    relatedPaths: [...conflict.relatedPaths],
+    sides: conflictSides(plan, conflict),
+  }
+}
+
+function conflictReports(plan: SyncPlan): SyncConflictReport[] {
+  return plan.conflicts.map((conflict) => ({
+    path: conflict.path,
+    kind: conflict.kind,
+    sides: conflictSides(plan, conflict),
+  }))
+}
+
+function conflictPaths(plan: SyncPlan): string[] {
+  return [
+    ...new Set(
+      plan.conflicts.flatMap((conflict) =>
+        conflict.relatedPaths.length > 0
+          ? conflict.relatedPaths
+          : conflict.path === null
+            ? []
+            : [conflict.path],
+      ),
+    ),
+  ].sort(comparePathString)
+}
+
+function changeView(change: SyncChange): SyncChangeView {
+  return { side: change.side, kind: change.kind, path: change.path }
+}
+
+function renameView(rename: SyncRename): SyncRenameView {
+  return {
+    side: rename.side,
+    fromPath: rename.fromPath,
+    toPath: rename.toPath,
+    sha256: rename.sha256,
+  }
+}
+
+function planViewFromPlan(
+  context: SyncContext,
+  mode: 'diff' | 'pull',
+  plan: SyncPlan,
+  diff: TreeDiff,
+  conflicts: readonly SyncConflict[] = plan.conflicts,
+  skipped: ReadonlySet<string> = new Set(),
+): SyncPlanView {
+  const visible = [...plan.additions, ...plan.modifications].filter(
+    (change) => change.side === 'remote' && !skipped.has(change.path),
+  )
+  const additions = mode === 'diff' ? plan.additions : visible.filter((c) => c.kind === 'addition')
+  const modifications =
+    mode === 'diff' ? plan.modifications : visible.filter((c) => c.kind === 'modification')
+  const deletions: SyncChangeView[] =
+    mode === 'diff'
+      ? plan.deletions.map(changeView)
+      : diff.deletions
+          .filter((entry) => !skipped.has(entry.path))
+          .map((entry) => ({ side: 'local', kind: 'deletion', path: entry.path }))
+  return {
+    schemaVersion: 1,
+    mode,
+    sessionId: context.sessionId,
+    firstSync: false,
+    additions: additions.map(changeView),
+    modifications: modifications.map(changeView),
+    deletions,
+    renames:
+      mode === 'diff'
+        ? plan.renames.map(renameView)
+        : plan.renames.filter((rename) => rename.side === 'remote').map(renameView),
+    conflicts: conflicts.map((conflict) => conflictView(plan, conflict)),
+    operations: plan.operations.map(
+      (operation): SyncOperationView => ({
+        kind: operation.kind,
+        source: operation.source,
+        path: operation.path,
+        fromPath: operation.fromPath,
+      }),
+    ),
+    requiresDeletionApproval: deletions.length > 0,
+    blocked: [],
+    collisions: [],
+    excluded: [],
+  }
 }
 
 function pauseFor(
@@ -432,11 +646,62 @@ async function commitStaged(staged: readonly StagedFile[]): Promise<void> {
   }
 }
 
-function deletionConfirmationError(): OcboxError {
-  return casError(
-    'SYNC_CONFLICT',
-    'Destructive sync requires interactive confirmation or an explicit --yes acknowledgement',
+function deletionConfirmationError(paths: readonly string[]): OcboxError {
+  return syncConflictError({
+    message: `Destructive sync requires interactive confirmation or an explicit --yes acknowledgement: ${listConflictPaths(paths)}`,
+    paths,
+    conflicts: paths.map((path) => ({ path, kind: 'deletion', sides: ['local'] })),
+    nextStep: 'ocbox sync pull --delete --yes',
+  })
+}
+
+function pullConflictError(
+  plan: SyncPlan,
+  remote: ReadonlyMap<string, SyncSnapshotEntry>,
+): OcboxError {
+  const paths = conflictPaths(plan)
+  const boxDeletion = plan.conflicts.some(
+    (conflict) => conflict.path !== null && !remote.has(conflict.path),
   )
+  const guidance = boxDeletion
+    ? 'Keep your copies with ocbox sync pull --keep-local, or accept the box deletions with ocbox sync pull --delete --yes (and use --overwrite-local for box file changes)'
+    : 'Keep your copies with ocbox sync pull --keep-local, or take the box copies with ocbox sync pull --overwrite-local'
+  return syncConflictError({
+    message: `Source pull conflicts in ${String(paths.length)} path(s): ${listConflictPaths(paths)}. ${guidance}.`,
+    paths,
+    conflicts: conflictReports(plan),
+    nextStep: 'ocbox sync pull --keep-local',
+  })
+}
+
+function pullOverwriteIncompleteError(
+  plan: SyncPlan,
+  remote: ReadonlyMap<string, SyncSnapshotEntry>,
+): OcboxError {
+  const unresolved = plan.conflicts.filter(
+    (conflict) => conflict.path === null || !remote.has(conflict.path),
+  )
+  const paths = [
+    ...new Set(
+      unresolved.flatMap((conflict) =>
+        conflict.relatedPaths.length > 0
+          ? conflict.relatedPaths
+          : conflict.path === null
+            ? []
+            : [conflict.path],
+      ),
+    ),
+  ].sort(comparePathString)
+  return syncConflictError({
+    message: `The box deleted ${String(paths.length)} path(s) you changed: ${listConflictPaths(paths)}. Keep your copies with ocbox sync pull --keep-local, or accept the box deletions with ocbox sync pull --delete --yes.`,
+    paths,
+    conflicts: unresolved.map((conflict) => ({
+      path: conflict.path,
+      kind: conflict.kind,
+      sides: conflictSides(plan, conflict),
+    })),
+    nextStep: 'ocbox sync pull --keep-local',
+  })
 }
 
 async function deleteLocalPaths(
@@ -486,13 +751,20 @@ export async function runHostedDiff(
     context.signal,
   )
   const local = await scanLocal(context, options.cliRules)
-  return planView(context, 'diff', diffTrees(local, remoteEntries(snapshot.pages)))
+  const remote = remoteEntries(snapshot.pages)
+  const diff = diffTrees(local, remote)
+  const baseline = await loadHostedBaseline(context)
+  if (baseline === null) return planView(context, 'diff', diff)
+  const plan = planSync({ mode: 'diff', local, remote, baseline })
+  return planViewFromPlan(context, 'diff', plan, diff)
 }
 
 export async function runHostedPull(
   context: SyncContext,
   options: SyncApplyOptions,
 ): Promise<SyncApplyView> {
+  if (options.keepLocal === true && options.overwriteLocal === true)
+    throw casError('CONFIG_INVALID', 'Use either --keep-local or --overwrite-local, not both')
   const transport = context.casReadTransport
   if (transport === undefined)
     throw casError('CAPABILITY_UNSUPPORTED', 'Source read-back is unavailable')
@@ -504,17 +776,60 @@ export async function runHostedPull(
   const pause = pauseFor(options.pause, context.signal)
   const snapshot = await readSnapshot(transport, pause, context.signal)
   const local = await scanLocal(context, options.cliRules)
-  const diff = diffTrees(local, remoteEntries(snapshot.pages))
-  if (diff.deletions.length > 0 && options.delete && !options.yes) {
-    if (!options.interactive || !(await options.confirm())) throw deletionConfirmationError()
+  const remote = remoteEntries(snapshot.pages)
+  const diff = diffTrees(local, remote)
+  const baseline = await loadHostedBaseline(context)
+
+  let selectedPaths: string[]
+  let view: SyncPlanView
+  let skipped = new Set<string>()
+  let deletions: readonly SyncSnapshotEntry[] = diff.deletions
+
+  if (baseline === null) {
+    view = planView(context, 'pull', diff)
+    selectedPaths = [...diff.additions, ...diff.modifications]
+      .filter((entry) => entry.type === 'file')
+      .map((entry) => entry.path)
+  } else {
+    const projected = baseline.verified ? projectLocalForPull(local, remote, baseline) : local
+    const plan = planSync({ mode: 'pull', local: projected, remote, baseline })
+    const remoteMap = new Map(remote.map((entry) => [entry.path, entry]))
+    const localMap = new Map(local.map((entry) => [entry.path, entry]))
+    let effectiveConflicts: readonly SyncConflict[] = plan.conflicts
+    if (plan.conflicts.length > 0) {
+      if (options.keepLocal === true) {
+        skipped = new Set(conflictPaths(plan))
+      } else if (options.overwriteLocal === true) {
+        const unresolved = plan.conflicts.filter(
+          (conflict) => conflict.path === null || !remoteMap.has(conflict.path),
+        )
+        if (unresolved.length > 0 && !(options.delete && options.yes))
+          throw pullOverwriteIncompleteError(plan, remoteMap)
+        effectiveConflicts = []
+      } else {
+        throw pullConflictError(plan, remoteMap)
+      }
+    }
+    const visible = [...plan.additions, ...plan.modifications].filter((change) => {
+      if (change.side !== 'remote' || skipped.has(change.path)) return false
+      const entry = remoteMap.get(change.path)
+      return entry?.type === 'file' && !sameEntry(localMap.get(change.path), entry)
+    })
+    selectedPaths = visible.map((change) => change.path)
+    deletions = diff.deletions.filter((entry) => !skipped.has(entry.path))
+    view = planViewFromPlan(context, 'pull', plan, diff, effectiveConflicts, skipped)
+  }
+
+  if (deletions.length > 0 && options.delete && !options.yes) {
+    if (!options.interactive || !(await options.confirm()))
+      throw deletionConfirmationError(deletions.map((entry) => entry.path))
   }
 
   const filesByPath = new Map<string, FileEntry>()
   for (const page of snapshot.pages)
     for (const entry of page.files) if (entry.type === 'file') filesByPath.set(entry.path, entry)
-  const selected = [...diff.additions, ...diff.modifications]
-    .filter((entry): entry is SyncSnapshotEntry & { type: 'file' } => entry.type === 'file')
-    .map((entry) => filesByPath.get(entry.path))
+  const selected = [...new Set(selectedPaths)]
+    .map((path) => filesByPath.get(path))
     .filter((entry): entry is FileEntry => entry !== undefined)
     .sort(comparePath)
 
@@ -537,19 +852,23 @@ export async function runHostedPull(
     pulledBytes = selected.reduce((total, file) => total + file.size, 0)
   }
 
-  for (const entry of diff.additions.filter((item) => item.type === 'directory')) {
+  for (const entry of diff.additions.filter(
+    (item) => item.type === 'directory' && !skipped.has(item.path),
+  )) {
     await mkdir(targetPath(context.localRoot, entry.path), { recursive: true, mode: 0o755 })
   }
 
   const deletedFiles =
-    diff.deletions.length > 0 && options.delete
-      ? await deleteLocalPaths(context.localRoot, diff.deletions)
+    deletions.length > 0 && options.delete
+      ? await deleteLocalPaths(context.localRoot, deletions)
       : []
 
+  await saveHostedBaseline(context, remote, options.now)
+
   return {
-    ...planView(context, 'pull', diff),
+    ...view,
     applied: pulledFiles.length > 0 || deletedFiles.length > 0,
-    baselineUpdated: false,
+    baselineUpdated: true,
     operationId: pullId,
     protocolVersion: 2,
     pulledFiles,

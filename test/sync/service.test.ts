@@ -692,7 +692,7 @@ describe('renderSyncApplied (protocol v2)', () => {
 
     expect(rendered).toBe(
       [
-        'Source synced: 2 addition(s), 1 modification(s), 1 deletion(s); uploaded 2 blob(s), 681 bytes.',
+        'Source synced: 2 addition(s), 1 modification(s), 1 deletion(s); 3 file(s) changed, 681 bytes; uploaded 2 blob(s), 681 bytes.',
         'package.json',
         'test.mjs',
         'src.txt',
@@ -713,7 +713,7 @@ describe('renderSyncApplied (protocol v2)', () => {
     const lines = rendered.split('\n')
 
     expect(lines[0]).toBe(
-      'Source synced: 11 addition(s), 1 modification(s), 1 deletion(s); uploaded 0 blob(s), 0 bytes.',
+      'Source synced: 11 addition(s), 1 modification(s), 1 deletion(s); 12 file(s) changed, 0 bytes; uploaded 0 blob(s), 0 bytes. (content already on the box)',
     )
     expect(lines.slice(1, 11)).toEqual(additions.slice(0, 10).map((entry) => entry.path))
     expect(lines[11]).toBe('… and 3 more')
