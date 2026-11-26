@@ -2,8 +2,9 @@
 
 OCB-K6-1 measured the CLI before changing it. `OCBOX_TRACE=1` makes the CLI
 write one stderr line per phase with the elapsed milliseconds since process
-start. It is off by default, costs one boolean check per phase when off, and
-never prints a token, an identifier, a query string, a header or file contents.
+start. It is off by default; when off it adds no timers, formatting, writes or
+global `fetch` patch, and it never prints a token, an identifier, a query
+string, a header or file contents.
 
 ## Turn it on
 
@@ -44,6 +45,12 @@ example `/v1/projects/6f1c…/sessions?cursor=next` prints as
 `path=/v1/projects/:id/sessions`. Tokens, Session/project/execution IDs and
 request bodies never reach stderr. An `http` duration ends when the response
 headers arrive; reading the body stays inside the `command` phase.
+
+`ocbox exec` may be served by the optional warm-session daemon. The daemon is a
+detached process whose stderr is ignored, so its requests do not appear in the
+CLI's trace; the CLI's `command` phase still includes the wait for it. Record
+which mode a table used, and use `OCBOX_WARM=0` when the HTTP rows of an `exec`
+run must be visible.
 
 ## How the table is produced
 
@@ -90,26 +97,26 @@ used to cut the fix parts.
 | command            | phase         | p50 duration ms | p95 duration ms | p50 elapsed ms | p95 elapsed ms |
 | ------------------ | ------------- | --------------: | --------------: | -------------: | -------------: |
 | `status`           | `entry`       |            14.0 |            15.0 |           14.0 |           15.0 |
-| `status`           | `module-load` |            36.0 |            40.0 |           50.0 |           55.0 |
-| `status`           | `config`      |             4.0 |             4.0 |           92.0 |          101.0 |
-| `status`           | `command`     |            57.0 |            65.0 |          107.0 |          116.0 |
+| `status`           | `module-load` |            35.0 |            38.0 |           50.0 |           52.0 |
+| `status`           | `config`      |             4.0 |             4.0 |           93.0 |           95.0 |
+| `status`           | `command`     |            56.0 |            69.0 |          106.0 |          121.0 |
 | `exec -- true`     | `entry`       |            14.0 |            16.0 |           14.0 |           16.0 |
-| `exec -- true`     | `module-load` |            35.0 |            37.0 |           50.0 |           54.0 |
-| `exec -- true`     | `config`      |             0.0 |             3.0 |           94.0 |           97.0 |
-| `exec -- true`     | `command`     |            71.0 |            74.0 |          120.0 |          128.0 |
-| `sync push` (1 KB) | `entry`       |            14.0 |            16.0 |           14.0 |           16.0 |
-| `sync push` (1 KB) | `module-load` |            34.0 |            38.0 |           48.0 |           54.0 |
-| `sync push` (1 KB) | `config`      |             0.0 |             4.0 |           96.0 |          102.0 |
-| `sync push` (1 KB) | `command`     |            70.0 |            71.0 |          119.0 |          125.0 |
+| `exec -- true`     | `module-load` |            37.0 |            38.0 |           51.0 |           53.0 |
+| `exec -- true`     | `config`      |             0.0 |             3.0 |           95.0 |           96.0 |
+| `exec -- true`     | `command`     |            71.0 |            76.0 |          122.0 |          124.0 |
+| `sync push` (1 KB) | `entry`       |            14.0 |            17.0 |           14.0 |           17.0 |
+| `sync push` (1 KB) | `module-load` |            34.0 |            38.0 |           49.0 |           55.0 |
+| `sync push` (1 KB) | `config`      |             0.0 |             4.0 |           96.0 |          100.0 |
+| `sync push` (1 KB) | `command`     |            68.0 |            71.0 |          119.0 |          123.0 |
 
 The same commands with the version gate enabled, still against the local fake
 provider, add one real staging request per run:
 
 | command            | phase                   | p50 duration ms | p95 duration ms | p50 elapsed ms | p95 elapsed ms |
 | ------------------ | ----------------------- | --------------: | --------------: | -------------: | -------------: |
-| `status`           | `http GET /v1/meta 401` |           203.0 |           379.0 |          269.0 |          439.0 |
-| `exec -- true`     | `http GET /v1/meta 401` |           177.0 |           388.0 |          237.0 |          449.0 |
-| `sync push` (1 KB) | `http GET /v1/meta 401` |           183.0 |           202.0 |          241.0 |          265.0 |
+| `status`           | `http GET /v1/meta 401` |           174.0 |           204.0 |          234.0 |          272.0 |
+| `exec -- true`     | `http GET /v1/meta 401` |           179.0 |           225.0 |          240.0 |          284.0 |
+| `sync push` (1 KB) | `http GET /v1/meta 401` |           172.0 |           195.0 |          236.0 |          257.0 |
 
 ## Staging measurement
 
@@ -155,7 +162,7 @@ staging box by hand to work around the missing credential.
 The local reference run is dominated by `command` (the oclif dispatch and
 command body), then `module-load`; `entry` and `config` are small. Enabling the
 version gate adds a real staging request that is larger than any local startup
-phase (p50 about 180–200 ms, p95 up to about 390 ms). That makes the startup
+phase (p50 about 170–180 ms, p95 up to about 225 ms). That makes the startup
 gate and the command phase the first two things to split before cutting fix
 parts: `command` currently includes oclif's command discovery and the selected
 command module load, so a staging table that shows `command` as the largest
