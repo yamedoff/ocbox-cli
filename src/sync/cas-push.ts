@@ -29,8 +29,9 @@ import {
 } from './cas-snapshot.js'
 import { fastApplyCasSnapshot, syncCasSnapshot } from './cas-transfer.js'
 import { InvalidIgnoreRuleError } from './exclusions.js'
-import { loadIgnoreRuleGroups } from './ignore-rules.js'
+import { loadIgnoreRuleGroups, sourceExclusionForPath } from './ignore-rules.js'
 import { type SourceManifest, scanSourceManifest } from './manifest.js'
+import type { ManifestPath } from './path-policy.js'
 import type { SyncApplyOptions, SyncApplyView, SyncContext } from './service.js'
 
 function comparePath(left: { path: string }, right: { path: string }): number {
@@ -39,6 +40,19 @@ function comparePath(left: { path: string }, right: { path: string }): number {
 
 function comparePathString(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))
+}
+
+/**
+ * The CAS protocol records only the execute bit on files and a fixed directory
+ * mode. Normalizing before planning keeps a Windows scan (which reports other
+ * modes) from looking like a content change.
+ */
+export function casComparableEntry(entry: SyncSnapshotEntry): SyncSnapshotEntry {
+  if (entry.type === 'directory') {
+    return entry.mode === 0o755 ? entry : { ...entry, mode: 0o755 }
+  }
+  const mode = entry.mode & 0o111 ? 493 : 420
+  return entry.mode === mode ? entry : { ...entry, mode }
 }
 
 export interface CasStatePaths {
@@ -79,7 +93,7 @@ export async function saveHostedBaseline(
   entries: readonly SyncSnapshotEntry[],
   now: () => Date = () => new Date(),
 ): Promise<void> {
-  const sorted = [...entries].sort(comparePath)
+  const sorted = entries.map(casComparableEntry).sort(comparePath)
   const baseline = VerifiedSyncBaselineSchema.parse({
     schemaVersion: 1,
     verified: true,
@@ -95,7 +109,7 @@ export async function saveHostedBaseline(
     if (error instanceof SyncBaselineStoreError && error.code === 'UNSAFE_BASELINE')
       throw casError(
         'SYNC_CONFLICT',
-        'The verified baseline would persist secret-like material; refusing to commit',
+        'The sync applied, but its verified baseline contains secret-like material and was not saved; resolve the path and retry',
       )
     throw casError(
       'SYNC_INTEGRITY',
@@ -123,7 +137,12 @@ export function listConflictPaths(paths: readonly string[], limit = 10): string 
 
 export function pushExcludeNextStep(paths: readonly string[]): string {
   if (paths.length === 0) return 'ocbox sync diff'
-  return `ocbox sync push ${paths.map((path) => `--exclude ${shellQuote(path)}`).join(' ')}`
+  const shown = paths.slice(0, 5)
+  const remaining = paths.length - shown.length
+  const command = `ocbox sync push ${shown.map((path) => `--exclude ${shellQuote(path)}`).join(' ')}`
+  return remaining === 0
+    ? command
+    : `${command} # and ${String(remaining)} more: repeat --exclude for each path in details.paths`
 }
 
 function safeDetails(details: RedactedDetails): RedactedDetails | undefined {
@@ -143,8 +162,12 @@ export function syncConflictError(input: {
   readonly reasonCode?: string
   readonly requestId?: OcboxError['requestId']
 }): OcboxError {
-  const paths = [...new Set(input.paths)].slice(0, 100)
+  const uniquePaths = [...new Set(input.paths)]
+  const paths = uniquePaths.slice(0, 100)
   const details = safeDetails({
+    pathCount: uniquePaths.length,
+    pathsTruncated: uniquePaths.length > paths.length,
+    conflictsTruncated: input.conflicts.length > 50,
     paths,
     conflicts: input.conflicts.slice(0, 50).map((conflict) => ({
       path: conflict.path,
@@ -258,7 +281,7 @@ function unchangedView(context: SyncContext, firstSync: boolean): SyncApplyView 
     excluded: [],
     requiresDeletionApproval: false,
     applied: true,
-    baselineUpdated: false,
+    baselineUpdated: true,
     operationId: null,
     uploadedBlobs: 0,
     uploadedBytes: 0,
@@ -323,9 +346,22 @@ export async function runCasPush(
   const changedPaths = [...new Set([...old.keys(), ...current.keys()])]
     .filter((path) => identity(old.get(path)) !== identity(current.get(path)))
     .sort()
-  const deletedPaths = [...old.keys()]
-    .filter((path) => !current.has(path) && !excludedPaths.has(path))
-    .sort()
+  const deletedPaths: ManifestPath[] = []
+  for (const path of [...old.keys()].filter((path) => !current.has(path)).sort()) {
+    if (excludedPaths.has(path)) continue
+    const entry = old.get(path)
+    if (entry !== undefined) {
+      const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+      const reason = await sourceExclusionForPath(
+        groups,
+        folder,
+        entry.path,
+        entry.type === 'directory',
+      )
+      if (reason !== null) continue
+    }
+    deletedPaths.push(path)
+  }
   const fingerprint = casTreeFingerprint(currentFiles)
 
   // The v3 check is read-only: an unchanged tree stops here without a plan,

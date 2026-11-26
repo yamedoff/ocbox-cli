@@ -13,9 +13,16 @@ import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { createCasTransport } from '../../src/providers/ocbox/cas.js'
 import { createVerifiedBaseline } from '../../src/sync/baseline.js'
 import { SyncBaselineStore } from '../../src/sync/baseline-store.js'
+import { casStatePaths } from '../../src/sync/cas-push.js'
 import { type CasPage, casHash } from '../../src/sync/cas-contract.js'
+import { readCasState } from '../../src/sync/cas-snapshot.js'
 import { scanSourceManifest } from '../../src/sync/manifest.js'
-import { runSyncApply, type SyncApplyOptions, type SyncContext } from '../../src/sync/service.js'
+import {
+  runSyncApply,
+  runSyncDiff,
+  type SyncApplyOptions,
+  type SyncContext,
+} from '../../src/sync/service.js'
 import {
   fixedClock,
   MemoryCredentialStore,
@@ -137,6 +144,15 @@ async function contextFor(origin: string, localRoot: string, stateDirectory: str
     localRoot,
     remoteRoot: join(dirname(localRoot), 'remote'),
     casReadTransport: createCasTransport(api, HOSTED_SESSION),
+    // The pull path writes the last synced tree here; the call itself is not
+    // used unless a test pushes, which this file does not do.
+    casTransport: {
+      scope: 'test',
+      sessionId: 'sesdo_test',
+      call: async () => {
+        throw new Error('unexpected CAS call')
+      },
+    },
   } satisfies SyncContext
 }
 
@@ -292,5 +308,29 @@ describe('hosted pull three-way baseline', () => {
     expect(view.baselineUpdated).toBe(true)
     expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('box')
     expect(pullRequests(requests).map((request) => request.body['paths'])).toEqual([['a.txt']])
+  })
+
+  it('records the box tree as the last synced CAS state so diff and push agree', async () => {
+    const { context, localRoot } = await setup({
+      baseline: { 'a.txt': 'original', 'keep.txt': 'keep' },
+      local: { 'a.txt': 'original', 'keep.txt': 'keep' },
+      remote: { 'a.txt': 'original' },
+    })
+
+    const pulled = await runSyncApply(context, 'pull', {
+      ...options,
+      delete: true,
+      yes: true,
+    })
+    expect(pulled.deletedFiles).toEqual(['keep.txt'])
+
+    const state = await readCasState(casStatePaths(context, 'test').statePath)
+    expect(state?.pages.flatMap((page) => page.files).map((entry) => entry.path)).toEqual(['a.txt'])
+    const diff = await runSyncDiff(context, { cliRules: [], pause: async () => {} })
+    expect(diff.additions).toEqual([])
+    expect(diff.modifications).toEqual([])
+    expect(diff.deletions).toEqual([])
+    expect(diff.conflicts).toEqual([])
+    expect((await readdir(localRoot)).sort()).toEqual(['a.txt'])
   })
 })

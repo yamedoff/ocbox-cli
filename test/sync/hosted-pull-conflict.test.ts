@@ -171,7 +171,7 @@ async function runFailure(promise: Promise<unknown>): Promise<OcboxError> {
  * Writes the three-way baseline through the real store, then serves a box
  * snapshot whose only file is `remote`. The local tree already holds `local`.
  */
-async function setup(input: { baseline: string; local: string; remote: string }) {
+async function setup(input: { baseline: string | null; local: string; remote: string }) {
   const root = await mkdtemp(join(tmpdir(), 'ocbox-hosted-pull-conflict-'))
   roots.push(root)
   const localRoot = join(root, 'local')
@@ -180,13 +180,15 @@ async function setup(input: { baseline: string; local: string; remote: string })
   await mkdir(localRoot)
   await mkdir(baselineRoot)
   await writeFile(join(localRoot, 'a.txt'), input.local)
-  await writeFile(join(baselineRoot, 'a.txt'), input.baseline)
-  await new SyncBaselineStore(stateDirectory, PROJECT_ID, SESSION_ID).save(
-    createVerifiedBaseline(
-      await scanSourceManifest(baselineRoot),
-      UtcTimestampSchema.parse('2026-11-26T00:00:00.000Z'),
-    ),
-  )
+  if (input.baseline !== null) {
+    await writeFile(join(baselineRoot, 'a.txt'), input.baseline)
+    await new SyncBaselineStore(stateDirectory, PROJECT_ID, SESSION_ID).save(
+      createVerifiedBaseline(
+        await scanSourceManifest(baselineRoot),
+        UtcTimestampSchema.parse('2026-11-26T00:00:00.000Z'),
+      ),
+    )
+  }
 
   const remoteFile = file('a.txt', input.remote)
   const pages = [page(0, [remoteFile])]
@@ -338,5 +340,64 @@ describe('hosted pull keeps local work', () => {
     expect(view.pulledFiles).toEqual(['a.txt'])
     expect(view.baselineUpdated).toBe(true)
     expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('box')
+  })
+
+  it('refuses a first pull with no baseline that would replace a local file', async () => {
+    const { context, localRoot } = await setup({
+      baseline: null,
+      local: 'local edit',
+      remote: 'box',
+    })
+
+    const error = await runFailure(runSyncApply(context, 'pull', options))
+
+    expect(error.code).toBe('SYNC_CONFLICT')
+    expect(error.details?.['paths']).toEqual(['a.txt'])
+    expect(error.message).toContain('a.txt')
+    expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('local edit')
+  })
+
+  it('--overwrite-local is required to replace a local file on a first pull', async () => {
+    const { context, localRoot } = await setup({
+      baseline: null,
+      local: 'local edit',
+      remote: 'box',
+    })
+
+    const view = await runSyncApply(context, 'pull', { ...options, overwriteLocal: true })
+
+    expect(view.conflicts).toEqual([])
+    expect(view.pulledFiles).toEqual(['a.txt'])
+    expect(view.baselineUpdated).toBe(true)
+    expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('box')
+  })
+
+  it('--keep-local keeps a first-pull conflict', async () => {
+    const { context, localRoot } = await setup({
+      baseline: null,
+      local: 'local edit',
+      remote: 'box',
+    })
+
+    const view = await runSyncApply(context, 'pull', { ...options, keepLocal: true })
+
+    expect(view.pulledFiles).toEqual([])
+    expect(view.conflicts.map((conflict) => conflict.path)).toEqual(['a.txt'])
+    expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('local edit')
+  })
+
+  it('ignores a box change to a path the local ignore rules keep out of sync', async () => {
+    const { context, localRoot } = await setup({
+      baseline: 'original',
+      local: 'original',
+      remote: 'box',
+    })
+    await writeFile(join(localRoot, '.gitignore'), 'a.txt\n')
+
+    const view = await runSyncApply(context, 'pull', options)
+
+    expect(view.conflicts).toEqual([])
+    expect(view.pulledFiles).toEqual([])
+    expect(await readFile(join(localRoot, 'a.txt'), 'utf8')).toBe('original')
   })
 })

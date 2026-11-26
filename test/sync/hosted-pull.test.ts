@@ -273,7 +273,9 @@ describe('hosted sync read-back', () => {
       return json(response, { error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
     })
     const context = await contextFor(origin, local)
-    const view = await runSyncApply(context, 'pull', options)
+    // A first pull has no baseline, so replacing a local file that differs
+    // from the box now needs the explicit flag.
+    const view = await runSyncApply(context, 'pull', { ...options, overwriteLocal: true })
     expect(await readFile(join(local, 'added.txt'), 'utf8')).toBe('added')
     expect(await readFile(join(local, 'modified.txt'), 'utf8')).toBe('new')
     expect(await readFile(join(local, 'deleted.txt'), 'utf8')).toBe('local')

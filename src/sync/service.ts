@@ -883,6 +883,11 @@ export async function runSyncApply(
       return summary === undefined ? view : { ...view, summary }
     })
   }
+  if (mode === 'pull' && (options.keepLocal === true || options.overwriteLocal === true))
+    throw syncError(
+      'CAPABILITY_UNSUPPORTED',
+      '--keep-local and --overwrite-local are available for hosted sync only',
+    )
   const now = options.now ?? (() => new Date())
   const roots = rootsFor(mode, context)
   const adapter = createTransferAdapter(context.providerName, roots.targetRoot)
