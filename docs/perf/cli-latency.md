@@ -57,23 +57,20 @@ run must be visible.
 
 ## How the table is produced
 
-Run each command 10 times with `OCBOX_TRACE=1`, keep the stderr lines from each
-run, and take p50/p95 of `duration_ms` per phase (`elapsed_ms` for the point
-marker `entry`). Group `http` rows by method, path and status, and
-`token-refresh` rows by `network`. `exec` and `sync push` read the workspace
-config more than once, so each read prints its own `config` line; sum the
-`config` durations within a run before taking percentiles. Use a real project
-and a running box on staging; the 1 KB change is a file of exactly 1024 bytes
-created before the first push.
+Run each command 10 times with `OCBOX_TRACE=1`, from a real project workspace on
+staging with a running box. Before each `sync push`, rewrite a 1024-byte file
+with different content, so every run pushes a 1 KB change instead of a no-op.
+Keep each command's stderr in its own directory, one file per run.
 
 POSIX shell, one command per invocation:
 
 ```sh
-mkdir -p traces
+mkdir -p traces/status traces/exec traces/push
 for i in $(seq 1 10); do
-  OCBOX_TRACE=1 ocbox status --json >/dev/null 2>"traces/status-$i.log"
-  OCBOX_TRACE=1 ocbox exec --json -- true >/dev/null 2>"traces/exec-$i.log"
-  OCBOX_TRACE=1 ocbox sync push --json >/dev/null 2>"traces/push-$i.log"
+  OCBOX_TRACE=1 ocbox status --json >/dev/null 2>"traces/status/$i.log"
+  OCBOX_TRACE=1 ocbox exec --json -- true >/dev/null 2>"traces/exec/$i.log"
+  node -e "require('node:fs').writeFileSync('change.bin', Buffer.alloc(1024, process.argv[1]))" "$i"
+  OCBOX_TRACE=1 ocbox sync push --json >/dev/null 2>"traces/push/$i.log"
 done
 ```
 
@@ -81,16 +78,91 @@ PowerShell on Windows:
 
 ```powershell
 $env:OCBOX_TRACE = '1'
+New-Item -ItemType Directory -Force traces\status, traces\exec, traces\push | Out-Null
 1..10 | ForEach-Object {
-  ocbox status --json 2>"traces\status-$_.log" | Out-Null
-  ocbox exec --json -- true 2>"traces\exec-$_.log" | Out-Null
-  ocbox sync push --json 2>"traces\push-$_.log" | Out-Null
+  ocbox status --json 2>"traces\status\$_.log" | Out-Null
+  ocbox exec --json -- true 2>"traces\exec\$_.log" | Out-Null
+  [IO.File]::WriteAllBytes(
+    'change.bin',
+    [Text.Encoding]::ASCII.GetBytes(('{0:D4}' -f $_).PadRight(1024, 'x'))
+  )
+  ocbox sync push --json 2>"traces\push\$_.log" | Out-Null
 }
 ```
 
-Parse one file per run and keep one value per phase per run; the table below
-uses the p50 and p95 of those values. Do not average across runs before taking
-the percentiles.
+`change.bin` must be inside the synced project workspace; adjust the path if the
+workspace root is elsewhere. It is exactly 1024 ASCII bytes and differs on every
+run.
+
+### From stderr lines to the table
+
+Save this as `summarize-trace.mjs` beside the `traces` directory:
+
+```js
+// Usage: node summarize-trace.mjs <log-directory> <label>
+import { readdir, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+const directory = process.argv[2] ?? 'traces'
+const label = process.argv[3] ?? 'command'
+const runs = new Map()
+
+for (const name of await readdir(directory)) {
+  if (!name.endsWith('.log')) continue
+  const sums = new Map()
+  for (const line of (await readFile(join(directory, name), 'utf8')).split('\n')) {
+    if (!line.startsWith('ocbox-trace ')) continue
+    const fields = Object.fromEntries(
+      line
+        .split(' ')
+        .slice(1)
+        .map((part) => {
+          const at = part.indexOf('=')
+          return [part.slice(0, at), part.slice(at + 1)]
+        }),
+    )
+    let key = fields.phase
+    if (key === 'http') key += ` ${fields.method} ${fields.path} ${fields.status}`
+    if (key === 'token-refresh') key += ` network=${fields.network}`
+    const value = Number(fields.phase === 'entry' ? fields.elapsed_ms : fields.duration_ms)
+    if (Number.isFinite(value)) sums.set(key, (sums.get(key) ?? 0) + value)
+    if (fields.phase === 'command') sums.set('command elapsed_ms', Number(fields.elapsed_ms))
+  }
+  for (const [key, value] of sums) {
+    if (!runs.has(key)) runs.set(key, [])
+    runs.get(key).push(value)
+  }
+}
+
+function percentile(values, p) {
+  const sorted = [...values].sort((left, right) => left - right)
+  return sorted[Math.ceil((p / 100) * sorted.length) - 1]
+}
+
+for (const [key, values] of [...runs].sort(([left], [right]) => left.localeCompare(right))) {
+  console.log(`${label}\t${key}\t${percentile(values, 50)}\t${percentile(values, 95)}`)
+}
+```
+
+Then run it once per command:
+
+```sh
+node summarize-trace.mjs traces/status status
+node summarize-trace.mjs traces/exec "exec -- true"
+node summarize-trace.mjs traces/push "sync push (1 KB)"
+```
+
+It prints one TSV row per phase key: `command`, `phase`, `p50 ms`, `p95 ms`.
+`entry` uses `elapsed_ms` (a point marker has no `duration_ms`); every other row
+uses `duration_ms`. The extra `command elapsed_ms` row is the wall time from
+process start to the end of the command body, so it is the row to compare with
+the 2 s exit criterion. Repeated rows with the same key in one run are added, so
+each run contributes one value per key: `exec` and `sync push` read the workspace
+config more than once, and repeated `http` keys are summed the same way. Group
+`http` rows by method, path and status and `token-refresh` rows by `network`.
+Percentiles are nearest-rank over the 10 per-run values: sort them and take
+element `ceil(p/100 * 10)` (the 5th for p50, the 10th for p95). Do not average
+across runs before taking percentiles.
 
 ## Reference run (not staging)
 
@@ -129,17 +201,11 @@ provider, add one real staging request per run:
 ## Staging measurement
 
 The live table is produced by the commands above against staging with a real
-project, a running box and a 1 KB change. It is **not filled in this worktree**:
-the machine has no usable staging CLI auth (a protected credential exists, but
-its binding metadata `auth.json` is absent, so the CLI records
-`cli_auth_metadata_missing` and refuses it), no `OCB_STAGING_*` secret is in the
-environment, and the shared live-probe runner is paused. The three product
-commands therefore cannot complete here, and the exit criterion also asks for a
-Windows PC while this worktree is Linux. The release `Release staging smoke`
-workflow holds `OCB_STAGING_CLI_TOKEN` and runs on `windows-latest`; a
-measurement step there, or a run on the Windows PC used for the exit criterion,
-is the sanctioned place to fill this table. Do not seed auth state or create a
-staging box by hand to work around the missing credential.
+project, a running box and a fresh 1 KB change. It is intentionally empty here:
+this part adds the trace and the measuring steps, not a staging measurement.
+Fill it from the owner's Windows PC after this part merges, then paste the
+`summarize-trace.mjs` rows into the table. Do not seed auth state or create a
+staging box by hand.
 
 | command            | phase                                    | p50 duration ms | p95 duration ms |
 | ------------------ | ---------------------------------------- | --------------: | --------------: |
@@ -150,6 +216,7 @@ staging box by hand to work around the missing credential.
 | `status`           | `token-refresh network=no`               |               — |               — |
 | `status`           | `http GET /v1/projects/:id/sessions 200` |               — |               — |
 | `status`           | `command`                                |               — |               — |
+| `status`           | `command elapsed_ms`                     |               — |               — |
 | `exec -- true`     | `entry`                                  |               — |               — |
 | `exec -- true`     | `module-load`                            |               — |               — |
 | `exec -- true`     | `config`                                 |               — |               — |
@@ -157,6 +224,7 @@ staging box by hand to work around the missing credential.
 | `exec -- true`     | `token-refresh network=no`               |               — |               — |
 | `exec -- true`     | `http …` (each request)                  |               — |               — |
 | `exec -- true`     | `command`                                |               — |               — |
+| `exec -- true`     | `command elapsed_ms`                     |               — |               — |
 | `sync push` (1 KB) | `entry`                                  |               — |               — |
 | `sync push` (1 KB) | `module-load`                            |               — |               — |
 | `sync push` (1 KB) | `config`                                 |               — |               — |
@@ -164,6 +232,7 @@ staging box by hand to work around the missing credential.
 | `sync push` (1 KB) | `token-refresh network=no`               |               — |               — |
 | `sync push` (1 KB) | `http …` (each request)                  |               — |               — |
 | `sync push` (1 KB) | `command`                                |               — |               — |
+| `sync push` (1 KB) | `command elapsed_ms`                     |               — |               — |
 
 ## What the reference run says about the biggest phase
 
