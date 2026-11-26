@@ -206,6 +206,20 @@ class FailedStartHostedProvider extends FakeSandboxProvider {
   }
 }
 
+class RefusedCreateProvider extends FakeSandboxProvider {
+  override async create(
+    context: OperationContext,
+    _request: CreateSandboxRequest,
+  ): Promise<SandboxMutationResult> {
+    throw new OcboxError({
+      code: 'INVALID_SPEC',
+      message: 'The requested lifetime is longer than this size allows',
+      providerCode: 'lifetime_over_limit',
+      requestId: context.requestId,
+    })
+  }
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories
@@ -550,5 +564,51 @@ describe('LifecycleService', () => {
     expect(destroyed.session.state).toBe('destroyed')
     expect(destroyed.destroyOutcome).toBe('local')
     expect(destroy).not.toHaveBeenCalled()
+  })
+
+  it('records no selected error Session after a definite hosted create refusal', async () => {
+    const directory = await temporaryDirectory()
+    const store = new LifecycleStore(directory, PROJECT_ID)
+    const provider = new RefusedCreateProvider(directory)
+
+    await expect(createService(directory, { provider }).start()).rejects.toMatchObject({
+      code: 'INVALID_SPEC',
+      providerCode: 'lifetime_over_limit',
+    })
+
+    const state = await store.load()
+    expect(state.activeSessionId).toBeNull()
+    expect(Object.keys(state.sessions)).toHaveLength(0)
+    expect(Object.keys(state.operations)).toHaveLength(0)
+  })
+
+  it('names the commands that get out of an errored Session', async () => {
+    const directory = await temporaryDirectory()
+    await expect(
+      createService(directory, { faults: { failures: { create: 'PROVIDER_CAPACITY' } } }).start(),
+    ).rejects.toMatchObject({ code: 'PROVIDER_CAPACITY' })
+
+    const error = await createService(directory)
+      .start()
+      .catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(OcboxError)
+    expect(error).toMatchObject({ code: 'INVALID_STATE' })
+    expect((error as OcboxError).message).toContain('ocbox start --new')
+    expect((error as OcboxError).message).toContain('ocbox destroy --yes')
+  })
+
+  it('accepts the Sandbox ID printed by start --json as a Session selector', async () => {
+    const directory = await temporaryDirectory()
+    const created = await createService(directory).start()
+    const sandboxId = created.sandbox?.id
+    if (sandboxId === undefined) throw new Error('Expected a created Sandbox')
+
+    const inspected = await createService(directory).status(sandboxId)
+    expect(inspected.session.id).toBe(created.session.id)
+
+    const destroyed = await createService(directory).destroy(sandboxId)
+    expect(destroyed.session.id).toBe(created.session.id)
+    expect(destroyed.session.state).toBe('destroyed')
   })
 })

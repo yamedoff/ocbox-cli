@@ -1,4 +1,5 @@
 import { parse } from 'smol-toml'
+import { newRequestId } from '../../auth/errors.js'
 import { parseProjectConfig } from '../../config/index.js'
 import type { RequestId } from '../../domain/ids.js'
 import { OcboxError, type OcboxErrorCode } from '../../errors/index.js'
@@ -113,4 +114,58 @@ export function friendlyAdmissionFailure(error: unknown): never {
   if (error instanceof OcboxError)
     throw admissionError(error.providerCode, error.requestId) ?? error
   throw error
+}
+
+/** The size facts the lifetime pre-check needs from `ocbox sizes`. */
+export interface SizeLifetimeLimit {
+  readonly id: string
+  readonly maxLifetimeSeconds?: number | undefined
+}
+
+/**
+ * Refuses a lifetime longer than the selected size allows before any create
+ * request, so a known size never reaches the API's generic field error. The
+ * message names the flag, the size maximum and the value the customer gave.
+ */
+export function assertLifetimeWithinSize(
+  sizeId: string | undefined,
+  lifetime: number | undefined,
+  sizes: readonly SizeLifetimeLimit[],
+): void {
+  if (sizeId === undefined || lifetime === undefined) return
+  const size = sizes.find((candidate) => candidate.id === sizeId)
+  const maximum = size?.maxLifetimeSeconds
+  if (size === undefined || maximum === undefined || lifetime <= maximum) return
+  throw new OcboxError({
+    code: 'INVALID_SPEC',
+    message: `--lifetime ${lifetime} is longer than the ${size.id} size allows (maximum ${maximum} seconds); retry with a shorter --lifetime.`,
+    requestId: newRequestId(),
+    details: {
+      nextStep: 'Run `ocbox sizes` to see each size maximum, then retry with a shorter --lifetime.',
+    },
+  })
+}
+
+/**
+ * Reason codes a hosted create can answer with when it refuses the requested
+ * specification or admission. These are definite refusals: no hosted Session
+ * was created, so a failed create must not leave a selected error Session.
+ */
+const HOSTED_CREATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  ...Object.keys(ADMISSION_MESSAGES),
+  ...Object.keys(SIZE_REFUSAL_MESSAGES),
+  'api_request_field_invalid',
+  'validation_error',
+  'invalid_request',
+  'gpu_budget_exhausted',
+  'gpu_unavailable',
+  'project_deleting',
+])
+
+/** True when a create failure is a definite hosted refusal, not an unknown outcome. */
+export function isHostedCreateRefusal(error: unknown): boolean {
+  if (!(error instanceof OcboxError)) return false
+  if (error.code === 'INVALID_SPEC' && error.providerCode === undefined) return true
+  const providerCode = error.providerCode?.toLowerCase()
+  return providerCode !== undefined && HOSTED_CREATE_REFUSAL_CODES.has(providerCode)
 }

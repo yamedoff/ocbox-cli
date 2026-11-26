@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROJECT_CONFIG } from '../../src/cli/runtime.js'
 import { parseProjectConfig } from '../../src/config/index.js'
 import { ProjectIdSchema } from '../../src/contracts.js'
@@ -94,6 +94,28 @@ describe('fake provider cancellation across service instances', () => {
       })
       await handle.result
       await events
+    }
+  })
+
+  it('reports the execution ID the caller gave, not the provider mapping', async () => {
+    const { service, sandboxId, execute } = await setup()
+    const { handle, events } = await execute('process.exit(0)')
+    await events
+    const cancel = vi
+      .spyOn(FakeSandboxProvider.prototype, 'cancelSandboxExecution')
+      .mockResolvedValueOnce({
+        executionId: 'mapped-execution-id',
+        sandboxId,
+        state: 'cancelled',
+      })
+    try {
+      await expect(service().cancelExecution('exedo_given', sandboxId)).resolves.toMatchObject({
+        executionId: 'exedo_given',
+        state: 'cancelled',
+      })
+    } finally {
+      cancel.mockRestore()
+      await handle.result
     }
   })
 })

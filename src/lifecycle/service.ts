@@ -25,6 +25,7 @@ import { INVALID_SESSION_ID_MESSAGE } from '../errors/messages.js'
 import type { ExecutionTarget } from '../execution/service.js'
 import { FakeSandboxProvider } from '../providers/fake/provider.js'
 import { OcboxSandboxProvider } from '../providers/ocbox/provider.js'
+import { isHostedCreateRefusal } from '../providers/ocbox/requested-spec.js'
 import type { ProviderRegistry } from '../providers/registry.js'
 import { AtomicStoreCancelledError, AtomicStoreConflictError } from './atomic-json-store.js'
 import { type CancellationResult, executionError } from './cancellation.js'
@@ -114,6 +115,12 @@ export class LifecycleService {
       ) {
         return this.#runMutation(selected.id, operation.action)
       }
+    }
+    if (selected.state === 'error') {
+      throw this.#invalidState(
+        selected,
+        `Session ${selected.id} is in state error; run \`ocbox start --new\` to create a new Session, or \`ocbox destroy --yes\` to remove it.`,
+      )
     }
     throw this.#invalidState(
       selected,
@@ -288,7 +295,15 @@ export class LifecycleService {
         requestId,
       })
     }
-    return provider.cancelSandboxExecution(sandbox.id, executionId, waitMilliseconds, this.#signal)
+    const result = await provider.cancelSandboxExecution(
+      sandbox.id,
+      executionId,
+      waitMilliseconds,
+      this.#signal,
+    )
+    // The command prints the ID it was given. The provider may resolve a
+    // CLI-local alias to its hosted counterpart; that mapping stays internal.
+    return executionId === undefined ? result : { ...result, executionId }
   }
 
   /**
@@ -736,6 +751,27 @@ export class LifecycleService {
       const next = copyState(current)
       const session = next.sessions[sessionId]
       if (session?.currentOperationId !== operation.id) return next
+      if (
+        operation.action === 'create' &&
+        isHostedCreateRefusal(error) &&
+        session.bindings.length === 0
+      ) {
+        // A definite refusal created no hosted resource. Remove the intent
+        // instead of leaving a selected error Session the customer must clean up.
+        const hasHostedMapping = Object.values(next.hostedMappings).some((records) =>
+          Object.values(records).some(
+            (record) => record.localSessionId === sessionId && !record.deleted,
+          ),
+        )
+        if (!hasHostedMapping) {
+          delete next.sessions[sessionId]
+          delete next.operations[operation.id]
+          delete next.operationAttempts[operation.id]
+          delete next.pendingCreateSpecs[operation.id]
+          if (next.activeSessionId === sessionId) next.activeSessionId = null
+          return next
+        }
+      }
       next.operations[operation.id] = OperationSchema.parse({
         ...operation,
         status: 'failed',
@@ -797,8 +833,21 @@ export class LifecycleService {
       })
     }
     const session = state.sessions[id]
-    if (session === undefined) throw this.#notFound(id)
-    return session
+    if (session !== undefined) return session
+    // `start --json` prints a Sandbox ID next to the Session. Accept it as a
+    // selector for every --session flag by resolving the owning Session.
+    const byBinding = Object.values(state.sessions).find((candidate) =>
+      candidate.bindings.some((binding) => String(binding.sandboxId) === String(id)),
+    )
+    if (byBinding !== undefined) return byBinding
+    const byMapping = Object.values(state.hostedMappings)
+      .flatMap((records) => Object.values(records))
+      .find((record) => String(record.localId) === String(id) && !record.deleted)
+    if (byMapping !== undefined) {
+      const mapped = state.sessions[byMapping.localSessionId]
+      if (mapped !== undefined) return mapped
+    }
+    throw this.#notFound(id)
   }
 
   async #withResolvedSession<Result>(
