@@ -32,6 +32,7 @@ import {
   requestedSpecFromFlags,
 } from '../providers/ocbox/requested-spec.js'
 import { createWarmSessionCache, warmSessionsEnabled } from '../warm/client.js'
+import { trace } from './trace.js'
 
 export const DEFAULT_PROJECT_CONFIG = `schemaVersion = 1
 
@@ -151,6 +152,7 @@ export function resolveStateDirectory(
 }
 
 export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectConfig> {
+  const started = trace.enabled ? performance.now() : undefined
   try {
     return parseProjectConfig(await readFile(resolveConfigPath(flags), 'utf8'))
   } catch (error) {
@@ -161,6 +163,10 @@ export async function loadProjectConfig(flags: RuntimeFlags): Promise<ProjectCon
         requestId: newRequestId(),
       })
     throw error
+  } finally {
+    if (started !== undefined) {
+      trace.phase('config', { durationMs: performance.now() - started })
+    }
   }
 }
 
@@ -199,16 +205,23 @@ export async function resolveAccountStateDirectory(
   signal?: AbortSignal,
 ): Promise<string> {
   if (!hosted) return stateDirectory
-  const metadataStore = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+  const started = trace.enabled ? performance.now() : undefined
   try {
-    const metadata = await metadataStore.load(signal)
-    if (metadata?.subject !== undefined) return accountDirectory(stateDirectory, metadata.subject)
-    const identity = await readHostedIdentity(flags, process.env, signal)
-    if (metadata !== null)
-      await metadataStore.save({ ...metadata, subject: identity.subject }, signal).catch(() => {})
-    return accountDirectory(stateDirectory, identity.subject)
-  } catch {
-    return stateDirectory
+    const metadataStore = new AuthMetadataStore(join(stateDirectory, 'auth.json'))
+    try {
+      const metadata = await metadataStore.load(signal)
+      if (metadata?.subject !== undefined) return accountDirectory(stateDirectory, metadata.subject)
+      const identity = await readHostedIdentity(flags, process.env, signal)
+      if (metadata !== null)
+        await metadataStore.save({ ...metadata, subject: identity.subject }, signal).catch(() => {})
+      return accountDirectory(stateDirectory, identity.subject)
+    } catch {
+      return stateDirectory
+    }
+  } finally {
+    if (started !== undefined) {
+      trace.phase('credentials', { durationMs: performance.now() - started })
+    }
   }
 }
 
