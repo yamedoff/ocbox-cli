@@ -238,6 +238,31 @@ describe('phase lines', () => {
     }
   })
 
+  it('still sends the request when the API predicate throws', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 33 })
+    const original = globalThis.fetch
+    let sent = 0
+    globalThis.fetch = (async () => {
+      sent += 1
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch
+    const dispose = installHttpTrace(tracer, {
+      isApiUrl: () => {
+        throw new Error('predicate failed')
+      },
+    })
+
+    try {
+      await globalThis.fetch('https://api.example/v1/meta')
+      expect(sent).toBe(1)
+      expect(sink.text()).toContain('path=:external')
+    } finally {
+      dispose()
+      globalThis.fetch = original
+    }
+  })
+
   it('labels a token refresh that reused the store as network=no', async () => {
     const sink = memorySink()
     const tracer = createTracer({ enabled: true, stderr: sink, now: () => 70 })

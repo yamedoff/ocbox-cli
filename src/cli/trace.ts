@@ -241,19 +241,24 @@ export function installHttpTrace(
     const [input, init] = args
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const url = input instanceof Request ? input.url : String(input)
-    const parsed = parseRequestUrl(url)
-    // A credential-less request is a capability exchange (for example a CAS
-    // upload/download URL), even when it shares the API origin. Never print it.
-    const credentialless =
-      init?.credentials === 'omit' || (input instanceof Request && input.credentials === 'omit')
-    const path =
-      credentialless || parsed === undefined || !isApiUrl(parsed)
-        ? EXTERNAL_PATH
-        : pathWithoutIds(parsed)
+    let path = EXTERNAL_PATH
+    try {
+      const parsed = parseRequestUrl(url)
+      // A credential-less request is a capability exchange (for example a CAS
+      // upload/download URL), even when it shares the API origin. Never print it.
+      const credentialless =
+        init?.credentials === 'omit' || (input instanceof Request && input.credentials === 'omit')
+      if (!credentialless && parsed !== undefined && isApiUrl(parsed)) {
+        path = pathWithoutIds(parsed)
+      }
+    } catch {
+      // A trace predicate must never prevent the request from being sent.
+      path = EXTERNAL_PATH
+    }
     tracer.countHttpRequest()
     const started = performance.now()
     try {
-      const response = await original(...args)
+      const response = await original.apply(globalThis, args)
       tracer.httpPath(method, path, response.status, performance.now() - started)
       return response
     } catch (error) {
