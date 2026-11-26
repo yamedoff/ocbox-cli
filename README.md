@@ -189,8 +189,9 @@ execution exe_4c1a7e2b9f0d3a6c5e8b7d2f1a9c0b3e accepted
 /home/daytona/workspace
 ```
 
-On staging the workspace is `/home/daytona/workspace` and there is no
-`/workspace` directory, so write only inside the folder `pwd` prints.
+On staging the `pwd` output is the literal `/home/daytona/workspace`; do not
+replace `daytona` with a user placeholder. There is no `/workspace` directory,
+so write only inside the folder `pwd` prints.
 
 For a shell pipeline or redirect, run `sh -c` explicitly and quote the whole
 command:

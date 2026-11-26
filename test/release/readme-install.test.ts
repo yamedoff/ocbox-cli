@@ -9,6 +9,7 @@ import {
 } from '../../src/release/source.js'
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url))
+const BOX_WORKSPACE = '/home/daytona/workspace'
 
 interface PackageJson {
   name: string
@@ -169,12 +170,19 @@ describe('README install path', () => {
     const sync = section(readme, 'Sync to a hosted sandbox')
 
     expect(journey).toContain('ocbox exec -- pwd')
-    expect(journey).toContain('/home/daytona/workspace')
-    expect(sync).toContain('/home/daytona/workspace')
+    expect(journey).toContain(BOX_WORKSPACE)
+    expect(sync).toContain(BOX_WORKSPACE)
     expect(`${journey}\n${sync}`).toMatch(
       /no\s+`\/workspace`\s+directory|`\/workspace`\s+does not exist/i,
     )
     expect(readme).not.toMatch(/\/workspace\//)
+
+    // The staging path is a literal `pwd` result, not a user placeholder.
+    const pwdBlock = /```text\n(?:execution exe_[a-z0-9]+ accepted\n)?(\/home\/[^\n]+)\n```/.exec(
+      journey,
+    )
+    expect(pwdBlock?.[1]).toBe(BOX_WORKSPACE)
+    expect(journey).not.toMatch(/\/home\/<[^>\n]+>\/workspace/)
 
     expect(sync).toContain('.ocb-cas-owned.json')
     expect(sync).toMatch(/leave it alone/i)
