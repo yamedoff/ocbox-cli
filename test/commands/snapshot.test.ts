@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -14,11 +15,19 @@ import SnapshotDelete from '../../src/commands/snapshot/delete.js'
 import SnapshotList from '../../src/commands/snapshot/list.js'
 import SnapshotRestore from '../../src/commands/snapshot/restore.js'
 import SnapshotSave from '../../src/commands/snapshot/save.js'
-import type { ProjectId, SandboxId, Session } from '../../src/contracts.js'
+import {
+  OperationContextSchema,
+  OperationIdSchema,
+  ProjectIdSchema,
+  type Sandbox,
+  type Session,
+  SessionIdSchema,
+} from '../../src/contracts.js'
 import { PowerShellWindowsAclProtector } from '../../src/credentials/windows-acl.js'
 import { UtcTimestampSchema } from '../../src/domain/timestamps.js'
 import { LifecycleStore, projectIdForPath } from '../../src/lifecycle/index.js'
 import { DEFAULT_API_URL } from '../../src/providers/ocbox/defaults.js'
+import { createOcboxProvider } from '../../src/providers/ocbox/factory.js'
 
 const originalExitCode = process.exitCode
 const originalEnvironment = { ...process.env }
@@ -31,11 +40,10 @@ let stderrSpy: ReturnType<typeof vi.spyOn>
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111' as Session['id']
 const OTHER_SESSION_ID = '22222222-2222-4222-8222-222222222222' as Session['id']
-const SANDBOX_ID = '44444444-4444-4444-8444-444444444444' as SandboxId
-const OTHER_SANDBOX_ID = '55555555-5555-4555-8555-555555555555' as SandboxId
 const HOSTED_SESSION_ID = 'ses_hosted_1'
 const OTHER_HOSTED_SESSION_ID = 'ses_hosted_2'
 const PROJECT_ID = '33333333-3333-4333-8333-333333333333'
+const UNKNOWN_SESSION_ID = '00000000-0000-4000-8000-000000000000'
 
 function output(spy: ReturnType<typeof vi.spyOn>): string {
   return spy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
@@ -63,6 +71,19 @@ function operation(overrides: Record<string, unknown> = {}): Record<string, unkn
     error: null,
     resource: { type: 'session', id: HOSTED_SESSION_ID },
     ...overrides,
+  }
+}
+
+function notFoundEnvelope(reasonCode: string): Record<string, unknown> {
+  return {
+    error: {
+      code: 'NOT_FOUND',
+      message: 'The requested hosted Session was not found',
+      nextStep: 'Call session_list to list the Sessions this login owns.',
+      reasonCode,
+      retryable: false,
+    },
+    requestId: 'request-1',
   }
 }
 
@@ -123,25 +144,162 @@ function session(id: Session['id']): Session {
   }
 }
 
+interface SeedTarget {
+  readonly localSessionId: Session['id']
+  readonly hostedSessionId: string
+  readonly hostedSandboxId: string
+  readonly hostedOperationId: string
+}
+
+const SEED_TARGETS: readonly SeedTarget[] = [
+  {
+    localSessionId: SESSION_ID,
+    hostedSessionId: HOSTED_SESSION_ID,
+    hostedSandboxId: 'sbx_seed_1',
+    hostedOperationId: 'op_seed_1',
+  },
+  {
+    localSessionId: OTHER_SESSION_ID,
+    hostedSessionId: OTHER_HOSTED_SESSION_ID,
+    hostedSandboxId: 'sbx_seed_2',
+    hostedOperationId: 'op_seed_2',
+  },
+]
+
+function seedOperation(target: SeedTarget, state = 'succeeded'): Record<string, unknown> {
+  const timestamp = new Date().toISOString()
+  return {
+    id: target.hostedOperationId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    kind: 'session_create',
+    projectId: PROJECT_ID,
+    sessionId: target.hostedSessionId,
+    state,
+    progress: 100,
+    requestId: 'request-1',
+    error: null,
+    resource: { type: 'session', id: target.hostedSessionId },
+  }
+}
+
+function seedHostedSession(target: SeedTarget): Record<string, unknown> {
+  const timestamp = new Date().toISOString()
+  return {
+    createdAt: timestamp,
+    effectiveSpec: {},
+    id: target.hostedSessionId,
+    normalizedState: 'running',
+    primarySandboxId: target.hostedSandboxId,
+    projectId: PROJECT_ID,
+    rawState: 'running',
+    requestedSpec: {},
+    sandboxes: [
+      {
+        active: true,
+        boundAt: timestamp,
+        ordinal: 0,
+        releasedAt: null,
+        role: 'primary',
+        sandboxId: target.hostedSandboxId,
+        state: 'running',
+      },
+    ],
+    updatedAt: timestamp,
+  }
+}
+
+/**
+ * Writes the hosted mappings through the real provider, so the test exercises
+ * the same login-scoped record `exec` and `sync` read instead of a fixture key.
+ */
+async function seedHostedMappings(): Promise<void> {
+  const accountState = await resolveAccountStateDirectory(
+    { config, 'state-dir': state },
+    state,
+    true,
+  )
+  const store = new LifecycleStore(accountState, projectIdForPath(resolve(process.cwd())))
+  const spec = toSandboxSpec(parseProjectConfig(await readFile(config, 'utf8')))
+  let created = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = new URL(String(input))
+      const method = init?.method ?? 'GET'
+      const timestamp = new Date().toISOString()
+      if (method === 'GET' && url.pathname === `/v1/projects/${PROJECT_ID}`)
+        return jsonResponse({
+          id: PROJECT_ID,
+          name: 'fixture',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+      if (method === 'POST' && url.pathname === `/v1/projects/${PROJECT_ID}/sessions`) {
+        const target = SEED_TARGETS[created]
+        created += 1
+        if (target === undefined) return jsonResponse({}, 500)
+        return jsonResponse(seedOperation(target), 202)
+      }
+      const operation = SEED_TARGETS.find(
+        (target) => url.pathname === `/v1/operations/${target.hostedOperationId}`,
+      )
+      if (method === 'GET' && operation !== undefined) return jsonResponse(seedOperation(operation))
+      const hosted = SEED_TARGETS.find(
+        (target) => url.pathname === `/v1/sessions/${target.hostedSessionId}`,
+      )
+      if (method === 'GET' && hosted !== undefined) return jsonResponse(seedHostedSession(hosted))
+      return jsonResponse({}, 404)
+    }),
+  )
+  const sandboxes: Record<Sandbox['id'], Sandbox> = {}
+  for (const target of SEED_TARGETS) {
+    const provider = createOcboxProvider({ stateDirectory: state, projectId: PROJECT_ID })
+    provider.bindLifecycleStore(store)
+    const result = await provider.create(
+      OperationContextSchema.parse({
+        attempt: 1,
+        idempotencyKey: `seed-key-${randomUUID()}`,
+        issuedAt: new Date().toISOString(),
+        operationId: randomUUID(),
+        requestId: randomUUID(),
+      }),
+      {
+        adoption: {
+          metadata: {
+            operationId: OperationIdSchema.parse(randomUUID()),
+            sessionId: SessionIdSchema.parse(target.localSessionId),
+          },
+          strategy: 'serialize_then_reconcile',
+        },
+        projectId: ProjectIdSchema.parse(PROJECT_ID),
+        sessionId: SessionIdSchema.parse(target.localSessionId),
+        specification: spec,
+      },
+    )
+    sandboxes[result.sandbox.id] = result.sandbox
+  }
+  await store.update((current) => ({
+    ...current,
+    sandboxes: { ...current.sandboxes, ...sandboxes },
+  }))
+}
+
+async function lifecycleState() {
+  const accountState = await resolveAccountStateDirectory(
+    { config, 'state-dir': state },
+    state,
+    true,
+  )
+  return new LifecycleStore(accountState, projectIdForPath(resolve(process.cwd()))).load()
+}
+
 async function seedSessions(activeSessionId: Session['id'] = SESSION_ID): Promise<void> {
   const accountState = await resolveAccountStateDirectory(
     { config, 'state-dir': state },
     state,
     true,
   )
-  const spec = toSandboxSpec(parseProjectConfig(await readFile(config, 'utf8')))
-  const timestamp = new Date().toISOString()
-  const mapping = (localSessionId: Session['id'], localId: SandboxId, hostedSessionId: string) => ({
-    localId,
-    localSessionId,
-    localProjectId: PROJECT_ID as ProjectId,
-    hostedSessionId,
-    spec,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    stale: false,
-    deleted: false,
-  })
   const store = new LifecycleStore(accountState, projectIdForPath(resolve(process.cwd())))
   await store.update((current) => ({
     ...current,
@@ -151,14 +309,8 @@ async function seedSessions(activeSessionId: Session['id'] = SESSION_ID): Promis
       [SESSION_ID]: session(SESSION_ID),
       [OTHER_SESSION_ID]: session(OTHER_SESSION_ID),
     },
-    hostedMappings: {
-      ...current.hostedMappings,
-      fixture: {
-        [SANDBOX_ID]: mapping(SESSION_ID, SANDBOX_ID, HOSTED_SESSION_ID),
-        [OTHER_SANDBOX_ID]: mapping(OTHER_SESSION_ID, OTHER_SANDBOX_ID, OTHER_HOSTED_SESSION_ID),
-      },
-    },
   }))
+  await seedHostedMappings()
 }
 
 const runArguments = () => ['--config', config, '--state-dir', state, '--api-url', DEFAULT_API_URL]
@@ -389,6 +541,41 @@ describe('snapshot save', () => {
       },
     ])
   })
+
+  it('accepts a hosted ses_ ID as the box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`)
+        return jsonResponse(operation({ id: 'op_hosted_box' }), 202)
+      }),
+    )
+
+    await SnapshotSave.run([...runArguments(), HOSTED_SESSION_ID, '--no-wait'], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(calls).toEqual([`POST /v1/sessions/${HOSTED_SESSION_ID}/snapshots`])
+  })
+
+  it('prints api_session_not_found for an unknown box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`)
+        return jsonResponse(notFoundEnvelope('api_resource_not_found'), 404)
+      }),
+    )
+
+    await SnapshotSave.run([...runArguments(), UNKNOWN_SESSION_ID], { root: process.cwd() })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+    expect(calls).toEqual([`POST /v1/sessions/${UNKNOWN_SESSION_ID}/snapshots`])
+  })
 })
 
 describe('snapshot list', () => {
@@ -440,6 +627,97 @@ describe('snapshot list', () => {
     expect(process.exitCode ?? 0).toBe(0)
     expect(calls).toEqual([`/v1/sessions/${OTHER_HOSTED_SESSION_ID}/snapshots`])
     expect(output(stdoutSpy)).toBe('No snapshots\n')
+  })
+
+  it('accepts a hosted ses_ ID as the box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        calls.push(new URL(String(input)).pathname)
+        return jsonResponse({ snapshots: [] })
+      }),
+    )
+
+    await SnapshotList.run([...runArguments(), HOSTED_SESSION_ID], { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(calls).toEqual([`/v1/sessions/${HOSTED_SESSION_ID}/snapshots`])
+    expect(output(stdoutSpy)).toBe('No snapshots\n')
+  })
+
+  it('prints api_session_not_found for an unknown box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        calls.push(new URL(String(input)).pathname)
+        return jsonResponse(notFoundEnvelope('api_resource_not_found'), 404)
+      }),
+    )
+
+    await SnapshotList.run([...runArguments(), UNKNOWN_SESSION_ID], { root: process.cwd() })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+    expect(calls).toEqual([`/v1/sessions/${UNKNOWN_SESSION_ID}/snapshots`])
+  })
+
+  it('refuses a Sandbox ID instead of sending it as a Session', async () => {
+    const state = await lifecycleState()
+    const sandboxId = Object.keys(state.sandboxes)[0]
+    if (sandboxId === undefined) throw new Error('the fixture has no Sandbox')
+    const fetch = vi.fn(async () => jsonResponse({ snapshots: [] }))
+    vi.stubGlobal('fetch', fetch)
+
+    await SnapshotList.run([...runArguments(), sandboxId], { root: process.cwd() })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('That is a Sandbox ID, not a Session ID')
+    expect(output(stderrSpy)).toContain('`ocbox ls`')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('uses the current login mapping, not a newer record from another login', async () => {
+    const accountState = await resolveAccountStateDirectory(
+      { config, 'state-dir': state },
+      state,
+      true,
+    )
+    const store = new LifecycleStore(accountState, projectIdForPath(resolve(process.cwd())))
+    const current = await store.load()
+    const mapping = Object.values(current.hostedMappings)
+      .flatMap((records) => Object.values(records))
+      .find((record) => record.localSessionId === SESSION_ID && !record.deleted)
+    if (mapping === undefined) throw new Error('the fixture has no hosted mapping')
+    const decoyId = '99999999-9999-4999-8999-999999999999' as typeof mapping.localId
+    await store.update((latest) => ({
+      ...latest,
+      hostedMappings: {
+        ...latest.hostedMappings,
+        'other-login': {
+          [decoyId]: {
+            ...mapping,
+            localId: decoyId,
+            hostedSessionId: 'ses_decoy',
+            updatedAt: '2099-01-01T00:00:00.000Z',
+          },
+        },
+      },
+    }))
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        calls.push(new URL(String(input)).pathname)
+        return jsonResponse({ snapshots: [] })
+      }),
+    )
+
+    await SnapshotList.run(runArguments(), { root: process.cwd() })
+
+    expect(process.exitCode ?? 0).toBe(0)
+    expect(calls).toEqual([`/v1/sessions/${HOSTED_SESSION_ID}/snapshots`])
   })
 
   it('prints the raw list with --json', async () => {
@@ -588,6 +866,25 @@ describe('snapshot restore', () => {
       'Call `ocbox snapshot list` to see the snapshots this box keeps.',
     )
   })
+
+  it('prints api_session_not_found for an unknown box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`)
+        return jsonResponse(notFoundEnvelope('api_session_not_found'), 404)
+      }),
+    )
+
+    await SnapshotRestore.run([...runArguments(), 'snap_1', UNKNOWN_SESSION_ID], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+    expect(calls).toEqual([`POST /v1/sessions/${UNKNOWN_SESSION_ID}/snapshots/snap_1/restore`])
+  })
 })
 
 describe('snapshot delete', () => {
@@ -657,5 +954,24 @@ describe('snapshot delete', () => {
     expect(envelope.data.details.nextStep).toBe(
       'Call `ocbox snapshot list` to see the snapshots this box keeps.',
     )
+  })
+
+  it('prints api_session_not_found for an unknown box', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`)
+        return jsonResponse(notFoundEnvelope('api_session_not_found'), 404)
+      }),
+    )
+
+    await SnapshotDelete.run([...runArguments(), 'snap_1', UNKNOWN_SESSION_ID], {
+      root: process.cwd(),
+    })
+
+    expect(process.exitCode).toBe(1)
+    expect(output(stderrSpy)).toContain('Reason api_session_not_found.')
+    expect(calls).toEqual([`DELETE /v1/sessions/${UNKNOWN_SESSION_ID}/snapshots/snap_1`])
   })
 })
