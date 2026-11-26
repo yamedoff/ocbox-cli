@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { traceTokenRefresh } from '../../src/api/client/client.js'
 import {
   createTracer,
   installHttpTrace,
@@ -9,6 +10,7 @@ import {
   traceRequested,
   type TraceSink,
 } from '../../src/cli/trace.js'
+import type { HostedTokenManager } from '../../src/auth/token-manager.js'
 
 function memorySink(): TraceSink & { text(): string } {
   const chunks: string[] = []
@@ -149,6 +151,41 @@ describe('phase lines', () => {
       dispose()
       globalThis.fetch = original
     }
+  })
+
+  it('labels a token refresh that reused the store as network=no', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 70 })
+    const tokens = {
+      refresh: async () => ({ accessToken: 'secret-access-token' }),
+    } as unknown as HostedTokenManager
+
+    traceTokenRefresh(tokens, tracer)
+    await tokens.refresh()
+
+    expect(sink.text()).toMatch(
+      /^ocbox-trace phase=token-refresh elapsed_ms=70 duration_ms=\d+ network=no\n$/,
+    )
+    expect(sink.text()).not.toContain('secret-access-token')
+  })
+
+  it('labels a token refresh that hit the network as network=yes', async () => {
+    const sink = memorySink()
+    const tracer = createTracer({ enabled: true, stderr: sink, now: () => 90 })
+    const tokens = {
+      refresh: async () => {
+        tracer.countHttpRequest()
+        return { accessToken: 'secret-access-token' }
+      },
+    } as unknown as HostedTokenManager
+
+    traceTokenRefresh(tokens, tracer)
+    await tokens.refresh()
+
+    expect(sink.text()).toMatch(
+      /^ocbox-trace phase=token-refresh elapsed_ms=90 duration_ms=\d+ network=yes\n$/,
+    )
+    expect(sink.text()).not.toContain('secret-access-token')
   })
 })
 

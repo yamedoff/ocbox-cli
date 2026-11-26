@@ -13,7 +13,7 @@ import type { FetchPort } from '../../auth/ports.js'
 import type { HostedTokenManager } from '../../auth/token-manager.js'
 import type { OcboxError } from '../../errors/index.js'
 import { newRequestId } from '../../auth/errors.js'
-import { trace } from '../../cli/trace.js'
+import { trace, type Tracer } from '../../cli/trace.js'
 import { envelopeOf, mapApiFailureToOcboxError } from './errors.js'
 
 export const OCBOX_CLI_USER_AGENT = 'ocbox-cli/0.1.0' as const
@@ -72,17 +72,18 @@ const tracedTokenManagers = new WeakSet<HostedTokenManager>()
  * fetch counted a request); `network=no` means the stored credential was
  * reused or the store refused locally. No token material is ever printed.
  */
-function traceTokenRefresh(tokens: HostedTokenManager): void {
-  if (!trace.enabled || tracedTokenManagers.has(tokens)) return
+/** Exported for the trace test; production callers reach it through the client constructor. */
+export function traceTokenRefresh(tokens: HostedTokenManager, tracer: Tracer = trace): void {
+  if (!tracer.enabled || tracedTokenManagers.has(tokens)) return
   tracedTokenManagers.add(tokens)
   const refresh = tokens.refresh.bind(tokens)
   tokens.refresh = (request) => {
     const started = performance.now()
-    const requestsBefore = trace.httpRequestCount
+    const requestsBefore = tracer.httpRequestCount
     return refresh(request).finally(() => {
-      trace.phase('token-refresh', {
+      tracer.phase('token-refresh', {
         durationMs: performance.now() - started,
-        network: trace.httpRequestCount > requestsBefore ? 'yes' : 'no',
+        network: tracer.httpRequestCount > requestsBefore ? 'yes' : 'no',
       })
     })
   }
