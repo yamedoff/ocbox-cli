@@ -114,6 +114,9 @@ used to cut the fix parts.
 | `sync push` (1 KB) | `config`      |             0.0 |             4.0 |           96.0 |          100.0 |
 | `sync push` (1 KB) | `command`     |            68.0 |            71.0 |          119.0 |          123.0 |
 
+These are one 10-run sample; a rerun moves the values by a few milliseconds.
+The percentile method is the part to reproduce, not these exact numbers.
+
 The same commands with the version gate enabled, still against the local fake
 provider, add one real staging request per run:
 
