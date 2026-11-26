@@ -8,6 +8,10 @@ LifecycleService maintains local Session views and operations. OcboxSandboxProvi
 
 Start reuses a suitable selected Session or records an intent before createSession. The provider keeps the returned operation and observes completion. Start/resume, stop and destroy use idempotency keys and then reconcile the hosted Session. Destroy confirms a deleted hosted Session before marking the local mapping deleted; history remains in the lifecycle file. When a failed start leaves a current Operation or no primary binding, destroy first gives that Operation one bounded reconcile and then destroys the hosted Session named by the persisted mapping. A Session with no hosted mapping is removed locally, and the human result names that case.
 
+Before any create request, `start` compares `--lifetime` with the selected size's `maxLifetimeSeconds` from `ocbox sizes`. For a known size that is too long, it refuses with the flag name, the size maximum and the value given, so no Session is reserved and no waiting message is printed. A definite hosted refusal during create (size, lifetime, admission or field validation) removes the reserved Session instead of leaving a selected error Session; an ambiguous outcome still keeps the recoverable intent. Starting from an errored Session names `ocbox start --new` and `ocbox destroy --yes`.
+
+Lifecycle `--session` flags (`status`, `pause`, `stop`, `destroy`, `sync`) accept either the Session ID or the Sandbox ID printed by `start --json`; a Sandbox ID resolves to its owning Session. `exec --session` still requires the Session ID. `cancel` prints the execution ID it was given and the terminal state, not the provider's internal alias.
+
 Explicit shell mode rejects a known non-Linux effective OS. The hosted public view may publish only scalar fields (`cpu`, `memory`, `image`, `region`); the adapter merges those reported fields over the request to form the full effective spec, and a payload that reports none of them stays unobserved. The requested spec is never promoted wholesale to observed metadata. When the local config omits an image or region, the observed value also replaces the local placeholder in the requested view.
 
 A create response that names only the hosted Session ID persists that ID before the wait, so a refused or timed-out create still leaves a destroyable mapping. The requested view shows the observed image and region when the hosted config omitted those fields; the offline schema placeholders never stand in for a server default.
@@ -38,7 +42,7 @@ Execution failures after an accepted start use the same safe typed code/message 
 
 ## Code evidence
 
-Selection and transitions: `src/lifecycle/service.ts:87–340,510–700`. Hosted lifecycle/exec/preview: `src/providers/ocbox/provider.ts:506–950,1000–1424`. Output collection: `src/providers/ocbox/executions.ts:104–434`; cancellation helper: `src/providers/ocbox/operations.ts:399–486`.
+Selection and transitions: `src/lifecycle/service.ts:92–130,271–300,399–500,744–850`. Size/lifetime pre-check and refusal classification: `src/commands/start.ts:32–52`, `src/providers/ocbox/requested-spec.ts:130–175`. Hosted lifecycle/exec/preview: `src/providers/ocbox/provider.ts:506–950,1000–1424`. Output collection: `src/providers/ocbox/executions.ts:104–434`; cancellation helper: `src/providers/ocbox/operations.ts:399–486`.
 
 Verified against ocbox-cli @ 6e22448
 
@@ -47,3 +51,7 @@ A hosted create persists the Session ID from the create operation before the wai
 Verified against ocbox-cli @ 872e6f2 plus the create-ID, execution-ID and cancellation changes.
 
 Warm session cache: `src/warm/client.ts`, `src/warm/daemon.ts`.
+
+Size and lifetime are checked against `ocbox sizes` before create, a definite hosted create refusal leaves no selected error Session, an errored Session names `ocbox start --new` and `ocbox destroy --yes`, `cancel` reports the ID it was given, and lifecycle `--session` flags accept the Sandbox ID from `start --json` (`exec --session` still requires the Session ID).
+
+Verified against ocbox-cli @ 3f83349 plus the K5-4 refusal, recovery and selector changes.

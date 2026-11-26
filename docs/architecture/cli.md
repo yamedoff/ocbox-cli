@@ -40,7 +40,7 @@ Invalid configuration, unsupported capabilities, stale credentials, an absent Se
 
 Opaque source upload endpoints are an outside building: their capability URLs prove a direct PUT path, without identifying infrastructure or another repository's implementation.
 
-`ocbox logs <execution-id>` re-reads a terminal execution's stored result and writes stdout and stderr to the terminal unchanged, so an agent that lost the live stream still sees the run's output. Human output bypasses the general redactor like `ocbox exec`, while `--json`/`--jsonl` keep the existing envelope redaction; a pending or running execution is refused with its state.
+`ocbox logs <execution-id>` re-reads a terminal execution's stored result and writes stdout and stderr to the terminal unchanged, so an agent that lost the live stream still sees the run's output. Human output bypasses the general redactor like `ocbox exec`. `--json`/`--jsonl` carry each stream in the same base64 shape `exec --json` uses (`encoding`, `data`, `retainedBytes`, `totalBytes`, `truncated`); only secret-shaped values inside the decoded stream are redacted, not the whole stream. A pending or running execution is refused with its state.
 
 Verified against ocbox-cli @ 758212a plus the logs command.
 
@@ -69,3 +69,7 @@ Verified against ocbox-cli @ 872e6f2 plus the init project-check and hosted-defa
 On Windows, the warm daemon's random pipe name and per-user connection-secret file replace the Unix owner-only directory and socket checks; Unix behavior is unchanged.
 
 Verified against ocbox-cli @ 9523af1 plus the Windows named-pipe handshake.
+
+`logs --json`/`--jsonl` carry stored stdout and stderr as base64 streams in the `exec --json` shape; the redactor decodes them and removes only secret-shaped values, leaving the rest of the run's output readable.
+
+Verified against ocbox-cli @ 3f83349 plus the K5-4 logs change.

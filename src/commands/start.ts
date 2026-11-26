@@ -2,6 +2,9 @@ import { Flags, ux } from '@oclif/core'
 import { OcboxCommand, runtimeFlags } from '../cli/base-command.js'
 import { createLifecycleService, loadProjectConfig, resolveStateDirectory } from '../cli/runtime.js'
 import { sessionViewLine } from '../cli/views.js'
+import { createMetadataClient } from '../metadata/client.js'
+import { listSizes } from '../metadata/sizes.js'
+import { assertLifetimeWithinSize } from '../providers/ocbox/requested-spec.js'
 import { hasSyncedSource } from '../sync/status.js'
 
 export default class Start extends OcboxCommand {
@@ -29,11 +32,16 @@ export default class Start extends OcboxCommand {
           return nextStep === undefined ? `${notice}${line}` : `${notice}${line}\nNext: ${nextStep}`
         },
         async () => {
+          const config = await loadProjectConfig(flags)
           if (
-            !flags.json &&
-            !flags.jsonl &&
-            (await loadProjectConfig(flags)).provider.name === 'ocbox'
+            config.provider.name === 'ocbox' &&
+            flags.size !== undefined &&
+            flags.lifetime !== undefined
           ) {
+            const { sizes } = await listSizes(createMetadataClient(flags), interrupt.signal)
+            assertLifetimeWithinSize(flags.size, flags.lifetime, sizes)
+          }
+          if (!flags.json && !flags.jsonl && config.provider.name === 'ocbox') {
             if (process.stderr.isTTY) {
               ux.action.start('Waiting for hosted sandbox to be ready')
               spinning = true

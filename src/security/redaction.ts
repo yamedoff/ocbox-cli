@@ -20,6 +20,7 @@ const SENSITIVE_KEY =
 const PUBLIC_METADATA_KEY = /^(?:secretExposureModes|secretReferenceIds)$/
 const COMMAND_OUTPUT_KEY =
   /^(?:command|argv|stdout|stderr|command[_-]?output|raw[_-]?output|source[_-]?content)$/i
+const BASE64_STREAM_DATA = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 const PROVIDER_BYOK_NAME =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|SECRET_KEY|TOKEN|PASSWORD|CREDENTIALS?)(?:$|_)/i
 const SECRET_VALUE =
@@ -55,6 +56,46 @@ function isSensitiveKey(key: string): boolean {
 /** True when an environment variable name conventionally carries provider credentials. */
 export function isProviderCredentialEnvironmentName(name: string): boolean {
   return PROVIDER_BYOK_NAME.test(name) || SENSITIVE_KEY.test(normalizedKey(name))
+}
+
+/** True when the value is a base64 stream object, as `exec --json` emits. */
+function isEncodedStream(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const { encoding, data } = value as { encoding?: unknown; data?: unknown }
+  return encoding === 'base64' && typeof data === 'string' && BASE64_STREAM_DATA.test(data)
+}
+
+/**
+ * Keeps the encoded stream shape but redacts secret-shaped values in its decoded
+ * text. Only the `data` payload is touched; the other fields keep normal rules.
+ * The byte counters move with the redacted payload so they still describe the
+ * bytes a consumer decodes from `data`.
+ */
+function redactEncodedStream(
+  value: Readonly<Record<string, unknown>>,
+  seen: ReadonlySet<object>,
+): JsonValue {
+  const nextSeen = new Set(seen)
+  nextSeen.add(value)
+  const output: Record<string, JsonValue> = {}
+  const decoded = Buffer.from(String(value['data']), 'base64').toString('utf8')
+  const redacted = decoded.replace(new RegExp(SECRET_VALUE.source, 'gi'), REDACTED_VALUE)
+  const retainedBytes = Buffer.byteLength(redacted, 'utf8')
+  const truncated = value['truncated'] === true
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'data') {
+      output[key] = Buffer.from(redacted, 'utf8').toString('base64')
+    } else if (key === 'retainedBytes' && typeof item === 'number') {
+      output[key] = retainedBytes
+    } else if (key === 'totalBytes' && typeof item === 'number') {
+      // A truncated stream keeps the total the command produced; an
+      // untruncated stream has no other total than its redacted bytes.
+      output[key] = truncated ? Math.max(item, retainedBytes) : retainedBytes
+    } else {
+      output[key] = redactForOutput(item, nextSeen)
+    }
+  }
+  return output
 }
 
 /**
@@ -131,7 +172,9 @@ export function redactForOutput(value: unknown, seen: ReadonlySet<object> = new 
 
   const output: Record<string, JsonValue> = {}
   for (const [key, item] of Object.entries(value)) {
-    if (COMMAND_OUTPUT_KEY.test(key) || isSensitiveKey(key)) {
+    if (COMMAND_OUTPUT_KEY.test(key) && isEncodedStream(item)) {
+      output[key] = redactEncodedStream(item, nextSeen)
+    } else if (COMMAND_OUTPUT_KEY.test(key) || isSensitiveKey(key)) {
       output[key] = REDACTED_VALUE
     } else {
       output[key] = redactForOutput(item, nextSeen)

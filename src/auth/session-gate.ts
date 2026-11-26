@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import {
   AtomicStoreCancelledError,
   AtomicStoreConflictError,
@@ -17,6 +18,10 @@ import { newRequestId } from './errors.js'
  * acquires it only to snapshot prior state and commit (or roll back).
  */
 export const AUTH_STATE_LOCK_FILENAME = 'auth.state.lock'
+
+/** Two acquisition attempts give a briefly held lock a second chance. */
+const LOCK_ATTEMPT_LIMIT = 2
+const LOCK_RETRY_DELAY_MILLISECONDS = 100
 
 export type SessionGate = <Result>(
   action: () => Promise<Result>,
@@ -38,25 +43,51 @@ export function createSessionGate(
       ? {}
       : { timeoutMilliseconds: options.lockWaitMilliseconds }),
   })
+  const lockPath = join(stateDirectory, AUTH_STATE_LOCK_FILENAME)
   return async (action, signal) => {
-    try {
-      return await lock.withLock(join(stateDirectory, AUTH_STATE_LOCK_FILENAME), signal, action)
-    } catch (error) {
-      if (error instanceof AtomicStoreCancelledError) {
-        throw new OcboxError({
-          code: 'OPERATION_CANCELLED',
-          message: 'The wait for another CLI process updating authentication state was cancelled',
-          requestId: newRequestId(),
+    for (let attempt = 1; ; attempt += 1) {
+      let actionStarted = false
+      try {
+        return await lock.withLock(lockPath, signal, async () => {
+          actionStarted = true
+          return action()
         })
+      } catch (error) {
+        if (error instanceof AtomicStoreCancelledError) {
+          throw new OcboxError({
+            code: 'OPERATION_CANCELLED',
+            message: 'The wait for another CLI process updating authentication state was cancelled',
+            requestId: newRequestId(),
+          })
+        }
+        if (error instanceof AtomicStoreConflictError) {
+          // A conflict raised by the action itself must not be retried: the lock
+          // was acquired and the action may already have changed state.
+          if (!actionStarted && attempt < LOCK_ATTEMPT_LIMIT) {
+            try {
+              await delay(LOCK_RETRY_DELAY_MILLISECONDS, undefined, { signal })
+            } catch {
+              throw new OcboxError({
+                code: 'OPERATION_CANCELLED',
+                message:
+                  'The wait for another CLI process updating authentication state was cancelled',
+                requestId: newRequestId(),
+              })
+            }
+            continue
+          }
+          throw new OcboxError({
+            code: 'OPERATION_CONFLICT',
+            message: 'Another CLI process is updating authentication state; try again shortly',
+            details: {
+              nextStep:
+                'Wait a moment for the other CLI process to finish, then rerun the command.',
+            },
+            requestId: newRequestId(),
+          })
+        }
+        throw error
       }
-      if (error instanceof AtomicStoreConflictError) {
-        throw new OcboxError({
-          code: 'OPERATION_CONFLICT',
-          message: 'Another CLI process is updating authentication state; try again shortly',
-          requestId: newRequestId(),
-        })
-      }
-      throw error
     }
   }
 }

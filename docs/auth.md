@@ -107,10 +107,13 @@ Authenticated credential reads, refresh rotation, login commits, status
 reconciliation, and logout all use one bounded cross-process state lock in the selected state
 directory (`auth.state.lock`). This prevents a fresh read from crossing a
 login/logout commit and prevents two processes from presenting one rotating
-refresh token. Contention is `OPERATION_CONFLICT`; cancellation while waiting
-is `OPERATION_CANCELLED`. The state lock is always outermost and each store
-keeps its own internal lock, so lock acquisition has one order. Login holds the
-state lock only for its state commit, not while the user is in the browser.
+refresh token. A brief contention gets a second bounded acquisition attempt;
+if the lock is still held, the command fails with retryable
+`OPERATION_CONFLICT` and a next step to wait and rerun. Cancellation while
+waiting is `OPERATION_CANCELLED`. The state lock is always outermost and each
+store keeps its own internal lock, so lock acquisition has one order. Login
+holds the state lock only for its state commit, not while the user is in the
+browser.
 
 Local cleanup failures on logout, and a failed metadata clear on status,
 surface a typed `INVALID_STATE` failure rather than a false success. If login's
@@ -177,3 +180,11 @@ real hosted server) remains explicitly blocked here. Automated coverage uses
 mocked browser/HTTP/listener/clock/entropy/credential boundaries plus a
 Windows/Linux CLI subprocess smoke with a local mock server and no real browser,
 network, or account.
+
+## Lock contention
+
+The state lock retries a briefly held lock once. If it stays held, the command
+returns retryable `OPERATION_CONFLICT` with a next step to wait a moment and
+rerun, instead of an unclassified failure.
+
+Verified against ocbox-cli @ 3f83349 plus the K5-4 lock retry.
