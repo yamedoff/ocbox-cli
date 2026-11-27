@@ -428,6 +428,16 @@ describe('sync service', () => {
     expect(renderSyncApplied(result)).not.toContain('Next:')
   })
 
+  it('does not treat a root file named like an object method as a lockfile', async () => {
+    const { context: sync, local } = await pair()
+    await writeFile(join(local, 'constructor'), 'not a lockfile')
+
+    const result = await runSyncApply(sync, 'push', applyOptions())
+
+    expect(result.summary?.installCommand).toBeNull()
+    expect(renderSyncApplied(result)).not.toContain('Next:')
+  })
+
   it('round-trips binary content byte for byte', async () => {
     const { context: sync, local, remote } = await pair()
     const bytes = Uint8Array.of(0, 255, 1, 128, 10, 0, 42)

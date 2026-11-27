@@ -540,7 +540,9 @@ function installCommandFor(view: SyncPlanView): string | null {
     .map((operation) => operation.path)
   for (const path of written) {
     if (path.includes('/')) continue
-    const command = LOCKFILE_INSTALL_COMMANDS[path]
+    const command = Object.hasOwn(LOCKFILE_INSTALL_COMMANDS, path)
+      ? LOCKFILE_INSTALL_COMMANDS[path]
+      : undefined
     if (command !== undefined) return `ocbox exec -- ${command}`
   }
   return null
@@ -571,7 +573,9 @@ function installCommandForUploaded(paths: readonly string[] | undefined): string
   if (paths === undefined) return null
   for (const path of paths) {
     if (path.includes('/')) continue
-    const command = LOCKFILE_INSTALL_COMMANDS[path]
+    const command = Object.hasOwn(LOCKFILE_INSTALL_COMMANDS, path)
+      ? LOCKFILE_INSTALL_COMMANDS[path]
+      : undefined
     if (command !== undefined) return `ocbox exec -- ${command}`
   }
   return null
