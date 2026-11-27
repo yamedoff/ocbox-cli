@@ -163,4 +163,19 @@ describe('MCP-to-CLI map', () => {
 
     expect(failures).toEqual([])
   })
+
+  it('maps the owner-wide session list without --project-id', async () => {
+    const markdown = await readFile(mapPath, 'utf8')
+    const row = mapRows(markdown).find((entry) => entry.tool === 'session_list')
+    expect(row).toBeDefined()
+    expect(row?.command).toBe('session list')
+    expect(row?.flags).toEqual(
+      expect.arrayContaining(['--project-id', '--cursor', '--limit', '--include-destroyed']),
+    )
+
+    const sessionListLines = markdown.split('\n').filter((line) => line.includes('session_list'))
+    expect(sessionListLines.length).toBeGreaterThan(0)
+    expect(sessionListLines.filter((line) => line.includes('MISSING'))).toEqual([])
+    expect(markdown.includes('MISSING')).toBe(false)
+  })
 })
