@@ -34,7 +34,7 @@ export interface ApiCallMetadata {
   readonly status: number
 }
 
-/** The project session list query; `includeDestroyed` postdates the pin. */
+/** The project session list query; `includeDestroyed` is the CLI's boolean form. */
 export interface SessionListQuery {
   readonly projectId: string
   readonly cursor?: string | undefined
@@ -188,9 +188,9 @@ export class OcboxApiClient {
   }
 
   /**
-   * Lists one project's Sessions. The pinned generated client predates the
-   * `includeDestroyed` query parameter, so this route is requested through the
-   * same authenticated transport and failure mapping as `listSizes`.
+   * Lists one project's Sessions. The hand-written boundary keeps the CLI's
+   * boolean `includeDestroyed` flag while using the same authenticated
+   * transport and failure mapping as `listSizes`.
    */
   async listProjectSessions(
     query: SessionListQuery,

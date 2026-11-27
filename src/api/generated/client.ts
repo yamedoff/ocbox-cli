@@ -2,7 +2,7 @@
  * Generated from openapi/openapi.yaml. DO NOT EDIT BY HAND.
  *
  * Pinned source commit: unavailable
- * Pinned source SHA-256: 975aa2a4cb15ae4765f0122edce4062c03a269da3182bbbc78af4c39f24ae0c4
+ * Pinned source SHA-256: ee20412ee0be5d0776fd511c4addaf2332e270d72901622a92aff599b4aed7d0
  * Regenerate with: pnpm run api:generate
  *
  * This file depends only on the standard Web Fetch surface provided by the
@@ -10,7 +10,7 @@
  */
 
 export const OPENAPI_SOURCE_COMMIT = "unavailable" as const
-export const OPENAPI_CHECKSUM = "sha256:975aa2a4cb15ae4765f0122edce4062c03a269da3182bbbc78af4c39f24ae0c4" as const
+export const OPENAPI_CHECKSUM = "sha256:ee20412ee0be5d0776fd511c4addaf2332e270d72901622a92aff599b4aed7d0" as const
 
 export interface ApiTransport {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
@@ -870,6 +870,7 @@ export interface OpenCloudBoxClient {
   deleteEnvironment(args: { readonly path: { readonly environmentId: string }; readonly body?: DeleteConfirmationRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   listSessions(args: { readonly path: { readonly projectId: string }; readonly query?: { readonly cursor?: string; readonly limit?: number; readonly includeDestroyed?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   createSession(args: { readonly path: { readonly projectId: string }; readonly body: CreateSessionRequest; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<SessionCreateResponse | ErrorEnvelope>>
+  listOwnerSessions(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly includeDestroyed?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   getSession(args: { readonly path: { readonly sessionId: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   startSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
   pauseSession(args: { readonly path: { readonly sessionId: string }; readonly idempotencyKey: string; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>>
@@ -1235,6 +1236,29 @@ export function createClient(baseUrl: string, options: ClientOptions = {}): Open
       const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
       return {
         body: parsed as SessionCreateResponse | ErrorEnvelope,
+        requestId: response.headers.get('x-request-id'),
+        replay: response.headers.get('idempotency-replayed') === 'true',
+        retryAfter: response.headers.get('retry-after'),
+        status: response.status,
+      }
+    },
+    async listOwnerSessions(args?: { readonly query?: { readonly cursor?: string; readonly limit?: number; readonly includeDestroyed?: string }; readonly signal?: AbortSignal }): Promise<ApiResult<unknown>> {
+      const url = new URL(`${normalizedBase}/v1/sessions`)
+      if (args?.query !== undefined) {
+        if (args.query.cursor !== undefined) url.searchParams.set("cursor", String(args.query.cursor))
+        if (args.query.limit !== undefined) url.searchParams.set("limit", String(args.query.limit))
+        if (args.query.includeDestroyed !== undefined) url.searchParams.set("includeDestroyed", String(args.query.includeDestroyed))
+      }
+      const headers: Record<string, string> = { ...defaultHeaders }
+      const response = await transport.fetch(url, {
+        method: "GET",
+        headers,
+        ...(args?.signal === undefined ? {} : { signal: args.signal }),
+      })
+      const text = await response.text()
+      const parsed: unknown = text.length === 0 ? null : JSON.parse(text)
+      return {
+        body: parsed as unknown,
         requestId: response.headers.get('x-request-id'),
         replay: response.headers.get('idempotency-replayed') === 'true',
         retryAfter: response.headers.get('retry-after'),

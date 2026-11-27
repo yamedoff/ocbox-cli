@@ -353,7 +353,7 @@ paths:
     get:
       operationId: listSessions
       tags: [Sessions]
-      description: Lists the sessions of a project. Destroyed sessions are left out unless includeDestroyed=true; because a call reads at most 100 stored rows, a page can be short or empty, so follow nextCursor until it is null. This is the only REST session list; there is no owner-level list route.
+      description: Lists the sessions of a project. Destroyed sessions are left out unless includeDestroyed=true; because a call reads at most 100 stored rows, a page can be short or empty, so follow nextCursor until it is null. For the caller's sessions across every project, use GET /v1/sessions.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
         - $ref: '#/components/parameters/Cursor'
@@ -407,6 +407,26 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sessions:
+    get:
+      operationId: listOwnerSessions
+      tags: [Sessions]
+      description: Lists the caller's sessions across every project. Destroyed sessions are left out unless includeDestroyed=true; because a call reads at most 100 stored rows, a page can be short or empty, so follow nextCursor until it is null. This is the owner-wide twin of listSessions and answers the same page shape and filters.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeDestroyed'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/ValidationError'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -2099,7 +2119,7 @@ components:
       name: includeDestroyed
       in: query
       required: false
-      description: Include destroyed sessions. Defaults to false; destroyed sessions are left out of the list and its pages. Only GET /v1/projects/{projectId}/sessions supports this filter.
+      description: Include destroyed sessions. Defaults to false; destroyed sessions are left out of the list and its pages. Supported by both GET /v1/projects/{projectId}/sessions and GET /v1/sessions.
       schema:
         type: string
         enum: ['true', 'false']
