@@ -136,13 +136,17 @@ describe('session list command', () => {
       }),
     )
 
-    await SessionList.run([...runArguments(), '--limit', '10', '--include-destroyed', '--json'], {
-      root: process.cwd(),
-    })
+    await SessionList.run(
+      [...runArguments(), '--cursor', 'cursor-1', '--limit', '10', '--include-destroyed', '--json'],
+      { root: process.cwd() },
+    )
 
     expect(process.exitCode ?? 0).toBe(0)
     expect(calls).toEqual([
-      { path: '/v1/sessions', query: { includeDestroyed: 'true', limit: '10' } },
+      {
+        path: '/v1/sessions',
+        query: { cursor: 'cursor-1', includeDestroyed: 'true', limit: '10' },
+      },
     ])
     const printed = JSON.parse(output(stdoutSpy))
     expect(printed.data.sessions.map((row: { id: string }) => row.id)).toEqual([
