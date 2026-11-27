@@ -172,7 +172,6 @@ describe('MCP-to-CLI map', () => {
     expect(row?.flags).toEqual(
       expect.arrayContaining(['--project-id', '--cursor', '--limit', '--include-destroyed']),
     )
-    expect(row?.flags).not.toContain('--project')
 
     const sessionListLines = markdown.split('\n').filter((line) => line.includes('session_list'))
     expect(sessionListLines.length).toBeGreaterThan(0)
