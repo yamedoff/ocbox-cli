@@ -7,9 +7,12 @@ source transport, and OAuth 2.1 PKCE CLI authentication. Hosted lifecycle comman
 
 ## Install
 
-Requires Node.js 24.20.0 and the pinned pnpm from [Toolchain](#toolchain).
-`package.json` pins that Node version in `devEngines`, so `pnpm install
---frozen-lockfile` refuses any other one.
+Building from source needs Node.js 24.20.0 and the pinned pnpm from
+[Toolchain](#toolchain). `package.json` pins that Node version in `devEngines`
+with `onFail: error`, so `pnpm install --frozen-lockfile` and `pnpm run
+pack:release` refuse any other version. The installed CLI itself only needs
+Node.js >=22 (the `engines` field), so it runs on an older Node such as 24.15.0
+even when the build step refused that version.
 
 The npm package and the first GitHub release are not published yet, so the only
 working install path is from source. Build the release files and install them
@@ -113,8 +116,14 @@ Created project prj_7f3c2a1b9d ("hello-box") and wrote opencloudbox.toml
 Using the hosted OpenCloudBox provider (staging at https://api.staging.opencloudbox.dev).
 ```
 
-`init` reuses a hosted project with the current directory's name, or creates
-one and saves its ID in `opencloudbox.toml`.
+When `opencloudbox.toml` is absent, `init` looks for a hosted project whose name
+is the current folder's name. If one exists it does not create a second
+project; it prints `Using existing project prj_... ("hello-box"), matched by
+name; run ocbox project create to make a new one` and saves that ID in
+`opencloudbox.toml`. If the file already exists, `init` prints `Validated
+opencloudbox.toml` instead. To start a separate project, create one with
+`ocbox project create` and select it with `--project`, or initialize from a
+folder with a different name.
 
 ### 4. Start the box
 
@@ -127,8 +136,10 @@ ocbox start
 Next: ocbox sync push
 ```
 
-`start` creates a box for the project, or resumes the selected one. The `Next:`
-line points at the source push the new box is waiting for.
+`start` creates a box for the project, or resumes the selected one when it is
+paused or stopped. The `Next:` line points at the source push the new box is
+waiting for. A Session in `error` cannot be started; see
+[If a Session is in error](#if-a-session-is-in-error).
 
 ### 5. Push the source
 
@@ -138,7 +149,7 @@ ocbox sync push
 ```
 
 ```text
-Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); uploaded 1 blob(s), 19 bytes.
+Source synced: 1 addition(s), 0 modification(s), 0 deletion(s); 1 file(s) changed, 19 bytes; uploaded 1 blob(s), 19 bytes.
 hello.txt
 ```
 
@@ -150,6 +161,8 @@ npm ci` for npm).
 
 ### 6. Run a command and read its output
 
+Run a program with `--` and an argument vector:
+
 ```sh
 ocbox exec --timeout-seconds 60 -- cat hello.txt
 ```
@@ -159,10 +172,52 @@ execution exe_9d6b3eb74aae3741801b93a37e4ff2 accepted
 hello from the box
 ```
 
-`--timeout-seconds 60` bounds the run at 60 seconds. The command runs in the
-box's workspace, where `sync push` put the files. Tokens after `--` are passed
-to the program unchanged. The execution ID lets you reattach after a disconnect
-with `ocbox execution get <id>`.
+`--timeout-seconds 60` bounds the run at 60 seconds. Tokens after `--` are passed
+to the program unchanged; the CLI never evaluates them in a shell. After a
+disconnect, the execution ID lets you check the run with
+`ocbox execution get <id>`.
+
+Hosted commands run in the box's workspace folder, where `sync push` put the
+files. Ask the box where that folder is:
+
+```sh
+ocbox exec -- pwd
+```
+
+```text
+execution exe_4c1a7e2b9f0d3a6c5e8b7d2f1a9c0b3e accepted
+/home/<user>/workspace
+```
+
+The output is the folder `pwd` prints in a new box; it may differ on another
+box. There is no `/workspace` directory, so write only inside the folder `pwd`
+prints.
+
+For a shell pipeline or redirect, run `sh -c` explicitly and quote the whole
+command:
+
+```sh
+ocbox exec -- sh -c 'printf "one\ntwo\n" | grep two > picked.txt'
+ocbox exec -- cat picked.txt
+```
+
+The second command prints `two`. On Windows, complex `sh -c` quoting is often
+lost before it reaches the box (`Syntax error: end of file unexpected`). Write
+the commands to a script file, push it, and run the script instead. Put this in
+a local `run-on-box.sh`:
+
+```sh
+printf "one\ntwo\n" | grep two > picked.txt
+```
+
+Then push and run it:
+
+```sh
+ocbox sync push
+ocbox exec -- sh run-on-box.sh
+```
+
+`sh` reads the file, so the script needs no executable bit.
 
 ### 7. Read stored logs
 
@@ -174,12 +229,54 @@ ocbox logs exe_9d6b3eb74aae3741801b93a37e4ff2
 hello from the box
 ```
 
-`logs` re-reads a finished execution's stored stdout and stderr, so an agent
-that lost the live stream still sees the run's output. A pending or running
-execution is refused with its state; use `ocbox execution get <id>` for the
-execution record.
+`logs` reads stored stdout and stderr only after the execution finishes, so an
+agent that lost the live stream still sees the run's output. While an execution
+is `pending` or `running`, `logs` is refused with its state; use
+`ocbox execution get <id>` to read the execution record while it runs, then run
+`ocbox logs <id>` once it is terminal.
 
-### 8. Stop the box
+### 8. Pull a change back from the box
+
+`sync pull` copies changes made in the box's workspace back to the local project:
+
+```sh
+ocbox exec -- sh -c 'printf "from the box\n" >> hello.txt'
+ocbox sync pull
+```
+
+```text
+Source pulled: 0 addition(s), 1 modification(s); wrote 1 file(s), 32 bytes, removed 0 path(s).
+hello.txt
+```
+
+Pulling over a local file you changed since the last sync is a conflict. Keep
+the local copy with `--keep-local`, or replace it with the box copy with
+`--overwrite-local`; deletions require `--delete` and confirmation (or `--yes`).
+
+### 9. Save and restore a snapshot
+
+A snapshot is a point-in-time copy of the Session. Take one, list the ones the
+box keeps, restore one, and delete one:
+
+```sh
+ocbox snapshot save
+ocbox snapshot list
+ocbox snapshot restore <snapshot-id>
+ocbox snapshot delete <snapshot-id>
+```
+
+`snapshot save` waits for the hosted Operation and prints
+`Snapshot saved (operation <operation-id>)`; `--no-wait` prints `Snapshot
+creation accepted (operation <operation-id>)` and returns. `snapshot list`
+prints `No snapshots` or one line per snapshot (`<snapshot-id>  <createdAt>
+[ <size>]`; the size is omitted when the service does not know it). Every
+snapshot command defaults to the selected Session; pass a tracked Session ID or
+a hosted `ses_...` ID as `<box>`. A Sandbox ID is refused (run `ocbox ls` to copy a Session ID). A box
+that cannot take snapshots says `snapshot_unsupported`; at the limit it says
+`snapshot_limit_reached` and tells you to delete one with
+`ocbox snapshot delete` first.
+
+### 10. Stop the box
 
 ```sh
 ocbox stop
@@ -191,7 +288,7 @@ ocbox stop
 
 Stopping keeps the box's filesystem. Start it again with `ocbox start`.
 
-### 9. Destroy the box
+### 11. Destroy the box
 
 ```sh
 ocbox destroy --yes
@@ -203,6 +300,68 @@ ocbox destroy --yes
 
 Destroying discards the box and its filesystem. To start a fresh box, run
 `ocbox start` again.
+
+## What the box has
+
+The staging box image provides Node.js 24.20.0 and Python 3.14.6. Print them
+from the box before relying on them:
+
+```sh
+ocbox exec -- node --version
+ocbox exec -- python3 --version
+```
+
+```text
+execution exe_... accepted
+v24.20.0
+execution exe_... accepted
+Python 3.14.6
+```
+
+Check any other tool the same way, for example
+`ocbox exec -- sh -c 'command -v <tool>'`.
+
+## Exit codes
+
+`ocbox exec` passes a remote program's own exit code through unchanged. The CLI
+uses its own codes around that program:
+
+| Result                                                                                                 |      Exit code |
+| ------------------------------------------------------------------------------------------------------ | -------------: |
+| Remote program exited                                                                                  | its 0–255 code |
+| `--timeout-seconds` elapsed                                                                            |            124 |
+| The CLI could not start or stream the run (missing or inactive Session, provider or transport failure) |            125 |
+| Interrupted before a terminal result                                                                   |            130 |
+
+Exit 125 is the CLI's own infrastructure-failure code, not the program's. A
+remote program may itself exit 125; `--json` and `--jsonl` carry the `outcome`
+discriminator (`remote_result` versus `infrastructure_error`) so automation can
+tell them apart. The same applies to 124 and 130: a remote program may return
+those codes, and `--json` reports `remote_result` rather than `timeout` or
+`cancelled`. A malformed Session ID is a usage error and exits 1. Other commands
+report a refusal with `Reason <code>.` and exit 1.
+
+## If a Session is in error
+
+`ocbox start` does not resume a Session whose state is `error`. It refuses with
+a message like:
+
+```text
+Session <id> is in state error; run `ocbox start --new` to create a new Session, or `ocbox destroy --yes` to remove it.
+```
+
+Choose one:
+
+```sh
+ocbox start --new
+# or remove the errored Session first, then start a fresh one
+ocbox destroy --yes
+ocbox start
+```
+
+`ocbox start --new` always creates and selects a new Session. `ocbox destroy
+--yes` removes the errored Session; the next `ocbox start` creates a fresh box.
+Stopping and starting a healthy Session is still `ocbox stop` then `ocbox start`.
 
 ## Sync to a hosted sandbox
 
@@ -216,10 +375,16 @@ ocbox sync push --exclude 'fixtures/**' --exclude large.bin
 
 Hosted push uses the selected sandbox's persisted session mapping and the
 content-addressed v2 sync API, with the v3 fast apply when the server supports
-it. The server delivers the files under `/workspace/<projectId>`; hosted
-commands run from that project directory. Push reports uploaded paths and file
-bytes, and an unchanged push sends no blobs. The retired archive and
-manifest/chunk upload route is no longer used.
+it. The server delivers the files into the box's workspace folder, and hosted
+commands run from that folder; `ocbox exec -- pwd` prints it. That is the folder
+`pwd` prints in a new box, and `/workspace` does not exist there. Push reports
+uploaded paths and file bytes, and an unchanged push sends no blobs. The retired
+archive and manifest/chunk upload route is no longer used.
+
+The workspace contains a hidden `.ocb-cas-owned.json` that belongs to the box's
+content-addressed source sync. Leave it alone: do not edit, delete, or commit
+it. The CLI excludes it from every push, and a pushed manifest may not name that
+path.
 
 Hosted sync limits are 100,000 entries, 256 MiB per file and 1 GiB total
 content; manifest pages hold 512 entries and 512 KiB. Oversized or unsafe paths
@@ -274,7 +439,7 @@ Use `--state-dir` consistently with login if you override the auth state root.
 
 ## Toolchain
 
-- Node.js `24.20.0`
+- Node.js `24.20.0` (source build and validation; the installed CLI accepts Node.js >=22)
 - Corepack `0.36.0`
 - pnpm `11.24.0`
 

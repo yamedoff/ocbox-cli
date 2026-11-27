@@ -19,6 +19,9 @@ interface PackageJson {
     access?: string
     provenance?: boolean
   }
+  engines?: {
+    node?: string
+  }
   devEngines?: {
     runtime?: {
       name?: string
@@ -98,7 +101,7 @@ describe('README install path', () => {
     expect(pkg.scripts['pack:release']).toContain('pnpm run build')
   })
 
-  it('states the Node version the source install requires', async () => {
+  it('says which install step needs the pinned Node version', async () => {
     const readme = await readRepoFile('README.md')
     const install = section(readme, 'Install')
     const toolchain = section(readme, 'Toolchain')
@@ -109,10 +112,15 @@ describe('README install path', () => {
       throw new Error('package.json has no devEngines.runtime.version')
     }
     expect(pkg.devEngines?.runtime?.onFail).toBe('error')
+    expect(pkg.engines?.node).toBe('>=22')
 
-    expect(install).toContain(`Node.js ${nodeVersion}`)
-    expect(install).not.toMatch(/Requires Node\.js\s*[≥>]/)
+    expect(install).toContain(`Building from source needs Node.js ${nodeVersion}`)
     expect(install).toContain('devEngines')
+    expect(install).toContain('onFail: error')
+    expect(install).toContain('installed CLI')
+    expect(install).toContain('Node.js >=22')
+    expect(install).toContain('24.15.0')
+    expect(install).not.toMatch(/Requires Node\.js\s*[≥>]/)
     expect(toolchain).toContain(`Node.js \`${nodeVersion}\``)
   })
 
@@ -153,5 +161,80 @@ describe('README install path', () => {
     expect(logsIndex).toBeGreaterThan(execIndex)
     expect(stopIndex).toBeGreaterThan(logsIndex)
     expect(journey).toMatch(/### \d+\. Read stored logs/)
+  })
+
+  it('documents the box workspace wording and the hidden CAS marker', async () => {
+    const readme = await readRepoFile('README.md')
+    const journey = section(readme, 'Your first box')
+    const sync = section(readme, 'Sync to a hosted sandbox')
+
+    expect(journey).toContain('ocbox exec -- pwd')
+    expect(journey).toMatch(/folder `pwd` prints in a new box/i)
+    expect(sync).toContain('ocbox exec -- pwd')
+    expect(sync).toMatch(/folder\s+`pwd`\s+prints in a new box/i)
+    expect(`${journey}\n${sync}`).toMatch(
+      /no\s+`\/workspace`\s+directory|`\/workspace`\s+does not exist/i,
+    )
+    expect(readme).not.toMatch(/\/workspace\//)
+
+    expect(sync).toContain('.ocb-cas-owned.json')
+    expect(sync).toMatch(/leave it alone/i)
+    expect(sync).toMatch(/do not edit, delete, or commit/i)
+  })
+
+  it('documents shell pipelines, a pushed script on Windows, and exit 125', async () => {
+    const readme = await readRepoFile('README.md')
+    const journey = section(readme, 'Your first box')
+    const exits = section(readme, 'Exit codes')
+
+    expect(journey).toContain("ocbox exec -- sh -c '")
+    expect(journey).toMatch(/on Windows[\s\S]*script file/i)
+    expect(journey).toContain('ocbox exec -- sh run-on-box.sh')
+
+    expect(exits).toContain('125')
+    expect(exits).toMatch(/remote program[\s\S]*exit 125/i)
+    expect(exits).toContain('infrastructure_error')
+    expect(exits).toMatch(/Other\s+commands[\s\S]*exit\s+1/)
+  })
+
+  it('lists what the box image provides', async () => {
+    const readme = await readRepoFile('README.md')
+    const box = section(readme, 'What the box has')
+    const pkg = JSON.parse(await readRepoFile('package.json')) as PackageJson
+    const nodeVersion = pkg.devEngines?.runtime?.version
+    if (nodeVersion === undefined) {
+      throw new Error('package.json has no devEngines.runtime.version')
+    }
+
+    expect(box).toContain(`Node.js ${nodeVersion}`)
+    expect(box).toContain('Python 3.14.6')
+    expect(box).toContain('ocbox exec -- node --version')
+    expect(box).toContain('ocbox exec -- python3 --version')
+  })
+
+  it('walks through pull and the snapshot commands in the first-box journey', async () => {
+    const readme = await readRepoFile('README.md')
+    const journey = section(readme, 'Your first box')
+
+    expect(journey).toContain('ocbox sync pull')
+    expect(journey).toContain('ocbox snapshot save')
+    expect(journey).toContain('ocbox snapshot list')
+    expect(journey).toContain('ocbox snapshot restore <snapshot-id>')
+    expect(journey).toContain('ocbox snapshot delete <snapshot-id>')
+  })
+
+  it('explains logs timing, init name reuse, and the error Session escape', async () => {
+    const readme = await readRepoFile('README.md')
+    const journey = section(readme, 'Your first box')
+    const error = section(readme, 'If a Session is in error')
+
+    expect(journey).toMatch(/logs[\s\S]*only after the execution finishes/i)
+    expect(journey).toContain('ocbox execution get <id>')
+    expect(journey).toContain('Using existing project')
+    expect(journey).toMatch(/matched by\s+name/)
+
+    expect(error).toMatch(/does not resume a Session whose state is `error`/i)
+    expect(error).toContain('ocbox start --new')
+    expect(error).toContain('ocbox destroy --yes')
   })
 })
